@@ -9,12 +9,12 @@ _init = Path(__file__).parent.joinpath('py2Dmol', '__init__.py').read_text()
 VERSION = re.search(r'^__version__ = "([^"]+)"', _init, re.M).group(1)
 
 setup(
-    name='py2Dmol',
-    version=VERSION,
+    name='bindos-structure-inspector',
+    version='0.1.0',
     author='sokrypton',
     author_email='so3@mit.edu',
-    description='A Python library for visualizing protein structures in 2D.',
-    long_description='A Python library for visualizing protein structures in 2D.',
+    description='Local-only, manifest-driven structural inspection derived from py2Dmol.',
+    long_description='A local-only structure inspector that retains and reuses py2Dmol.',
     long_description_content_type='text/markdown',
     url='https://github.com/sokrypton/py2Dmol',
     packages=find_packages(),
@@ -59,8 +59,8 @@ setup(
     ],
     python_requires='>=3.6',
     install_requires=[
-        'numpy',
-        'ipython',
-        'gemmi',
+        'numpy==2.4.6',
+        'ipython==9.17.1',
+        'biopython==1.88',
     ],
 )

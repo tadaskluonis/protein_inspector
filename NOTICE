@@ -1,0 +1,21 @@
+BindOS Structure Inspector
+==========================
+
+This repository is derived from sokrypton/py2Dmol at revision
+78c2d489d0b5c5d19accd9eeeef878c2868f5271.
+Source: https://github.com/sokrypton/py2Dmol
+
+The original BEER-WARE notice is retained verbatim in LICENSE.  The BindOS
+changes add a local-only immutable-mmCIF/inspection-manifest interface, typed
+validation at the package boundary, semantic inspection layers, and hashed
+HTML/JSON/SVG/PNG export.  Arbitrary PDB/AFDB fetching is not part of the new
+public interface; the legacy py2Dmol module remains included for attribution
+and renderer reuse.
+
+Runtime dependencies inherited from the pinned upstream revision:
+
+- NumPy: BSD-3-Clause.
+- Biopython 1.88: Biopython License Agreement (permissive BSD-style).
+- IPython: BSD-3-Clause.
+
+The reusable package must be distributed with LICENSE and this NOTICE.

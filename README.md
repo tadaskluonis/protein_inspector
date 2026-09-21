@@ -1,4 +1,18 @@
-# py2Dmol
+# BindOS Structure Inspector
+
+This repository is a pinned derivative of py2Dmol that adds a reusable,
+local-only inspection interface for immutable mmCIF artifacts and BindOS
+inspection manifests.  The original `py2Dmol` package remains present and its
+BEER-WARE notice is retained in `LICENSE`.
+
+The supported product interface is
+`bindos_structure_inspector.render_inspection_bundle`.  It does not fetch
+arbitrary PDB IDs, accessions, URLs, or browser resources.  It verifies the
+source mmCIF SHA-256 digest and exports self-contained HTML, JSON viewer state,
+SVG/PNG snapshots, and a compact artifact manifest.  See `NOTICE` for the
+pinned upstream revision, modifications, and dependency licences.
+
+## Upstream py2Dmol documentation
 
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for Google Colab and Jupyter.
 
