@@ -9,8 +9,10 @@ and projected snapshots make the scientific annotations independently auditable.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import math
+import re
 import struct
 import zlib
 from pathlib import Path
@@ -47,7 +49,11 @@ _ALLOWED_LAYER_KINDS = {
     "clash",
     "structural_uncertainty",
     "experimental_overlay",
+    "custom",
 }
+
+_LAYER_COLORS = ("#dc2626", "#2563eb", "#059669", "#9333ea", "#d97706", "#0891b2")
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def _sha256(path: Path) -> str:
@@ -75,21 +81,33 @@ def _validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
         missing = required - set(item)
         if missing:
             raise ValueError(f"annotation is missing fields: {sorted(missing)}")
+        if not all(isinstance(item[field], str) and item[field] for field in ("annotation_id", "kind", "label", "method")):
+            raise ValueError("annotation_id, kind, label, and method must be non-empty strings")
+        if not isinstance(item["resolved"], bool) or not isinstance(item["evidence_ids"], list) or not all(isinstance(value, str) for value in item["evidence_ids"]):
+            raise ValueError("resolved must be a boolean and evidence_ids must be a list of strings")
         if item["kind"] not in _ALLOWED_LAYER_KINDS:
             raise ValueError(f"unsupported annotation kind: {item['kind']}")
         if item["annotation_id"] in ids:
             raise ValueError(f"duplicate annotation ID: {item['annotation_id']}")
         ids.add(item["annotation_id"])
         residue = item.get("residue")
-        if item["resolved"] and item["kind"] not in {"missing_residue", "experimental_overlay"}:
-            if not residue or not residue.get("component_id") or not residue.get("canonical_position"):
-                raise ValueError(f"resolved annotation {item['annotation_id']} lacks a canonical residue reference")
+        if item["resolved"]:
+            required_residue_fields = {"component_id", "canonical_position", "chain_id", "author_residue_number"}
+            if not isinstance(residue, dict) or any(residue.get(field) is None for field in required_residue_fields):
+                raise ValueError(f"resolved annotation {item['annotation_id']} lacks a complete residue reference")
+        for field in ("layer_id", "layer_label"):
+            if field in item and (not isinstance(item[field], str) or not item[field].strip()):
+                raise ValueError(f"annotation {item['annotation_id']} has an invalid {field}")
+        if "color" in item and (not isinstance(item["color"], str) or not _HEX_COLOR.fullmatch(item["color"])):
+            raise ValueError(f"annotation {item['annotation_id']} color must be a #RRGGBB value")
         if item["kind"] == "partner_contact" and not item.get("partner_id"):
             raise ValueError("partner_contact annotations require partner_id")
     return value
 
 
 def _layer_key(annotation: dict[str, Any]) -> str:
+    if annotation.get("layer_id"):
+        return annotation["layer_id"]
     kind = annotation["kind"]
     if kind == "partner_contact":
         return f"partner_contact:{annotation['partner_id']}"
@@ -99,18 +117,47 @@ def _layer_key(annotation: dict[str, Any]) -> str:
 
 
 def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[str, list[str]] = {}
+    grouped: dict[str, dict[str, Any]] = {}
     for item in annotations:
-        grouped.setdefault(_layer_key(item), []).append(item["annotation_id"])
+        key = _layer_key(item)
+        layer = grouped.setdefault(key, {"annotation_ids": [], "label": item.get("layer_label"), "color": item.get("color")})
+        if item.get("layer_label") and layer["label"] != item["layer_label"]:
+            raise ValueError(f"layer {key!r} has conflicting labels")
+        if item.get("color") and layer["color"] != item["color"]:
+            raise ValueError(f"layer {key!r} has conflicting colors")
+        layer["annotation_ids"].append(item["annotation_id"])
     return [
         {
             "layer_id": key,
-            "label": key.replace("_", " ").replace(":", " — "),
-            "annotation_ids": ids,
+            "label": layer["label"] or key.replace("_", " ").replace(":", " — "),
+            "color": layer["color"] or _LAYER_COLORS[index % len(_LAYER_COLORS)],
+            "annotation_ids": layer["annotation_ids"],
             "visible": True,
         }
-        for key, ids in sorted(grouped.items())
+        for index, (key, layer) in enumerate(grouped.items())
     ]
+
+
+def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: list[dict[str, Any]]) -> None:
+    """Apply each declared layer color to its resolved residue positions."""
+    frame = viewer.objects[-1]["frames"][0]
+    positions: dict[tuple[str, int], list[int]] = {}
+    for index, (chain, number) in enumerate(zip(frame.get("chains") or [], frame.get("residue_numbers") or [])):
+        positions.setdefault((str(chain), int(number)), []).append(index)
+    by_id = {item["annotation_id"]: item for item in annotations}
+    for layer in layers:
+        indices: list[int] = []
+        for annotation_id in layer["annotation_ids"]:
+            annotation = by_id[annotation_id]
+            if not annotation["resolved"]:
+                continue
+            residue = annotation["residue"]
+            matched = positions.get((str(residue["chain_id"]), int(residue["author_residue_number"])), [])
+            if not matched:
+                raise ValueError(f"resolved annotation {annotation_id} does not match a residue in the mmCIF")
+            indices.extend(matched)
+        if indices:
+            viewer.set_color(layer["color"], position=indices)
 
 
 def _trace(cif_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
@@ -200,9 +247,14 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
 <script id="bindos-inspection-state" type="application/json">__STATE__</script>
 <script>(function(){const s=JSON.parse(document.getElementById('bindos-inspection-state').textContent);const byId=Object.fromEntries(s.annotations.map(a=>[a.annotation_id,a]));let applyingLayerSelection=false;function renderer(){return typeof viewerApi!=='undefined'&&viewerApi.renderer?viewerApi.renderer:null;}function sameResidue(a,b){return a&&b&&a.component_id===b.component_id&&a.copy_index===b.copy_index&&a.canonical_position===b.canonical_position;}function indicesFor(residue){const r=renderer(),out=[];if(!r||!residue)return out;for(let i=0;i<(r.residueNumbers||[]).length;i++){const chain=r.chains&&r.chains[i];if(chain===residue.chain_id&&r.residueNumbers[i]===residue.author_residue_number)out.push(i);}return out;}function showDetails(annotation){for(const x of document.querySelectorAll('[data-annotation]'))x.style.outline='';const related=s.annotations.filter(x=>sameResidue(x.residue,annotation.residue));for(const x of related){const match=document.querySelector('[data-annotation="'+CSS.escape(x.annotation_id)+'"]');if(match&&!match.hidden)match.style.outline='2px solid #eab308';}document.getElementById('bindos-residue-details').textContent=JSON.stringify({residue:annotation.residue,annotations:related.length?related:[annotation]},null,2);}function syncVisibleLayers(){const r=renderer(),selected=new Set();for(const l of s.layers){const box=document.querySelector('[data-layer="'+CSS.escape(l.layer_id)+'"]');const visible=!box||box.checked;for(const id of l.annotation_ids){const row=document.querySelector('[data-annotation="'+CSS.escape(id)+'"]');if(row)row.hidden=!visible;const a=byId[id];if(visible&&a&&a.resolved)for(const index of indicesFor(a.residue))selected.add(index);}}if(r){applyingLayerSelection=true;try{r.setResidueSelection(selected);r.render('BindOS inspection layer visibility');}finally{applyingLayerSelection=false;}}}function selectInStructure(residue){const r=renderer();if(!r)return;applyingLayerSelection=true;try{r.setResidueSelection(new Set(indicesFor(residue)));r.render('BindOS manifest residue selection');}finally{applyingLayerSelection=false;}}for(const l of s.layers){const box=document.querySelector('[data-layer="'+CSS.escape(l.layer_id)+'"]');if(box)box.addEventListener('change',syncVisibleLayers);}for(const row of document.querySelectorAll('[data-annotation]'))row.addEventListener('click',()=>{const a=byId[row.dataset.annotation];showDetails(a);selectInStructure(a.residue);});document.addEventListener('py2dmol-residue-selection-change',()=>{if(applyingLayerSelection)return;const r=renderer();if(!r||!r.residueSelection||!r.residueSelection.size)return;const selected=s.annotations.find(a=>indicesFor(a.residue).some(i=>r.residueSelection.has(i)));if(selected)showDetails(selected);});window.bindosInspection={syncVisibleLayers:syncVisibleLayers,selectAnnotation:function(id){const a=byId[id];if(a){showDetails(a);selectInStructure(a.residue);}}};syncVisibleLayers();})();</script>
 """.replace("__STATE__", payload)
-    layers = "".join(f'<label class="bindos-layer"><input type="checkbox" checked data-layer="{item["layer_id"]}"> {item["label"]}</label>' for item in state["layers"])
+    layers = "".join(
+        f'<label class="bindos-layer"><input type="checkbox" checked data-layer="{html.escape(item["layer_id"], quote=True)}"> '
+        f'<span style="color:{item["color"]}">&#9679;</span> {html.escape(item["label"])}'
+        f'</label>'
+        for item in state["layers"]
+    )
     rows = "".join(
-        f'<div class="bindos-residue{(" bindos-warning" if not item["resolved"] else "")}" data-annotation="{item["annotation_id"]}"><b>{item["label"]}</b><br><small>{item.get("method", "unknown")} · {", ".join(item.get("evidence_ids", [])) or "no evidence"}</small></div>'
+        f'<div class="bindos-residue{(" bindos-warning" if not item["resolved"] else "")}" data-annotation="{html.escape(item["annotation_id"], quote=True)}"><b>{html.escape(item["label"])}</b><br><small>{html.escape(str(item.get("method", "unknown")))} · {html.escape(", ".join(item.get("evidence_ids", [])) or "no evidence")}</small></div>'
         for item in state["annotations"]
     )
     return f'<!doctype html><html><head><meta charset="utf-8"><title>BindOS structure inspection</title></head><body><main class="bindos-inspector"><section>{viewer_html}</section><aside class="bindos-panel"><h2>Inspection layers</h2>{layers}<h2>Selected residue</h2><pre id="bindos-residue-details">Click an annotated residue to inspect numbering, evidence, and warnings.</pre><h2>Residues and warnings</h2>{rows}</aside></main>{panel}</body></html>'
@@ -245,12 +297,14 @@ def render_inspection_bundle(
     viewer.add_pdb(str(source), use_biounit=False, filter_additives=False, load_ligands=True, name="prepared-target")
     if not any(item.get("frames") for item in viewer.objects):
         raise ValueError("py2Dmol could not load a renderable structure")
+    layers = _layers(manifest["annotations"])
+    _color_annotations(viewer, manifest["annotations"], layers)
     state = {
         "schema_version": "bindos-viewer-state-1",
         "inspector_version": INSPECTOR_VERSION,
         "upstream_revision": UPSTREAM_REVISION,
         "source": {"path": str(source), "sha256": actual_hash},
-        "layers": _layers(manifest["annotations"]),
+        "layers": layers,
         "annotations": manifest["annotations"],
         "overlays": manifest.get("overlays", []),
         "viewer": {"config": viewer.config, "objects": viewer.objects},
