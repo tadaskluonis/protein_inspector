@@ -1,5 +1,6 @@
 import hashlib
 import json
+import pytest
 from pathlib import Path
 
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
@@ -138,17 +139,17 @@ def test_layer_checkboxes_repaint_the_structure(tmp_path):
         ],
     }
     report = _run_dom_harness(html_path, spec)
-    base = "#b9bfc7"
-    lit = {"0": "#111111", "1": "#222222", "2": base, "3": base, "4": base}
+    lit = {"0": "#111111", "1": "#222222"}
     # Manifest order decides overlap: layer-b is emitted second, so it owns residue 2.
-    # Everything else carries the neutral base rather than the viewer's colour mode.
+    # Unannotated residues are left to the VIEWER's colour mode (chain, in neutral
+    # greys) rather than painted over: the mode only decides the ones nobody spoke
+    # for, so speaking for all of them would disable it.
     assert report["initial"] == lit
     assert report["renders"] >= 1
-    # Layer A off: its exclusive residue falls back to the base, layer B's survives.
-    assert report["steps"]["hide_a"]["paint"] == {**lit, "0": base}
-    # Everything off: a fully neutral structure. NOT None — dropping the map here
-    # is what used to expose the rainbow that `auto` resolves to on one chain.
-    assert report["steps"]["hide_both"]["paint"] == {str(i): base for i in range(5)}
+    # Layer A off: its exclusive residue falls back to the mode, layer B's survives.
+    assert report["steps"]["hide_a"]["paint"] == {"1": "#222222"}
+    # Everything off: the map is dropped and the chain palette shows through.
+    assert report["steps"]["hide_both"]["paint"] is None
     # ...and back, byte for byte.
     assert report["steps"]["show_both"]["paint"] == lit
 
@@ -157,8 +158,7 @@ def test_layers_repaint_when_the_viewer_starts_late(tmp_path):
     """The bundle builds its renderer on load, after this script runs."""
     report = _run_dom_harness(_two_layer_bundle(tmp_path), {
         "chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5], "rafDelay": 5})
-    base = "#b9bfc7"
-    assert report["initial"] == {"0": "#111111", "1": "#222222", "2": base, "3": base, "4": base}
+    assert report["initial"] == {"0": "#111111", "1": "#222222"}
     assert report["frames"] >= 5
 
 
@@ -175,8 +175,7 @@ def test_color_mode_does_not_also_halo_the_layer_residues(tmp_path):
     report = _run_dom_harness(_two_layer_bundle(tmp_path), {
         "chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5],
         "steps": [{"name": "hide_a", "set": {"layer-a": False}}]})
-    base = "#b9bfc7"
-    assert report["initial"] == {"0": "#111111", "1": "#222222", "2": base, "3": base, "4": base}
+    assert report["initial"] == {"0": "#111111", "1": "#222222"}
     # Layer visibility must leave the selection overlay alone in colour mode.
     assert report["steps"]["hide_a"]["selection"] == 0
 
@@ -262,7 +261,7 @@ def test_every_export_is_self_contained(tmp_path):
 
 
 def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
-    """A neutral base must be painted explicitly, not left to a colour mode.
+    """base_mode='custom' is OPT-IN; when asked for, it must be complete.
 
     py2Dmol has no flat-grey mode and does not reject an unknown one — ui.js
     falls back to 'auto', i.e. rainbow on a single chain. So the backdrop has
@@ -274,6 +273,7 @@ def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
     digest = hashlib.sha256(cif.read_bytes()).hexdigest()
     manifest = {
         "schema_version": "bindos-inspection-manifest-1",
+        "base_mode": "custom",
         "annotations": [
             {
                 "annotation_id": "a-1",
@@ -317,7 +317,10 @@ def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
 
     page = Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html")).read_text()
     assert "if(baseMode==='custom')" in page, "JS repaint does not gate the base on custom mode"
-    assert 'id="bindos-base-mode"' in page and 'id="bindos-base-color"' in page
+    # There is deliberately NO base-colour control in this panel: colouring the
+    # un-annotated structure is the viewer's Style panel's job, and a second
+    # control for it is a second source of truth.
+    assert 'id="bindos-base-mode"' not in page and 'id="bindos-base-color"' not in page
 
 
 def test_default_render_is_one_file_with_about_tabs(tmp_path):
@@ -479,7 +482,7 @@ def test_bundle_reads_back_cleanly_without_a_browser(tmp_path):
 
     assert state["inspector_version"].startswith("bindos-inspector-")
     assert state["source"]["sha256"] == hashlib.sha256(cif.read_bytes()).hexdigest()
-    assert state["base_mode"] == "custom"
+    assert state["base_mode"] == "chain"   # defaults defer to the viewer Style panel
     assert [l["layer_id"] for l in state["layers"]] == ["L"]
     assert state["layers"][0]["n_annotations"] == 1
     assert state["about"][0]["title"] == "About"
@@ -502,3 +505,37 @@ def test_reader_rejects_a_page_that_is_not_a_bundle(tmp_path):
     stray.write_text("<html><body>not a bundle</body></html>")
     with pytest.raises(ValueError, match="no bindos inspection state"):
         read_inspection_bundle(str(stray))
+
+
+# --- the viewer config the bundle emits ----------------------------------
+# Lives here rather than beside the other chain-colour tests because it needs
+# the renderer: it checks the whole path in the direction it runs, from the
+# config this package emits through the normaliser in core/mol.js that reads
+# it. That normaliser rebuilds `color` from a named whitelist and silently
+# dropped `chain_palette` for a whole revision.
+
+def test_bundle_chain_palette_survives_the_viewers_own_config_normalizer(tmp_path):
+    quickjs = pytest.importorskip("quickjs", reason="QuickJS runs the real mol.js")
+    from tests.test_chain_colors import BROWSER_STUB, MOL_JS
+
+    cif = tmp_path / "f.cif"
+    _fixture(cif)
+    render_inspection_bundle(
+        mmcif_path=str(cif),
+        mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "bindos-inspection-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "out"),
+        extras=True,
+    )
+    color = json.loads((tmp_path / "out" / "inspection.viewer.json").read_text())
+    color = color["viewer"]["config"]["color"]
+    assert color["chain_palette"] == "greys", "renderer stopped asking for greys"
+
+    ctx = quickjs.Context()
+    ctx.eval(BROWSER_STUB)
+    ctx.eval(MOL_JS.read_text())
+    survived = json.loads(ctx.eval(
+        "JSON.stringify(normalizeConfig(" + json.dumps({"color": color}) + ").color)"))
+    assert survived["chain_palette"] == "greys", "config drops the key on the way in"
+    assert survived["mode"] == "chain"

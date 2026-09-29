@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.10"
+INSPECTOR_VERSION = "bindos-inspector-1.12"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -66,7 +66,12 @@ SIZE_TARGET_BYTES = 20 * 1024 * 1024
 _UNSAFE_BLOCK = re.compile(r"(?is)<\s*(script|style|iframe|object|embed)\b[^>]*>.*?<\s*/\s*\1\s*>")
 _UNSAFE_TAG = re.compile(r"(?is)<\s*/?\s*(script|style|iframe|object|embed|link|meta|base|form)\b[^>]*>")
 _UNSAFE_ATTR = re.compile(r"""(?is)\s(on\w+|srcdoc)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""")
-_UNSAFE_URL = re.compile(r"""(?is)(href|src)\s*=\s*(["']?)\s*(javascript|data|vbscript):""")
+# data:image/... is allowed so a figure can be INLINED rather than linked --
+# a bundle is one file, so a linked figure is a figure that does not arrive.
+# Every other data: payload (notably data:text/html) is blocked along with the
+# script pseudo-protocols.
+_UNSAFE_URL = re.compile(
+    r"""(?is)(href|src)\s*=\s*(["']?)\s*(?:javascript:|vbscript:|data:(?!image/(?:png|jpeg|gif|webp|svg\+xml);))""")
 
 
 def _clean_about(body: str) -> str:
@@ -177,7 +182,7 @@ def _validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
     # base_mode is NOT validated against py2Dmol's list here: the page owns that
     # list (getAllValidColorModes registers custom modes such as 'ss' at load)
     # and the control is rebuilt from it at runtime.
-    if not isinstance(value.get("base_mode", "custom"), str):
+    if not isinstance(value.get("base_mode", "chain"), str):
         raise ValueError("base_mode must be a string")
     return value
 
@@ -391,10 +396,6 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bindos-residue[data-on='1']{background:#fef9c3;border-left-color:#eab308}"
         ".bindos-warning{color:#9a3412}"
         ".bp-muted{font-size:11px;color:#64748b}"
-        ".bp-base{display:flex;gap:7px;align-items:center;padding:6px 12px 10px}"
-        ".bp-sel{flex:1;min-width:0;font:12.5px system-ui;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#0f172a}"
-        ".bp-swatch{width:34px;height:26px;padding:0;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer}"
-        ".bp-swatch[disabled]{opacity:.35;cursor:not-allowed}"
         ".bindos-tabs{display:flex;gap:2px;border-bottom:1px solid #e2e8f0;margin:0 0 14px;font:14px system-ui,sans-serif}"
         ".bindos-tab{font:13px system-ui;padding:8px 16px;border:0;background:none;cursor:pointer;color:#64748b;border-bottom:2px solid transparent;margin-bottom:-1px}"
         ".bindos-tab:hover{color:#0f172a}"
@@ -416,7 +417,7 @@ var byId={};s.annotations.forEach(function(a){byId[a.annotation_id]=a;});
 var layerOf={};s.layers.forEach(function(l){layerOf[l.layer_id]=l;});
 var PLACEHOLDER='Click a residue to see every annotation on it.';
 var applying=false,selectedId=null,query='';
-var baseMode=s.base_mode||'custom',baseColor=s.base_color||'#b9bfc7';
+var baseMode=s.base_mode||'chain',baseColor=s.base_color||'#b9bfc7';
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function renderer(){var reg=window.py2dmol_viewers;if(!reg)return null;
@@ -535,45 +536,14 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
   setAllLayers:setAllLayers,onlyLayer:onlyLayer,
   selectAnnotation:function(id){var a=byId[id];if(a){selectedId=id;showDetails(a);
     selectInStructure(a.residue);}}};
-function applyBaseMode(){
-  var r=renderer(),sel=document.getElementById('bindos-base-mode'),
-      sw=document.getElementById('bindos-base-color');
-  if(sw)sw.disabled=(baseMode!=='custom');
-  if(sel&&sel.value!==baseMode)sel.value=baseMode;
-  if(r&&baseMode!=='custom'){
-    // renderer.colorMode alone is inert: the colours sit behind two caches.
-    // This is the same three-step the viewer's own dropdown performs.
-    r.colorMode=baseMode;r.colorsNeedUpdate=true;r.plddtColorsNeedUpdate=true;
-    if(r.colorSelect&&typeof r._colorSelectValue==='function'){
-      try{r.colorSelect.value=r._colorSelectValue();}catch(e){}}}
-  syncVisibleLayers();}
-function buildBaseControl(){
-  var sel=document.getElementById('bindos-base-mode');if(!sel||sel.options.length)return false;
-  // The page owns the mode list — geom.js registers 'ss' at load — so the
-  // options are read from it rather than hardcoded here.
-  var modes=(typeof window.py2dmol_colorModes==='function')?window.py2dmol_colorModes():
-    ['auto','chain','rainbow','plddt','deepmind','entropy','object','hydrophobicity'];
-  var opts=['<option value="custom">Custom colour</option>'];
-  for(var i=0;i<modes.length;i++){var m=modes[i];
-    opts.push('<option value="'+m+'">'+m.charAt(0).toUpperCase()+m.slice(1)+'</option>');}
-  sel.innerHTML=opts.join('');
-  sel.value=baseMode;
-  var sw=document.getElementById('bindos-base-color');
-  if(sw){sw.value=baseColor;sw.disabled=(baseMode!=='custom');
-    sw.addEventListener('input',function(){baseColor=sw.value;
-      if(baseMode!=='custom'){baseMode='custom';sel.value='custom';sw.disabled=false;}
-      applyBaseMode();});}
-  sel.addEventListener('change',function(){baseMode=sel.value;applyBaseMode();});
-  return true;}
-// Touching the viewer's own colour control drops you out of Custom, otherwise
-// the base would silently override whatever it was set to.
+// Colour of the un-annotated structure is the VIEWER's business, set from its
+// own Style panel; there is no duplicate control here. The only thing this page
+// does is honour a manifest that asked for a flat custom base, and stand down
+// the moment the Style panel says otherwise -- otherwise the base would
+// silently override whatever the user just picked.
 document.addEventListener('py2dmol-color-change',function(){
-  var r=renderer();if(!r||!r.colorMode)return;
-  if(baseMode===r.colorMode)return;
-  baseMode=r.colorMode;
-  var sel=document.getElementById('bindos-base-mode');if(sel)sel.value=baseMode;
-  var sw=document.getElementById('bindos-base-color');if(sw)sw.disabled=true;
-  syncVisibleLayers();});
+  var r=renderer();if(!r||!r.colorMode||baseMode===r.colorMode)return;
+  baseMode=r.colorMode;syncVisibleLayers();});
 var tabs=document.querySelectorAll('[data-tab]');
 for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',function(){
   var want=btn.getAttribute('data-tab');
@@ -583,9 +553,8 @@ for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',functi
   for(var j=0;j<panes.length;j++)panes[j].hidden=(panes[j].getAttribute('data-pane')!==want);
   // The canvas is sized on layout; coming back from a hidden pane needs a nudge.
   if(want==='structure'){var r=renderer();if(r)r.render('BindOS tab shown');}});})(tabs[t]);
-var tries=0;(function wait(){buildBaseControl();
-  if(syncVisibleLayers()){applyBaseMode();return;}
-  if(++tries>600)return;requestAnimationFrame(wait);})();
+var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
+  requestAnimationFrame(wait);})();
 })();</script>"""
     panel = (css
              + '<script id="bindos-inspection-state" type="application/json">__STATE__</script>'
@@ -642,11 +611,6 @@ var tries=0;(function wait(){buildBaseControl();
         '<main class="bindos-inspector">'
         f'<section>{viewer_html}</section>'
         '<aside class="bindos-panel">'
-        '<div class="bp-head"><h2>Base colour</h2></div>'
-        '<div class="bp-base">'
-        '<select id="bindos-base-mode" class="bp-sel"></select>'
-        '<input type="color" id="bindos-base-color" class="bp-swatch" title="pick the flat base colour">'
-        '</div>'
         '<div class="bp-head"><h2>Layers</h2><div class="bp-btns">'
         '<button type="button" class="bp-btn" id="bindos-layers-all">All</button>'
         '<button type="button" class="bp-btn" id="bindos-layers-none">None</button>'
@@ -673,6 +637,8 @@ def render_inspection_bundle(
     output_name: str = "inspection",
     display_options: dict[str, Any] | None = None,
     extras: bool = False,
+    morph_to: list[dict[str, Any]] | None = None,
+    morph_steps: int = 12,
 ) -> dict[str, Any]:
     """Render ONE self-contained HTML bundle (plus, on request, audit files).
 
@@ -701,7 +667,7 @@ def render_inspection_bundle(
     root.mkdir(parents=True, exist_ok=True)
     base = _safe_output(root, output_name)
     options = dict(display_options or {})
-    allowed_options = {"width", "height", "style", "color", "background"}
+    allowed_options = {"width", "height", "style", "color", "background", "chain_palette"}
     unknown_options = set(options) - allowed_options
     if unknown_options:
         raise ValueError(f"unsupported display options: {sorted(unknown_options)}")
@@ -709,7 +675,11 @@ def render_inspection_bundle(
     viewer = py2Dmol.view(
         size=(int(options.get("width", 720)), int(options.get("height", 720))),
         style=options.get("style", "tube"),
+        # Chain identity in neutral greys (see chainPaletteFor in core/mol.js), so
+        # hue stays free for the annotation layers. Recoloured from the viewer's
+        # own Style panel rather than from a bespoke control in the side panel.
         color=options.get("color", "chain"),
+        chain_palette=options.get("chain_palette", "greys"),
         bg=options.get("background", "white"),
         gpu=False,
         controls=True,
@@ -730,7 +700,21 @@ def render_inspection_bundle(
     # worked. tests/test_bindos_renderer.py::test_every_export_is_self_contained
     # renders twice in one process and fails if the second borrows.
     viewer._share_library = False
-    viewer.add_pdb(str(source), use_biounit=False, filter_additives=False, load_ligands=True, name="prepared-target")
+    morph_report = None
+    if morph_to:
+        # A MORPH IS ONE OBJECT WITH MANY FRAMES, which is what keeps the
+        # colouring still. Layer colour is written per POSITION onto the object
+        # (see _color_annotations), so it is shared by every frame -- the
+        # structure moves and the annotation stays on the residue it names.
+        keys, names, frames, morph_report = _morph_frames(source, morph_to, morph_steps)
+        chain_ids = [k[0] for k in keys]
+        residue_numbers = [k[1] for k in keys]
+        for index, coords in enumerate(frames):
+            viewer.add(np.asarray(coords, dtype=float), chains=chain_ids, residue_numbers=residue_numbers,
+                       position_names=names, name="prepared-target",
+                       align=(index == 0), allow_reflection=False)
+    else:
+        viewer.add_pdb(str(source), use_biounit=False, filter_additives=False, load_ligands=True, name="prepared-target")
     if not any(item.get("frames") for item in viewer.objects):
         raise ValueError("py2Dmol could not load a renderable structure")
     layers = _layers(manifest["annotations"])
@@ -738,11 +722,11 @@ def render_inspection_bundle(
     if highlight == "color":
         _color_annotations(viewer, manifest["annotations"], layers,
                            base_color=manifest.get("base_color", BASE_COLOR),
-                           paint_base=manifest.get("base_mode", "custom") == "custom")
+                           paint_base=manifest.get("base_mode", "chain") == "custom")
     state = {
         "highlight": highlight,
         "base_color": manifest.get("base_color", BASE_COLOR),
-        "base_mode": manifest.get("base_mode", "custom"),
+        "base_mode": manifest.get("base_mode", "chain"),
         "schema_version": "bindos-viewer-state-1",
         "inspector_version": INSPECTOR_VERSION,
         "upstream_revision": UPSTREAM_REVISION,
@@ -751,6 +735,7 @@ def render_inspection_bundle(
         "annotations": manifest["annotations"],
         "overlays": manifest.get("overlays", []),
         "about": _about_tabs(manifest.get("about")),
+        "morph": morph_report,
         "viewer": {"config": viewer.config, "objects": viewer.objects},
     }
     html_path = base.with_suffix(".html")
@@ -782,6 +767,7 @@ def render_inspection_bundle(
         "layer_count": len(state["layers"]),
         "annotation_count": len(state["annotations"]),
         "about_tabs": [item["title"] for item in state.get("about") or []],
+        "morph": morph_report,
         "artifacts": artifacts,
     }
     html_bytes = html_path.stat().st_size
@@ -889,3 +875,88 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
         "annotations": state.get("annotations", []),
         "residues": residues,
     }
+
+
+def _ca_trace(cif_path: Path) -> dict[tuple[str, int], tuple[str, list[float]]]:
+    """{(chain, author_resnum): (residue_name, xyz)} for CA/C4' only.
+
+    Raises on a duplicate key: an insertion code or an altloc that collapses two
+    residues onto one address makes the residue mapping ambiguous, and a morph
+    built on an ambiguous mapping silently interpolates the wrong pairs.
+    """
+    structure = MMCIFParser(QUIET=True).get_structure(cif_path.stem, str(cif_path))
+    models = list(structure.get_models())
+    if len(models) != 1:
+        raise ValueError(f"{cif_path.name}: a morph conformer needs exactly one model")
+    out: dict[tuple[str, int], tuple[str, list[float]]] = {}
+    for chain in models[0]:
+        for residue in chain:
+            atom = residue.child_dict.get("CA") or residue.child_dict.get("C4'")
+            if atom is None or residue.id[0] != " ":
+                continue
+            key = (chain.id, int(residue.id[1]))
+            if key in out:
+                raise ValueError(
+                    f"{cif_path.name}: residue {key} appears twice, so the mapping between "
+                    "conformers is ambiguous; renumber or split the file before morphing")
+            out[key] = (residue.get_resname(), [float(v) for v in atom.coord])
+    return out
+
+
+def _superpose(mobile: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Kabsch, reflection forbidden. Returns `mobile` moved onto `target`."""
+    mc, tc = mobile - mobile.mean(0), target - target.mean(0)
+    v, _, wt = np.linalg.svd(mc.T @ tc)
+    d = np.sign(np.linalg.det(v @ wt))
+    rotation = v @ np.diag([1.0, 1.0, d]) @ wt
+    return mc @ rotation + target.mean(0)
+
+
+def _morph_frames(reference: Path, conformers: list[dict[str, Any]], steps: int):
+    """Interpolate between superposed conformers that share an exact residue mapping.
+
+    Returns (keys, residue_names, frames, report). Cartesian interpolation is a
+    depiction of the endpoints, NOT a pathway: intermediates are not physical
+    and bond geometry is not preserved. It is here because seeing domain II
+    swing out says more about why an epitope is or is not reachable than two
+    static pictures side by side.
+
+    The residue mapping must be EXACT -- same (chain, author number) set in
+    every conformer. Anything else is refused rather than silently intersected,
+    because a morph over a quiet intersection looks just as smooth while
+    interpolating the wrong pairs.
+    """
+    ref = _ca_trace(reference)
+    keys = sorted(ref)
+    names = [ref[k][0] for k in keys]
+    base = np.array([ref[k][1] for k in keys], dtype=float)
+
+    stacks, labels = [base], ["reference"]
+    for entry in conformers:
+        path = Path(entry["path"]).resolve()
+        digest = _sha256(path)
+        if entry.get("sha256") and entry["sha256"] != digest:
+            raise ValueError(f"{path.name}: morph conformer hash does not match")
+        other = _ca_trace(path)
+        if set(other) != set(ref):
+            only_ref = sorted(set(ref) - set(other))[:6]
+            only_other = sorted(set(other) - set(ref))[:6]
+            raise ValueError(
+                f"{path.name}: residue mapping is not exact -- "
+                f"{len(set(ref) - set(other))} residues only in the reference "
+                f"(e.g. {only_ref}), {len(set(other) - set(ref))} only here (e.g. {only_other}). "
+                "Prepare both files over the same residue range before morphing.")
+        stacks.append(_superpose(np.array([other[k][1] for k in keys], dtype=float), base))
+        labels.append(entry.get("label") or path.stem)
+
+    frames, rmsds = [], []
+    for index in range(len(stacks) - 1):
+        start, end = stacks[index], stacks[index + 1]
+        rmsds.append(float(np.sqrt(((start - end) ** 2).sum(1).mean())))
+        for step in range(steps):
+            t = step / float(steps)
+            frames.append(start * (1.0 - t) + end * t)
+    frames.append(stacks[-1])
+    report = {"conformers": labels, "steps_between": steps, "n_frames": len(frames),
+              "n_residues": len(keys), "endpoint_rmsd_A": [round(v, 2) for v in rmsds]}
+    return keys, names, frames, report
