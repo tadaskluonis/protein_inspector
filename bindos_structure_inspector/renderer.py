@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.9"
+INSPECTOR_VERSION = "bindos-inspector-1.10"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -796,3 +796,96 @@ def render_inspection_bundle(
         compact_path.write_text(json.dumps(compact, indent=2, sort_keys=True) + "\n")
         compact["manifest"] = {"path": str(compact_path), "sha256": _sha256(compact_path), "size_bytes": compact_path.stat().st_size, "media_type": "application/json"}
     return compact
+
+
+def read_inspection_bundle(html_path: str) -> dict[str, Any]:
+    """Recover the full inspection state from a rendered bundle. The inverse of render.
+
+    A bundle is one self-contained HTML file, which is right for a reader and
+    unhelpful for a program unless the machine-readable part is a supported
+    surface rather than something to scrape. It is: the whole state -- layers,
+    annotations, residue coordinates, About bodies, the source digest -- is one
+    JSON object in `<script id="bindos-inspection-state">`, and this reads it
+    back without a browser, an HTML parser, or any third-party package.
+
+    Returns a dict with:
+      inspector_version, schema_version, source {path, sha256}, highlight,
+      base_mode, base_color
+      layers       [{layer_id, label, color, visible, n_annotations}]
+      about        [{title, body_html}]
+      annotations  the manifest's annotations, verbatim
+      residues     one flat row per modelled residue -- chain_id,
+                   author_residue_number, canonical_position, residue_name,
+                   x, y, z, plddt, color, layers[], labels[] -- which is the
+                   table most callers actually want and is CSV-ready as-is.
+
+    >>> state = read_inspection_bundle("inspection.html")
+    >>> [r for r in state["residues"] if "ph_anchor" in r["layers"]]
+    """
+    text = Path(html_path).read_text(encoding="utf-8")
+    match = re.search(
+        r'<script id="bindos-inspection-state" type="application/json">(.*?)</script>',
+        text, re.S)
+    if not match:
+        raise ValueError(f"{html_path} carries no bindos inspection state")
+    # `_html` escapes "</" as "<\/" so the payload cannot close its own tag.
+    state = json.loads(match.group(1).replace("<\\/", "</"))
+
+    by_residue: dict[tuple[str, int], dict[str, Any]] = {}
+    for item in state.get("annotations", []):
+        if not item.get("resolved"):
+            continue
+        res = item["residue"]
+        key = (str(res["chain_id"]), int(res["author_residue_number"]))
+        slot = by_residue.setdefault(key, {"layers": [], "labels": [], "color": None})
+        slot["layers"].append(item.get("layer_id") or item["kind"])
+        slot["labels"].append(item["label"])
+        if item.get("color"):
+            slot["color"] = item["color"]      # last layer wins, as on screen
+
+    frames = (state.get("viewer", {}).get("objects") or [{}])[0].get("frames") or [{}]
+    frame = frames[0]
+    chains = frame.get("chains") or []
+    numbers = frame.get("residue_numbers") or []
+    coords = frame.get("coords") or []
+    names = frame.get("position_names") or []
+    plddts = frame.get("plddts") or []
+
+    residues = []
+    for index in range(len(chains)):
+        key = (str(chains[index]), int(numbers[index]))
+        extra = by_residue.get(key, {})
+        xyz = coords[index] if index < len(coords) else [None, None, None]
+        residues.append({
+            "chain_id": key[0],
+            "author_residue_number": key[1],
+            "canonical_position": index + 1,
+            "residue_name": names[index] if index < len(names) else None,
+            "x": xyz[0], "y": xyz[1], "z": xyz[2],
+            "plddt": plddts[index] if index < len(plddts) else None,
+            "color": extra.get("color"),
+            "layers": extra.get("layers", []),
+            "labels": extra.get("labels", []),
+        })
+
+    counts: dict[str, int] = {}
+    for item in state.get("annotations", []):
+        key = item.get("layer_id") or item["kind"]
+        counts[key] = counts.get(key, 0) + 1
+    layers = [dict(layer, n_annotations=counts.get(layer["layer_id"], 0))
+              for layer in state.get("layers", [])]
+    for layer in layers:
+        layer.pop("annotation_ids", None)
+
+    return {
+        "inspector_version": state.get("inspector_version"),
+        "schema_version": state.get("schema_version"),
+        "source": state.get("source"),
+        "highlight": state.get("highlight"),
+        "base_mode": state.get("base_mode"),
+        "base_color": state.get("base_color"),
+        "layers": layers,
+        "about": state.get("about", []),
+        "annotations": state.get("annotations", []),
+        "residues": residues,
+    }

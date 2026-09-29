@@ -4,7 +4,7 @@ from pathlib import Path
 
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 
-from bindos_structure_inspector import render_inspection_bundle
+from bindos_structure_inspector import read_inspection_bundle, render_inspection_bundle
 
 
 def _fixture(path: Path) -> None:
@@ -447,3 +447,58 @@ def test_base_color_must_be_a_hex_value(tmp_path):
                                  "annotations": [], "base_color": "grey"},
             output_dir=str(tmp_path / "out"),
         )
+
+
+def test_bundle_reads_back_cleanly_without_a_browser(tmp_path):
+    """The bundle must be machine-readable as a supported call, not by scraping.
+
+    One file is right for a reader and useless to a program unless the
+    machine-readable part is an interface. Everything a caller needs comes back
+    from the HTML alone: layers, annotations, About bodies, and a flat
+    per-residue table with coordinates.
+    """
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    manifest = {
+        "schema_version": "bindos-inspection-manifest-1",
+        "about": "context that must survive the round trip",
+        "annotations": [
+            {"annotation_id": "a-1", "kind": "custom", "label": "probe two",
+             "layer_id": "L", "layer_label": "Layer L", "color": "#dc2626", "resolved": True,
+             "residue": {"component_id": "t", "canonical_position": 2, "chain_id": "A",
+                         "author_residue_number": 2},
+             "evidence_ids": ["e"], "method": "test"},
+        ],
+    }
+    out = tmp_path / "out"
+    render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest=manifest, output_dir=str(out),
+    )
+    state = read_inspection_bundle(str(out / "inspection.html"))
+
+    assert state["inspector_version"].startswith("bindos-inspector-")
+    assert state["source"]["sha256"] == hashlib.sha256(cif.read_bytes()).hexdigest()
+    assert state["base_mode"] == "custom"
+    assert [l["layer_id"] for l in state["layers"]] == ["L"]
+    assert state["layers"][0]["n_annotations"] == 1
+    assert state["about"][0]["title"] == "About"
+    assert "must survive" in state["about"][0]["body_html"]
+
+    rows = state["residues"]
+    assert len(rows) == 5, "every modelled residue should appear once"
+    assert [r["canonical_position"] for r in rows] == [1, 2, 3, 4, 5]
+    hit = [r for r in rows if r["author_residue_number"] == 2][0]
+    assert hit["layers"] == ["L"] and hit["labels"] == ["probe two"]
+    assert hit["color"] == "#dc2626"
+    assert hit["residue_name"] == "ALA"
+    assert all(isinstance(r["x"], (int, float)) for r in rows), "coordinates did not survive"
+    assert [r for r in rows if r["author_residue_number"] == 1][0]["layers"] == []
+
+
+def test_reader_rejects_a_page_that_is_not_a_bundle(tmp_path):
+    import pytest
+    stray = tmp_path / "other.html"
+    stray.write_text("<html><body>not a bundle</body></html>")
+    with pytest.raises(ValueError, match="no bindos inspection state"):
+        read_inspection_bundle(str(stray))

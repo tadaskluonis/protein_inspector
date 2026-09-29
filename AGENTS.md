@@ -83,6 +83,39 @@ Pass `extras=True` only when you need the audit set — `.viewer.json`, `.svg`,
 `canonical_position` shows up, so use it while checking your own annotations,
 then re-render without it for the copy you hand over.
 
+## Reading a bundle back (inspector 1.10)
+
+A bundle is one file, which is right for a reader and useless to a program
+unless the machine-readable part is a supported surface rather than something
+to scrape. It is one: `read_inspection_bundle(path)` is the inverse of
+`render_inspection_bundle` and needs no browser, no HTML parser and no
+third-party package.
+
+```python
+from bindos_structure_inspector import read_inspection_bundle
+state = read_inspection_bundle("inspection.html")
+[r for r in state["residues"] if "ph_anchor" in r["layers"]]
+```
+
+It returns `inspector_version`, `schema_version`, `source` (path + sha256 of
+the mmCIF it was built from), `highlight`, `base_mode`, `base_color`, the
+`layers` (with `n_annotations`), the `about` bodies, the `annotations`
+verbatim, and **`residues`** — one flat row per modelled residue carrying
+`chain_id`, `author_residue_number`, `canonical_position`, `residue_name`,
+`x/y/z`, `plddt`, `color`, `layers[]` and `labels[]`. That table is what most
+callers want and is CSV-ready as it stands.
+
+There is a CLI for callers that would rather not import:
+
+```
+python -m bindos_structure_inspector inspection.html            # whole state
+python -m bindos_structure_inspector inspection.html residues   # just the table
+```
+
+Prefer this to `extras=True` when the goal is to consume the data. Reach for
+`extras=True` only while auditing your own annotations, where the point is to
+eyeball the viewer state as it was written.
+
 ## The inspection panel (inspector 1.4)
 
 The panel is emitted by `render_inspection_bundle`. Do not re-implement or
