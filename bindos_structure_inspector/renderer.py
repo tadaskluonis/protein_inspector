@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.12"
+INSPECTOR_VERSION = "bindos-inspector-1.13"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -349,8 +349,29 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
     payload = json.dumps(state, separators=(",", ":")).replace("</", "<\\/")
     css = (
         "<style>"
+        "html,body{margin:0;background:#fff}body{padding:14px;box-sizing:border-box}"
         ".bindos-inspector{font:14px/1.45 system-ui,sans-serif;display:grid;"
-        "grid-template-columns:minmax(0,1fr) 360px;gap:14px;color:#0f172a}"
+        "grid-template-columns:minmax(0,1fr) 360px;gap:14px;color:#0f172a;align-items:start}"
+        # THE VIEWER IS A FIXED 948px BOX (py2Dmol sets that width on
+        # .py2dmol-viewer-instance). In a narrow frame -- an embedded panel, a
+        # split editor pane, a chat artifact tile -- an unconstrained grid
+        # column lets that box paint straight over the Layers panel beside it,
+        # and the Orient/Focus/Rotate controls then swallow clicks meant for
+        # the layer checkboxes underneath. The stage is the clamp: min-width:0
+        # lets the column shrink below its content, and the scroller keeps the
+        # overflow inside the stage instead of on top of the panel.
+        ".bindos-stage{position:relative;min-width:0;overflow-x:auto;padding-top:30px}"
+        "#bindos-controls{position:absolute;top:0;right:2px;z-index:4}"
+        ".bindos-morph{display:flex;flex-wrap:wrap;align-items:center;gap:6px;"
+        "padding:0 0 8px;max-width:calc(100% - 120px)}"
+        ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff;border-color:#0f172a}"
+        ".bm-btn[disabled]{opacity:.45;cursor:default}"
+        # Collapsing the controls also releases the 948px, so the canvas alone
+        # can use the whole narrow column rather than sitting in a fixed gutter.
+        ".bindos-stage[data-controls='0'] #controlsContainer{display:none!important}"
+        ".bindos-stage[data-controls='0'] .py2dmol-viewer-instance{width:auto}"
+        "@media (max-width:1340px){.bindos-inspector{grid-template-columns:minmax(0,1fr)}"
+        ".bindos-panel{max-height:60vh}}"
         ".bindos-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:880px;overflow:auto;"
         "display:flex;flex-direction:column;background:#fff}"
         ".bp-head{position:sticky;top:0;z-index:2;background:#fff;display:flex;justify-content:space-between;"
@@ -544,6 +565,77 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
 document.addEventListener('py2dmol-color-change',function(){
   var r=renderer();if(!r||!r.colorMode||baseMode===r.colorMode)return;
   baseMode=r.colorMode;syncVisibleLayers();});
+// MORPH, EXPANDED HERE RATHER THAN SHIPPED. The file carries one frame per
+// conformation; the frames between them are a straight line, so the page works
+// them out once on load instead of the bundle carrying (N-1)*steps coordinate
+// sets it could have derived. Cartesian interpolation is a depiction of the
+// endpoints, not a pathway -- the intermediates are not physical.
+var morph=(s.morph&&s.morph.mode==='browser')?s.morph:null,
+    morphSteps=(morph&&morph.steps_between)||12,morphAt=0,morphBusy=false,morphReady=false;
+function morphNow(){return (window.performance&&window.performance.now)
+  ?window.performance.now():Date.now();}
+function morphObject(){var r=renderer();if(!r)return null;
+  var name=r.currentObjectName||'prepared-target';
+  return (r.objectsData&&r.objectsData[name])||null;}
+function morphFrameOf(i){return i*morphSteps;}
+function expandMorph(){
+  if(!morph||morphReady)return;
+  var r=renderer(),obj=morphObject(),n=morph.conformers.length;
+  if(!r||!obj||!obj.frames||obj.frames.length<n)return;
+  if(obj.frames.length===n){
+    var ends=obj.frames.slice(),out=[];
+    for(var i=0;i<ends.length-1;i++){
+      var a=ends[i].coords,b=ends[i+1].coords;
+      out.push(ends[i]);
+      for(var st=1;st<morphSteps;st++){
+        var t=st/morphSteps,c=new Array(a.length);
+        for(var k=0;k<a.length;k++){
+          c[k]=[a[k][0]+(b[k][0]-a[k][0])*t,a[k][1]+(b[k][1]-a[k][1])*t,
+                a[k][2]+(b[k][2]-a[k][2])*t];}
+        var mid={};for(var key in ends[i])mid[key]=ends[i][key];
+        mid.coords=c;mid.pae=undefined;out.push(mid);}}
+    out.push(ends[ends.length-1]);
+    obj.frames=out;
+    if(typeof r.updateUIControls==='function')r.updateUIControls();}
+  morphReady=true;setMorphButtons(0);}
+function setMorphButtons(active){
+  var bs=document.querySelectorAll('.bm-btn');
+  for(var i=0;i<bs.length;i++)bs[i].setAttribute('aria-pressed',
+    String(Number(bs[i].getAttribute('data-conf'))===active));
+  var note=document.getElementById('bindos-morph-note');
+  if(note&&morph){var c=morph.conformers[active];
+    note.textContent=c?(c.rmsd_to_reference_A?c.rmsd_to_reference_A+' \u00c5 C\u03b1 RMSD from '
+      +morph.conformers[0].label:'reference'):'';}}
+function goMorph(target){
+  var r=renderer();if(!morph||!r||morphBusy||target===morphAt)return;
+  expandMorph();if(!morphReady)return;
+  morphBusy=true;
+  var from=morphFrameOf(morphAt),to=morphFrameOf(target),
+      t0=morphNow(),
+      dur=Math.max(260,Math.abs(to-from)*36);
+  (function step(){
+    var p=Math.min(1,(morphNow()-t0)/dur),e=p<0.5?2*p*p:-1+(4-2*p)*p;
+    r.setFrame(Math.round(from+(to-from)*e));
+    if(p<1){requestAnimationFrame(step);return;}
+    morphAt=target;morphBusy=false;setMorphButtons(target);})();}
+var morphBtns=document.querySelectorAll('.bm-btn');
+for(var mb=0;mb<morphBtns.length;mb++)(function(btn){
+  btn.addEventListener('click',function(){goMorph(Number(btn.getAttribute('data-conf')));});
+})(morphBtns[mb]);
+// CONTROLS COLLAPSE. Auto only until the reader decides: a bundle opened in a
+// narrow frame starts with the viewer's own control column folded away, so the
+// Layers panel is clickable on first paint, but one click on the button pins
+// the choice and resizing never overrides it again.
+var stage=document.getElementById('bindos-stage'),ctlBtn=document.getElementById('bindos-controls'),
+    ctlPinned=false;
+function setControls(on){if(!stage)return;stage.setAttribute('data-controls',on?'1':'0');
+  if(ctlBtn){ctlBtn.textContent=on?'Hide controls':'Show controls';
+    ctlBtn.setAttribute('aria-pressed',on?'true':'false');}
+  var r=renderer();if(r)r.render('BindOS controls toggle');}
+function autofitControls(){if(ctlPinned||!stage)return;setControls(stage.clientWidth>=964);}
+if(ctlBtn)ctlBtn.addEventListener('click',function(){ctlPinned=true;
+  setControls(stage.getAttribute('data-controls')!=='1');});
+window.addEventListener('resize',autofitControls);
 var tabs=document.querySelectorAll('[data-tab]');
 for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',function(){
   var want=btn.getAttribute('data-tab');
@@ -553,7 +645,8 @@ for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',functi
   for(var j=0;j<panes.length;j++)panes[j].hidden=(panes[j].getAttribute('data-pane')!==want);
   // The canvas is sized on layout; coming back from a hidden pane needs a nudge.
   if(want==='structure'){var r=renderer();if(r)r.render('BindOS tab shown');}});})(tabs[t]);
-var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
+var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
+  if((ok&&(!morph||morphReady))||++tries>600){autofitControls();return;}
   requestAnimationFrame(wait);})();
 })();</script>"""
     panel = (css
@@ -589,6 +682,21 @@ var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
         )
     rows = "".join(groups)
 
+    # ONE BUTTON PER CONFORMATION, not a scrub bar. A slider asks the reader to
+    # find the endpoints; a button says where it is going and gets there.
+    morph = state.get("morph") or {}
+    morphbar = ""
+    if morph.get("mode") == "browser":
+        buttons = "".join(
+            '<button type="button" class="bp-btn bm-btn" '
+            f'data-conf="{index}" aria-pressed="{"true" if index == 0 else "false"}">'
+            f'{html.escape(item["label"])}</button>'
+            for index, item in enumerate(morph.get("conformers", []))
+        )
+        morphbar = ('<div class="bindos-morph" id="bindos-morph">'
+                    '<span class="bp-muted">Conformation</span>'
+                    f'{buttons}<span class="bp-muted" id="bindos-morph-note"></span></div>')
+
     about = state.get("about") or []
     tabstrip = ""
     panes_open, panes_close = "", ""
@@ -609,7 +717,10 @@ var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
         '<title>BindOS structure inspection</title></head><body>'
         f'{tabstrip}{panes_open}'
         '<main class="bindos-inspector">'
-        f'<section>{viewer_html}</section>'
+        '<section class="bindos-stage" id="bindos-stage" data-controls="1">'
+        '<button type="button" class="bp-btn" id="bindos-controls" '
+        'aria-pressed="true">Hide controls</button>'
+        f'{morphbar}{viewer_html}</section>'
         '<aside class="bindos-panel">'
         '<div class="bp-head"><h2>Layers</h2><div class="bp-btns">'
         '<button type="button" class="bp-btn" id="bindos-layers-all">All</button>'
@@ -637,6 +748,9 @@ def render_inspection_bundle(
     output_name: str = "inspection",
     display_options: dict[str, Any] | None = None,
     extras: bool = False,
+    conformers: list[dict[str, Any]] | None = None,
+    morph_mapping: str = "exact",
+    morph_reference_label: str = "reference",
     morph_to: list[dict[str, Any]] | None = None,
     morph_steps: int = 12,
 ) -> dict[str, Any]:
@@ -701,7 +815,27 @@ def render_inspection_bundle(
     # renders twice in one process and fails if the second borrows.
     viewer._share_library = False
     morph_report = None
-    if morph_to:
+    if conformers and morph_to:
+        raise ValueError("pass either conformers= or morph_to=, not both")
+    if conformers:
+        # ENDPOINTS ONLY. The intermediates are a straight line between two
+        # coordinate sets, so shipping them is shipping a number the reader's
+        # own machine can work out: N conformers cost N frames here and the
+        # page expands them to N + (N-1)*steps on load. At 600 residues that
+        # is the difference between 15 frames and 3 in the file.
+        keys, names, stacks, labels, morph_report = _conformer_stacks(
+            source, conformers, morph_mapping, morph_reference_label)
+        chain_ids = [k[0] for k in keys]
+        residue_numbers = [k[1] for k in keys]
+        for index, coords in enumerate(stacks):
+            viewer.add(np.asarray(coords, dtype=float), chains=chain_ids,
+                       residue_numbers=residue_numbers, position_names=names,
+                       name="prepared-target", align=(index == 0), allow_reflection=False)
+        morph_report["mode"] = "browser"
+        morph_report["steps_between"] = int(morph_steps)
+        morph_report["frames_in_file"] = len(stacks)
+        morph_report["frames_after_expansion"] = (len(stacks) - 1) * int(morph_steps) + 1
+    elif morph_to:
         # A MORPH IS ONE OBJECT WITH MANY FRAMES, which is what keeps the
         # colouring still. Layer colour is written per POSITION onto the object
         # (see _color_annotations), so it is shared by every frame -- the
@@ -912,43 +1046,79 @@ def _superpose(mobile: np.ndarray, target: np.ndarray) -> np.ndarray:
     return mc @ rotation + target.mean(0)
 
 
-def _morph_frames(reference: Path, conformers: list[dict[str, Any]], steps: int):
-    """Interpolate between superposed conformers that share an exact residue mapping.
+def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
+                      mapping: str = "exact", reference_label: str = "reference"):
+    """Superpose any number of conformers onto a shared residue mapping.
 
-    Returns (keys, residue_names, frames, report). Cartesian interpolation is a
-    depiction of the endpoints, NOT a pathway: intermediates are not physical
-    and bond geometry is not preserved. It is here because seeing domain II
-    swing out says more about why an epitope is or is not reachable than two
-    static pictures side by side.
+    Returns (keys, residue_names, stacks, labels, report) where `stacks` holds
+    one (n_residues, 3) array per conformer, reference first.
 
-    The residue mapping must be EXACT -- same (chain, author number) set in
-    every conformer. Anything else is refused rather than silently intersected,
-    because a morph over a quiet intersection looks just as smooth while
-    interpolating the wrong pairs.
+    `mapping="exact"` is the default and refuses anything but an identical
+    (chain, author number) set across every file: a morph over a quietly
+    intersected mapping looks just as smooth while interpolating the wrong
+    pairs. `mapping="intersection"` opts in to the common residues -- which is
+    what comparing a crystal chain against a full-length prediction needs --
+    and the report then names how many residues each file lost, so a dropped
+    epitope cannot pass unnoticed.
     """
+    if mapping not in {"exact", "intersection"}:
+        raise ValueError('morph_mapping must be "exact" or "intersection"')
     ref = _ca_trace(reference)
-    keys = sorted(ref)
-    names = [ref[k][0] for k in keys]
-    base = np.array([ref[k][1] for k in keys], dtype=float)
-
-    stacks, labels = [base], ["reference"]
+    traces, labels, digests = [ref], [reference_label], [_sha256(reference)]
     for entry in conformers:
         path = Path(entry["path"]).resolve()
         digest = _sha256(path)
         if entry.get("sha256") and entry["sha256"] != digest:
             raise ValueError(f"{path.name}: morph conformer hash does not match")
-        other = _ca_trace(path)
-        if set(other) != set(ref):
-            only_ref = sorted(set(ref) - set(other))[:6]
-            only_other = sorted(set(other) - set(ref))[:6]
-            raise ValueError(
-                f"{path.name}: residue mapping is not exact -- "
-                f"{len(set(ref) - set(other))} residues only in the reference "
-                f"(e.g. {only_ref}), {len(set(other) - set(ref))} only here (e.g. {only_other}). "
-                "Prepare both files over the same residue range before morphing.")
-        stacks.append(_superpose(np.array([other[k][1] for k in keys], dtype=float), base))
+        traces.append(_ca_trace(path))
         labels.append(entry.get("label") or path.stem)
+        digests.append(digest)
 
+    common = set(ref)
+    for trace in traces[1:]:
+        common &= set(trace)
+    dropped = []
+    for label, trace in zip(labels, traces):
+        missing = len(set(trace) - common)
+        dropped.append(missing)
+        if mapping == "exact" and (missing or len(trace) != len(common)):
+            only_here = sorted(set(trace) - common)[:6]
+            raise ValueError(
+                f"{label}: residue mapping is not exact -- {missing} residues are not "
+                f"shared by every conformer (e.g. {only_here}). Prepare the files over "
+                'the same residue range, or pass morph_mapping="intersection".')
+    if len(common) < 4:
+        raise ValueError("conformers share fewer than 4 residues; nothing to superpose")
+
+    keys = sorted(common)
+    names = [ref[k][0] for k in keys]
+    base = np.array([ref[k][1] for k in keys], dtype=float)
+    stacks = [base] + [_superpose(np.array([t[k][1] for k in keys], dtype=float), base)
+                       for t in traces[1:]]
+    report = {
+        "mapping": mapping,
+        "n_residues": len(keys),
+        "residue_range": [int(keys[0][1]), int(keys[-1][1])],
+        "conformers": [
+            {"label": label, "sha256": digest, "residues_dropped": drop,
+             "rmsd_to_reference_A": round(float(np.sqrt(((stack - base) ** 2).sum(1).mean())), 2)}
+            for label, digest, drop, stack in zip(labels, digests, dropped, stacks)
+        ],
+    }
+    return keys, names, stacks, labels, report
+
+
+def _morph_frames(reference: Path, conformers: list[dict[str, Any]], steps: int):
+    """Pre-expanded Cartesian morph: every intermediate written into the file.
+
+    Kept for callers that want the frames on disk. `conformers=` on
+    `render_inspection_bundle` is the cheaper route -- it ships the endpoints
+    only and the page interpolates on demand, which is the same picture for a
+    fraction of the bytes. Cartesian interpolation is a depiction of the
+    endpoints, NOT a pathway: intermediates are not physical and bond geometry
+    is not preserved.
+    """
+    keys, names, stacks, labels, report = _conformer_stacks(reference, conformers, "exact")
     frames, rmsds = [], []
     for index in range(len(stacks) - 1):
         start, end = stacks[index], stacks[index + 1]

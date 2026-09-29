@@ -8,13 +8,13 @@ from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 from bindos_structure_inspector import read_inspection_bundle, render_inspection_bundle
 
 
-def _fixture(path: Path) -> None:
+def _fixture(path: Path, n: int = 5, bend: float = 0.0) -> None:
     structure = Structure.Structure("fixture")
     model = Model.Model(0)
     chain = Chain.Chain("A")
-    for index in range(1, 6):
+    for index in range(1, n + 1):
         residue = Residue.Residue((" ", index, " "), "ALA", " ")
-        residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2), 0.0), 0.0, 1.0, " ", "CA", index, element="C"))
+        residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2) + bend * index, 0.0), 0.0, 1.0, " ", "CA", index, element="C"))
         chain.add(residue)
     model.add(chain)
     structure.add(model)
@@ -539,3 +539,98 @@ def test_bundle_chain_palette_survives_the_viewers_own_config_normalizer(tmp_pat
         "JSON.stringify(normalizeConfig(" + json.dumps({"color": color}) + ").color)"))
     assert survived["chain_palette"] == "greys", "config drops the key on the way in"
     assert survived["mode"] == "chain"
+
+
+def _morph_bundle(tmp_path, n_conformers=3, mapping="exact", steps=6, ragged=False):
+    """Reference plus n-1 conformers that differ by a real internal change.
+
+    A rigid translation would be removed by the superposition, so each
+    conformer bends instead. `ragged` shortens each conformer by one residue,
+    which is what "exact" must refuse and "intersection" must report.
+    """
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif, n=8)
+    others = []
+    for index in range(1, n_conformers):
+        other = tmp_path / f"conf{index}.cif"
+        _fixture(other, n=8 - (index if ragged else 0), bend=index * 2.0)
+        others.append({"path": str(other), "label": f"State {index}"})
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        output_dir=str(tmp_path / "out"), conformers=others,
+        morph_mapping=mapping, morph_steps=steps, morph_reference_label="Start")
+    html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
+    return result, Path(html)
+
+
+def test_conformers_ship_endpoints_only_and_the_page_expands_them(tmp_path):
+    """The whole point of browser-side morphing: N frames in, N+(N-1)*steps out."""
+    result, html = _morph_bundle(tmp_path, n_conformers=3, steps=6)
+    assert result["morph"]["mode"] == "browser"
+    assert result["morph"]["frames_in_file"] == 3
+    assert result["morph"]["frames_after_expansion"] == 13
+    # Three frames on disk, not thirteen.
+    state = json.loads(html.read_text().split('id="bindos-inspection-state" type="application/json">')[1]
+                       .split("</script>")[0].replace("<\\/", "</"))
+    assert len(state["viewer"]["objects"][0]["frames"]) == 3
+
+    report = _run_dom_harness(html, {"chains": ["A"] * 8, "residueNumbers": [1, 2, 3, 4, 5, 6, 7, 8]})
+    assert report["morph"]["framesInFile"] == 3
+    assert report["morph"]["framesAfterExpansion"] == 13
+    # A button press animates THROUGH the intermediates and lands on the
+    # target conformer's own frame, not merely on the target.
+    assert report["morph"]["visitedCount"] > 3
+    assert report["morph"]["monotonic"] is True
+    assert report["morph"]["landedOn"] == report["morph"]["expectedLanding"] == 12
+    assert report["morph"]["pressedAfter"] == ["false", "false", "true"]
+    # An interpolated frame is a genuine blend of its endpoints; the harness
+    # seeds endpoint k at y = 10k, so the midpoint of the first leg is y = 5.
+    assert report["morph"]["midpointY"] == 5
+
+
+def test_reference_label_and_button_per_conformation(tmp_path):
+    result, html = _morph_bundle(tmp_path, n_conformers=3)
+    assert [c["label"] for c in result["morph"]["conformers"]] == ["Start", "State 1", "State 2"]
+    text = html.read_text()
+    for index in range(3):
+        assert f'data-conf="{index}"' in text
+    assert "Conformation" in text
+    # A slider is the thing this replaces.
+    assert 'class="bp-btn bm-btn"' in text
+
+
+def test_exact_mapping_refuses_a_ragged_conformer(tmp_path):
+    with pytest.raises(ValueError, match="not exact"):
+        _morph_bundle(tmp_path, n_conformers=2, mapping="exact", ragged=True)
+
+
+def test_intersection_mapping_reports_what_each_file_lost(tmp_path):
+    result, _ = _morph_bundle(tmp_path, n_conformers=3, mapping="intersection", ragged=True)
+    morph = result["morph"]
+    assert morph["mapping"] == "intersection"
+    assert morph["n_residues"] == 6
+    dropped = {c["label"]: c["residues_dropped"] for c in morph["conformers"]}
+    assert dropped == {"Start": 2, "State 1": 1, "State 2": 0}
+
+
+def test_conformers_and_morph_to_are_mutually_exclusive(tmp_path):
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    with pytest.raises(ValueError, match="not both"):
+        render_inspection_bundle(
+            mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+            inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+            output_dir=str(tmp_path / "out"),
+            conformers=[{"path": str(cif)}], morph_to=[{"path": str(cif)}])
+
+
+def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
+    """py2Dmol fixes .py2dmol-viewer-instance at 948px; the stage must clamp it."""
+    html = _two_layer_bundle(tmp_path)
+    text = Path(html).read_text()
+    assert ".bindos-stage{position:relative;min-width:0;overflow-x:auto" in text
+    assert "@media (max-width:1340px)" in text
+    assert 'id="bindos-controls"' in text
+    report = _run_dom_harness(html, {"chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5]})
+    assert report["controlsAfterClick"] == "0"
