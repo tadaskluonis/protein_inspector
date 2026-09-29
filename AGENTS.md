@@ -58,6 +58,31 @@ applies. `layer_id` controls the visualization category and may be any non-empty
 string. Annotations in the same layer must use the same optional `layer_label`
 and `color`.
 
+## One file, with tabs (inspector 1.8)
+
+`render_inspection_bundle` writes **one self-contained HTML file** and nothing
+else. A bundle gets emailed, dropped in a channel and opened on a machine that
+has none of this checked out, so anything sitting beside it arrives detached or
+not at all.
+
+**Extra context goes in a tab, never in a second file.** The manifest's
+optional top-level `about` takes a string, a `{title: body}` mapping, or a list
+of `{"title", "body"}`; each entry becomes a tab beside "Structure". Bodies are
+freeform HTML — headings, tables, lists, links, code all pass through — so an
+overview, a legend and a provenance note are three tabs, not three documents.
+Bodies are sanitised (script/style/iframe/object/embed and their contents, all
+`on*` handlers, and `javascript:`/`data:` URLs are stripped), because the text
+is usually agent-authored and often quotes fetched sources. A body with no tags
+at all is treated as plain text and blank-line blocks become paragraphs.
+
+Keep a bundle under `SIZE_TARGET_BYTES` (20 MB) so it stays sendable; above it
+the render still succeeds and the returned manifest carries a `size_warning`.
+
+Pass `extras=True` only when you need the audit set — `.viewer.json`, `.svg`,
+`.png`, `.manifest.json`. The viewer state is where a wrong
+`canonical_position` shows up, so use it while checking your own annotations,
+then re-render without it for the copy you hand over.
+
 ## The inspection panel (inspector 1.4)
 
 The panel is emitted by `render_inspection_bundle`. Do not re-implement or

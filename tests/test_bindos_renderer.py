@@ -33,7 +33,7 @@ def test_local_bundle_has_partner_specific_layers_and_hashed_exports(tmp_path):
             {"annotation_id": "y", "kind": "partner_contact", "label": "Partner Y contact", "partner_id": "Partner Y", "residue": {"component_id": "target", "canonical_position": 4, "chain_id": "A", "author_residue_number": 4}, "resolved": True, "evidence_ids": ["e2"], "method": "distance"},
         ],
     }
-    result = render_inspection_bundle(mmcif_path=str(cif), mmcif_sha256=digest, inspection_manifest=manifest, output_dir=str(tmp_path / "out"))
+    result = render_inspection_bundle(mmcif_path=str(cif), mmcif_sha256=digest, inspection_manifest=manifest, output_dir=str(tmp_path / "out"), extras=True)
     state = json.loads(Path(next(item["path"] for item in result["artifacts"] if item["kind"] == "viewer_state")).read_text())
     assert {item["layer_id"] for item in state["layers"]} == {"partner_contact:Partner X", "partner_contact:Partner Y"}
     assert {item["kind"] for item in result["artifacts"]} == {"html", "viewer_state", "svg", "png"}
@@ -59,7 +59,7 @@ def test_custom_layer_colors_resolved_residues(tmp_path):
             {"annotation_id": "hotspot", "kind": "custom", "label": "Pocket hotspot", "layer_id": "binding-hotspots", "layer_label": "Binding hotspots", "color": "#ef4444", "residue": {"component_id": "target", "canonical_position": 3, "chain_id": "A", "author_residue_number": 3}, "resolved": True, "evidence_ids": [], "method": "model"},
         ],
     }
-    result = render_inspection_bundle(mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(), inspection_manifest=manifest, output_dir=str(tmp_path / "out"))
+    result = render_inspection_bundle(mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(), inspection_manifest=manifest, output_dir=str(tmp_path / "out"), extras=True)
     state = json.loads(Path(next(item["path"] for item in result["artifacts"] if item["kind"] == "viewer_state")).read_text())
     assert state["layers"] == [{"layer_id": "binding-hotspots", "label": "Binding hotspots", "color": "#ef4444", "annotation_ids": ["hotspot"], "visible": True}]
     # Advanced colour is {"type": "advanced", "value": {"position": {...}}} -- the
@@ -78,7 +78,7 @@ def test_resolved_annotation_requires_a_matching_residue_address(tmp_path):
         ],
     }
     try:
-        render_inspection_bundle(mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(), inspection_manifest=manifest, output_dir=str(tmp_path / "out"))
+        render_inspection_bundle(mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(), inspection_manifest=manifest, output_dir=str(tmp_path / "out"), extras=True)
     except ValueError as error:
         assert "does not match a residue" in str(error)
     else:
@@ -116,7 +116,7 @@ def _two_layer_bundle(tmp_path, highlight=None):
     if highlight is not None:
         manifest["highlight"] = highlight
     result = render_inspection_bundle(mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
-                                      inspection_manifest=manifest, output_dir=str(tmp_path / "out"))
+                                      inspection_manifest=manifest, output_dir=str(tmp_path / "out"), extras=True)
     return Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html"))
 
 
@@ -297,6 +297,7 @@ def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
         mmcif_sha256=digest,
         inspection_manifest=manifest,
         output_dir=str(tmp_path / "out"),
+        extras=True,
     )
     state_path = next(i["path"] for i in result["artifacts"] if i["kind"] == "viewer_state")
     state = json.loads(Path(state_path).read_text())
@@ -316,3 +317,73 @@ def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
 
     page = Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html")).read_text()
     assert "var BASE=s.base_color" in page, "JS repaint does not seed the base colour"
+
+
+def test_default_render_is_one_file_with_about_tabs(tmp_path):
+    """A bundle is one file. Extra context becomes a TAB, never a sibling file.
+
+    The About body is agent-authored and often quotes fetched text, so it is
+    sanitised: the element and its contents go, not just the tags.
+    """
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    digest = hashlib.sha256(cif.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": "bindos-inspection-manifest-1",
+        "about": [
+            {"title": "Read me", "body": "<h2>Heading</h2><p>Body <code>x</code></p>"},
+            {"title": "Methods", "body": "plain one\n\nplain two"},
+        ],
+        "annotations": [
+            {
+                "annotation_id": "a-1", "kind": "custom", "label": "probe", "resolved": True,
+                "residue": {"component_id": "t", "canonical_position": 2, "chain_id": "A",
+                            "author_residue_number": 2},
+                "evidence_ids": [], "method": "test",
+            }
+        ],
+    }
+    out = tmp_path / "out"
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=digest,
+        inspection_manifest=manifest, output_dir=str(out),
+    )
+    assert sorted(f.name for f in out.iterdir()) == ["inspection.html"], "default render is not one file"
+    assert [a["kind"] for a in result["artifacts"]] == ["html"]
+    assert result["about_tabs"] == ["Read me", "Methods"]
+    assert "size_warning" not in result
+
+    page = (out / "inspection.html").read_text(encoding="utf-8")
+    assert 'data-tab="structure"' in page and 'data-tab="about-0"' in page
+    assert 'data-pane="about-1"' in page
+    assert "<h2>Heading</h2>" in page                    # markup preserved
+    assert "<p>plain one</p><p>plain two</p>" in page    # bare text becomes paragraphs
+
+    # ...and extras=True still writes the audit set alongside it
+    out2 = tmp_path / "out2"
+    render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=digest,
+        inspection_manifest=manifest, output_dir=str(out2), extras=True,
+    )
+    assert sorted(f.suffix for f in out2.iterdir()) == [".html", ".json", ".json", ".png", ".svg"]
+
+
+def test_about_body_cannot_smuggle_script(tmp_path):
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    manifest = {
+        "schema_version": "bindos-inspection-manifest-1",
+        "about": "<p>ok</p><script>steal()</script><a href=\'javascript:go()\' onclick=\'go()\'>z</a>",
+        "annotations": [],
+    }
+    out = tmp_path / "out"
+    render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest=manifest, output_dir=str(out),
+    )
+    about = (out / "inspection.html").read_text(encoding="utf-8")
+    about = about[about.index('data-pane="about-0"'):]
+    assert "<p>ok</p>" in about
+    assert "steal()" not in about, "script contents survived into the page"
+    assert "onclick" not in about
+    assert "javascript:" not in about

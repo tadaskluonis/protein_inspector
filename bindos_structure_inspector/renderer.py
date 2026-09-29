@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.7"
+INSPECTOR_VERSION = "bindos-inspector-1.8"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -59,6 +59,64 @@ _HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 # The neutral backdrop every bundle paints before its layers. Not a py2Dmol
 # colour mode -- see _color_annotations for why a mode cannot do this.
 BASE_COLOR = "#b9bfc7"
+
+SIZE_TARGET_BYTES = 20 * 1024 * 1024
+"""Keep a bundle emailable. Advisory: exceeding it warns, it never fails."""
+
+_UNSAFE_BLOCK = re.compile(r"(?is)<\s*(script|style|iframe|object|embed)\b[^>]*>.*?<\s*/\s*\1\s*>")
+_UNSAFE_TAG = re.compile(r"(?is)<\s*/?\s*(script|style|iframe|object|embed|link|meta|base|form)\b[^>]*>")
+_UNSAFE_ATTR = re.compile(r"""(?is)\s(on\w+|srcdoc)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""")
+_UNSAFE_URL = re.compile(r"""(?is)(href|src)\s*=\s*(["']?)\s*(javascript|data|vbscript):""")
+
+
+def _clean_about(body: str) -> str:
+    """Accept freeform HTML for an About tab, minus anything that executes.
+
+    The body is agent-authored and often quotes fetched text, so it is treated
+    as untrusted: script/iframe/object/embed/link/meta/base/form elements, all
+    on* handlers, and javascript:/data:/vbscript: URLs are removed. Everything
+    else -- headings, tables, lists, links, code -- passes through, because the
+    point of this field is not to be constrained.
+
+    A body with no tags at all is taken as plain text and blank-line-separated
+    blocks become paragraphs, so the simple case needs no markup.
+    """
+    text = str(body)
+    if "<" not in text:
+        blocks = [html.escape(b.strip()) for b in re.split(r"\n\s*\n", text) if b.strip()]
+        return "".join(f"<p>{b}</p>" for b in blocks)
+    text = _UNSAFE_BLOCK.sub("", text)   # drop the element AND its contents
+    text = _UNSAFE_TAG.sub("", text)     # then any unpaired survivor
+    text = _UNSAFE_ATTR.sub("", text)
+    text = _UNSAFE_URL.sub(r"\1=\2#blocked:", text)
+    return text
+
+
+def _about_tabs(value: Any) -> list[dict[str, str]]:
+    """Normalise the manifest's `about` into [{title, body_html}, ...].
+
+    Accepts a string (one tab titled "About"), a {title: body} mapping, or a
+    list of {"title", "body"} dicts. Several tabs are deliberately easy to
+    produce: a bundle is ONE file, so extra context belongs in another tab
+    rather than another file next to it.
+    """
+    if not value:
+        return []
+    items: list[tuple[str, str]]
+    if isinstance(value, str):
+        items = [("About", value)]
+    elif isinstance(value, dict):
+        items = [(str(k), str(v)) for k, v in value.items()]
+    elif isinstance(value, list):
+        items = []
+        for entry in value:
+            if not isinstance(entry, dict) or not entry.get("body"):
+                raise ValueError("each about entry needs a 'body' (and optionally a 'title')")
+            items.append((str(entry.get("title") or "About"), str(entry["body"])))
+    else:
+        raise ValueError("about must be a string, a {title: body} mapping, or a list of {title, body}")
+    return [{"title": t, "body_html": _clean_about(b)} for t, b in items]
+
 
 
 def _sha256(path: Path) -> str:
@@ -112,6 +170,7 @@ def _validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
     # `highlight` chooses between them for the whole bundle.
     if value.get("highlight", "color") not in _HIGHLIGHT_STYLES:
         raise ValueError(f"highlight must be one of {sorted(_HIGHLIGHT_STYLES)}")
+    _about_tabs(value.get("about"))          # validate early, render later
     return value
 
 
@@ -318,6 +377,17 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bindos-residue[data-on='1']{background:#fef9c3;border-left-color:#eab308}"
         ".bindos-warning{color:#9a3412}"
         ".bp-muted{font-size:11px;color:#64748b}"
+        ".bindos-tabs{display:flex;gap:2px;border-bottom:1px solid #e2e8f0;margin:0 0 14px;font:14px system-ui,sans-serif}"
+        ".bindos-tab{font:13px system-ui;padding:8px 16px;border:0;background:none;cursor:pointer;color:#64748b;border-bottom:2px solid transparent;margin-bottom:-1px}"
+        ".bindos-tab:hover{color:#0f172a}"
+        '.bindos-tab[aria-selected="true"]{color:#0f172a;font-weight:600;border-bottom-color:#2563eb}'
+        ".bindos-about{max-width:52em;font:15px/1.6 system-ui,sans-serif;color:#0f172a;padding:0 4px 28px}"
+        ".bindos-about h2{font-size:17px;margin:26px 0 6px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}"
+        ".bindos-about h3{font-size:15px;margin:20px 0 4px}"
+        ".bindos-about table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}"
+        ".bindos-about td,.bindos-about th{border-bottom:1px solid #e2e8f0;padding:6px 8px;text-align:left;vertical-align:top}"
+        ".bindos-about code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:13px}"
+        ".bindos-about .sw{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #cbd5e1;vertical-align:-2px}"
         "#bindos-residue-details{display:none}"
         "</style>"
     )
@@ -443,6 +513,15 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
   setAllLayers:setAllLayers,onlyLayer:onlyLayer,
   selectAnnotation:function(id){var a=byId[id];if(a){selectedId=id;showDetails(a);
     selectInStructure(a.residue);}}};
+var tabs=document.querySelectorAll('[data-tab]');
+for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',function(){
+  var want=btn.getAttribute('data-tab');
+  for(var i=0;i<tabs.length;i++)tabs[i].setAttribute('aria-selected',
+    tabs[i].getAttribute('data-tab')===want?'true':'false');
+  var panes=document.querySelectorAll('[data-pane]');
+  for(var j=0;j<panes.length;j++)panes[j].hidden=(panes[j].getAttribute('data-pane')!==want);
+  // The canvas is sized on layout; coming back from a hidden pane needs a nudge.
+  if(want==='structure'){var r=renderer();if(r)r.render('BindOS tab shown');}});})(tabs[t]);
 var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
   requestAnimationFrame(wait);})();
 })();</script>"""
@@ -479,9 +558,25 @@ var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
         )
     rows = "".join(groups)
 
+    about = state.get("about") or []
+    tabstrip = ""
+    panes_open, panes_close = "", ""
+    if about:
+        buttons = ['<button type="button" class="bindos-tab" data-tab="structure" '
+                   'aria-selected="true">Structure</button>']
+        buttons += [f'<button type="button" class="bindos-tab" data-tab="about-{i}" '
+                    f'aria-selected="false">{html.escape(t["title"])}</button>'
+                    for i, t in enumerate(about)]
+        tabstrip = f'<nav class="bindos-tabs">{"".join(buttons)}</nav>'
+        panes_open = '<div data-pane="structure">'
+        panes_close = "</div>" + "".join(
+            f'<div data-pane="about-{i}" hidden><article class="bindos-about">{t["body_html"]}</article></div>'
+            for i, t in enumerate(about))
+
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<title>BindOS structure inspection</title></head><body>'
+        f'{tabstrip}{panes_open}'
         '<main class="bindos-inspector">'
         f'<section>{viewer_html}</section>'
         '<aside class="bindos-panel">'
@@ -498,6 +593,7 @@ var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
         '<button type="button" class="bp-btn" id="bindos-clear-residue" style="display:none">Clear</button>'
         f'<div class="bp-rows">{rows}</div>'
         '</aside></main>'
+        f'{panes_close}'
         f'{panel}</body></html>'
     )
 
@@ -509,8 +605,24 @@ def render_inspection_bundle(
     output_dir: str,
     output_name: str = "inspection",
     display_options: dict[str, Any] | None = None,
+    extras: bool = False,
 ) -> dict[str, Any]:
-    """Create HTML, viewer state, SVG/PNG snapshots, and a compact manifest."""
+    """Render ONE self-contained HTML bundle (plus, on request, audit files).
+
+    A bundle is a single file on purpose. It gets emailed, dropped in Slack and
+    opened on a machine that has none of this checked out, so anything that
+    lives beside it is a thing that arrives detached or not at all. Put extra
+    context in an `about` tab (see `_about_tabs`) rather than in a second file:
+    `about` takes a string, a {title: body} mapping, or a list of
+    {"title", "body"}, and each entry becomes a tab next to "Structure".
+
+    Pass `extras=True` to also write `.viewer.json`, `.svg`, `.png` and
+    `.manifest.json`. Those are for auditing your own annotations -- the viewer
+    state is where a wrong `canonical_position` shows up -- not for the reader.
+
+    Bundles above SIZE_TARGET_BYTES (20 MB) still render, and the returned
+    manifest carries a `size_warning`.
+    """
     source = Path(mmcif_path).resolve()
     if not source.is_file() or source.suffix.lower() not in {".cif", ".mmcif"}:
         raise ValueError("mmcif_path must identify an existing local .cif/.mmcif file")
@@ -568,26 +680,29 @@ def render_inspection_bundle(
         "layers": layers,
         "annotations": manifest["annotations"],
         "overlays": manifest.get("overlays", []),
+        "about": _about_tabs(manifest.get("about")),
         "viewer": {"config": viewer.config, "objects": viewer.objects},
     }
     html_path = base.with_suffix(".html")
     state_path = base.with_suffix(".viewer.json")
     svg_path = base.with_suffix(".svg")
     png_path = base.with_suffix(".png")
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     html_path.write_text(_html(viewer._display_viewer(static_data=viewer.objects), state))
-    coords, chains, numbers = _trace(source)
-    xy = _project(coords)
-    _snapshot_svg(svg_path, xy, chains, numbers)
-    _snapshot_png(png_path, xy, chains)
+    wanted = [("html", html_path, "text/html")]
+    if extras:
+        state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+        coords, chains, numbers = _trace(source)
+        xy = _project(coords)
+        _snapshot_svg(svg_path, xy, chains, numbers)
+        _snapshot_png(png_path, xy, chains)
+        wanted += [
+            ("viewer_state", state_path, "application/json"),
+            ("svg", svg_path, "image/svg+xml"),
+            ("png", png_path, "image/png"),
+        ]
 
     artifacts = []
-    for kind, path, media_type in [
-        ("html", html_path, "text/html"),
-        ("viewer_state", state_path, "application/json"),
-        ("svg", svg_path, "image/svg+xml"),
-        ("png", png_path, "image/png"),
-    ]:
+    for kind, path, media_type in wanted:
         artifacts.append({"kind": kind, "path": str(path), "sha256": _sha256(path), "size_bytes": path.stat().st_size, "media_type": media_type})
     compact = {
         "schema_version": "bindos-inspection-artifact-manifest-1",
@@ -596,9 +711,18 @@ def render_inspection_bundle(
         "source_sha256": actual_hash,
         "layer_count": len(state["layers"]),
         "annotation_count": len(state["annotations"]),
+        "about_tabs": [item["title"] for item in state.get("about") or []],
         "artifacts": artifacts,
     }
-    compact_path = base.with_suffix(".manifest.json")
-    compact_path.write_text(json.dumps(compact, indent=2, sort_keys=True) + "\n")
-    compact["manifest"] = {"path": str(compact_path), "sha256": _sha256(compact_path), "size_bytes": compact_path.stat().st_size, "media_type": "application/json"}
+    html_bytes = html_path.stat().st_size
+    if html_bytes > SIZE_TARGET_BYTES:
+        compact["size_warning"] = (
+            f"bundle is {html_bytes / 1024 / 1024:.1f} MB, above the "
+            f"{SIZE_TARGET_BYTES // 1024 // 1024} MB target for something that gets emailed; "
+            "consider fewer annotations or a smaller structure"
+        )
+    if extras:
+        compact_path = base.with_suffix(".manifest.json")
+        compact_path.write_text(json.dumps(compact, indent=2, sort_keys=True) + "\n")
+        compact["manifest"] = {"path": str(compact_path), "sha256": _sha256(compact_path), "size_bytes": compact_path.stat().st_size, "media_type": "application/json"}
     return compact
