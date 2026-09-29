@@ -45,10 +45,27 @@ for (const layer of state.layers) {
 }
 const annotationRows = {};
 for (const a of state.annotations) {
-    annotationRows[a.annotation_id] = {hidden: false, style: {}, dataset: {annotation: a.annotation_id},
-        addEventListener() {}};
+    annotationRows[a.annotation_id] = {hidden: false, style: {}, attrs: {},
+        dataset: {annotation: a.annotation_id},
+        addEventListener(type, fn) { (this.handlers = this.handlers || []).push(fn); },
+        setAttribute(k, v) { this.attrs[k] = v; },
+        removeAttribute(k) { delete this.attrs[k]; },
+        click() { (this.handlers || []).forEach((fn) => fn()); }};
 }
 const detailsNode = {textContent: ''};
+
+// The panel's three buttons. They are looked up with getElementById and the
+// script guards each one, so a harness that omitted them would let a dead
+// handler pass -- the same failure mode this file exists to catch.
+function stubButton() {
+    return {handlers: [], addEventListener(type, fn) { this.handlers.push(fn); },
+            click() { this.handlers.forEach((fn) => fn()); }};
+}
+const buttons = {
+    'bindos-layers-all': stubButton(),
+    'bindos-layers-none': stubButton(),
+    'bindos-clear-residue': stubButton(),
+};
 
 function bySelector(sel) {
     let m = sel.match(/data-layer="([^"]+)"/);
@@ -66,7 +83,7 @@ global.requestAnimationFrame = (fn) => rafQueue.push(fn);
 global.document = {
     getElementById: (id) => (id === 'bindos-inspection-state'
         ? {textContent: stateMatch[1]}
-        : (id === 'bindos-residue-details' ? detailsNode : null)),
+        : (id === 'bindos-residue-details' ? detailsNode : (buttons[id] || null))),
     querySelector: bySelector,
     querySelectorAll: (sel) => (sel === '[data-annotation]'
         ? Object.values(annotationRows)
@@ -119,5 +136,29 @@ for (const step of (spec.steps || [])) {
         selection: renderer.residueSelection.size,
     };
 }
+// --- panel buttons --------------------------------------------------------
+// "Untick all" must clear every checkbox and repaint to no colour; "Tick all"
+// must restore it. "Clear" must empty the detail pane and drop the selection.
+if (spec.buttons !== false) {
+    buttons['bindos-layers-none'].click();
+    report.untickAll = {
+        paint: paint(),
+        checked: Object.values(layerBoxes).filter((b) => b.checked).length,
+        hiddenRows: Object.entries(annotationRows).filter(([, r]) => r.hidden).length,
+    };
+    buttons['bindos-layers-all'].click();
+    report.tickAll = {
+        paint: paint(),
+        checked: Object.values(layerBoxes).filter((b) => b.checked).length,
+    };
+    const someAnnotation = state.annotations.find((a) => a.resolved);
+    if (someAnnotation) window.bindosInspection.selectAnnotation(someAnnotation.annotation_id);
+    report.afterSelect = {details: detailsNode.textContent.length,
+                          selection: renderer.residueSelection.size};
+    buttons['bindos-clear-residue'].click();
+    report.afterClear = {details: detailsNode.textContent,
+                         selection: renderer.residueSelection.size};
+}
+
 report.finalRenders = renders;
 process.stdout.write(JSON.stringify(report));

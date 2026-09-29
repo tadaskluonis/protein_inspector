@@ -58,6 +58,31 @@ applies. `layer_id` controls the visualization category and may be any non-empty
 string. Annotations in the same layer must use the same optional `layer_label`
 and `color`.
 
+## The inspection panel (inspector 1.4)
+
+The panel is emitted by `render_inspection_bundle`. Do not re-implement or
+hand-edit any of it in generated HTML; it is covered by
+`tests/bindos_inspection_dom.js`, which clicks the controls rather than merely
+asserting their strings appear.
+
+- **Layers** section, at the top: `All` / `None` buttons, then one row per layer
+  with a colour swatch, the label, its annotation count, and a hover-revealed
+  `only` button that isolates that layer.
+- **Residues** section: a live count, a filter box (matches residue label, layer
+  label and annotation id), and the residue list grouped into one collapsible
+  `<details>` per layer rather than one flat list of every annotation.
+- **Residue card**: clicking a row opens a formatted card — residue identity,
+  chain / author number / model index, and one line per annotation on that
+  residue with its layer swatch. It is dismissed by the card's `×`, by clicking
+  the same row again, or by Escape; all three also drop the 3D selection.
+  `#bindos-residue-details` still exists as a hidden plain-text mirror for
+  programmatic checks.
+- `window.bindosInspection` exposes `syncVisibleLayers`, `clearDetails`,
+  `setAllLayers`, `onlyLayer` and `selectAnnotation`.
+
+The default render style is **`tube`**. Pass `display_options={"style": ...}`
+for `cartoon` / `richardson` / `ribbon` / `3d` when a specific figure needs it.
+
 ## One visual channel, not two
 
 The manifest's optional top-level `"highlight"` picks how layers mark residues:

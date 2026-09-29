@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.2"
+INSPECTOR_VERSION = "bindos-inspector-1.5"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -248,23 +248,235 @@ def _snapshot_png(path: Path, xy: np.ndarray, chains: list[str], size: int = 900
 
 def _html(viewer_html: str, state: dict[str, Any]) -> str:
     payload = json.dumps(state, separators=(",", ":")).replace("</", "<\\/")
-    panel = """
-<style>.bindos-inspector{font:14px system-ui;display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px}.bindos-panel{padding:12px;border:1px solid #ddd;border-radius:8px;max-height:860px;overflow:auto}.bindos-layer{display:block;margin:5px 0}.bindos-residue{cursor:pointer;padding:2px 4px}.bindos-residue:hover{background:#fff7cc}.bindos-warning{color:#9a3412}#bindos-residue-details{white-space:pre-wrap;background:#f8fafc;padding:8px;border-radius:6px}</style>
-<script id="bindos-inspection-state" type="application/json">__STATE__</script>
-<script>(function(){const s=JSON.parse(document.getElementById('bindos-inspection-state').textContent);const byId=Object.fromEntries(s.annotations.map(a=>[a.annotation_id,a]));let applyingLayerSelection=false;function renderer(){var reg=window.py2dmol_viewers;if(!reg)return null;var id=(s.viewer&&s.viewer.config&&s.viewer.config.viewer_id)||(window.viewerConfig&&window.viewerConfig.viewer_id);var entry=id?reg[id]:null;if(!entry){var keys=Object.keys(reg);if(keys.length===1)entry=reg[keys[0]];}return entry&&entry.renderer?entry.renderer:null;}function sameResidue(a,b){return a&&b&&a.component_id===b.component_id&&a.copy_index===b.copy_index&&a.canonical_position===b.canonical_position;}function indicesFor(residue){const r=renderer(),out=[];if(!r||!residue)return out;for(let i=0;i<(r.residueNumbers||[]).length;i++){const chain=r.chains&&r.chains[i];if(chain===residue.chain_id&&r.residueNumbers[i]===residue.author_residue_number)out.push(i);}return out;}function showDetails(annotation){for(const x of document.querySelectorAll('[data-annotation]'))x.style.outline='';const related=s.annotations.filter(x=>sameResidue(x.residue,annotation.residue));for(const x of related){const match=document.querySelector('[data-annotation="'+CSS.escape(x.annotation_id)+'"]');if(match&&!match.hidden)match.style.outline='2px solid #eab308';}document.getElementById('bindos-residue-details').textContent=JSON.stringify({residue:annotation.residue,annotations:related.length?related:[annotation]},null,2);}function syncVisibleLayers(){const r=renderer(),selected=new Set();for(const l of s.layers){const box=document.querySelector('[data-layer="'+CSS.escape(l.layer_id)+'"]');const visible=!box||box.checked;for(const id of l.annotation_ids){const row=document.querySelector('[data-annotation="'+CSS.escape(id)+'"]');if(row)row.hidden=!visible;const a=byId[id];if(visible&&a&&a.resolved)for(const index of indicesFor(a.residue))selected.add(index);}}if(!r)return false;var halo=s.highlight==='halo';if(!halo){var name=r.currentObjectName,object=r.objectsData&&r.objectsData[name];if(object){var off=0;if(typeof r.localRangeOf==='function'){var win=r.localRangeOf(name);if(win&&typeof win.off==='number')off=win.off;}var paint={},painted=false;for(const l of s.layers){const box=document.querySelector('[data-layer="'+CSS.escape(l.layer_id)+'"]');if(box&&!box.checked)continue;for(const id of l.annotation_ids){const a=byId[id];if(!a||!a.resolved||!a.color)continue;for(const index of indicesFor(a.residue)){paint[index-off]=a.color;painted=true;}}}object.color=painted?{type:'advanced',value:{position:paint}}:null;r.colorsNeedUpdate=true;r.plddtColorsNeedUpdate=true;}}applyingLayerSelection=true;try{if(halo)r.setResidueSelection(selected);r.render('BindOS inspection layer visibility');}finally{applyingLayerSelection=false;}return true;}function selectInStructure(residue){const r=renderer();if(!r)return;applyingLayerSelection=true;try{r.setResidueSelection(new Set(indicesFor(residue)));r.render('BindOS manifest residue selection');}finally{applyingLayerSelection=false;}}for(const l of s.layers){const box=document.querySelector('[data-layer="'+CSS.escape(l.layer_id)+'"]');if(box)box.addEventListener('change',syncVisibleLayers);}for(const row of document.querySelectorAll('[data-annotation]'))row.addEventListener('click',()=>{const a=byId[row.dataset.annotation];showDetails(a);selectInStructure(a.residue);});document.addEventListener('py2dmol-residue-selection-change',()=>{if(applyingLayerSelection)return;const r=renderer();if(!r||!r.residueSelection||!r.residueSelection.size)return;const selected=s.annotations.find(a=>indicesFor(a.residue).some(i=>r.residueSelection.has(i)));if(selected)showDetails(selected);});window.bindosInspection={syncVisibleLayers:syncVisibleLayers,selectAnnotation:function(id){const a=byId[id];if(a){showDetails(a);selectInStructure(a.residue);}}};var tries=0;(function waitForViewer(){if(syncVisibleLayers()||++tries>600)return;requestAnimationFrame(waitForViewer);})();})();</script>
-""".replace("__STATE__", payload)
+    css = (
+        "<style>"
+        ".bindos-inspector{font:14px/1.45 system-ui,sans-serif;display:grid;"
+        "grid-template-columns:minmax(0,1fr) 360px;gap:14px;color:#0f172a}"
+        ".bindos-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:880px;overflow:auto;"
+        "display:flex;flex-direction:column;background:#fff}"
+        ".bp-head{position:sticky;top:0;z-index:2;background:#fff;display:flex;justify-content:space-between;"
+        "align-items:center;gap:8px;padding:10px 12px 6px;border-bottom:1px solid #f1f5f9}"
+        ".bp-head h2{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#475569;margin:0}"
+        ".bp-btns{display:flex;gap:5px}"
+        ".bp-btn{font:11px system-ui;padding:3px 9px;border:1px solid #cbd5e1;background:#fff;"
+        "border-radius:6px;cursor:pointer;color:#0f172a}"
+        ".bp-btn:hover{background:#f1f5f9;border-color:#94a3b8}"
+        ".bp-layers{padding:6px 12px 10px}"
+        ".bp-layer{display:flex;align-items:center;gap:7px;padding:2px 0}"
+        ".bp-layer label{display:flex;align-items:center;gap:7px;flex:1;min-width:0;cursor:pointer}"
+        ".bp-sw{width:13px;height:13px;border-radius:3px;border:1px solid rgba(0,0,0,.15);flex:none}"
+        ".bp-lab{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+        ".bp-n{font:11px ui-monospace,monospace;color:#64748b;flex:none}"
+        ".bp-only{font:10px system-ui;padding:1px 6px;border:1px solid #e2e8f0;background:#fff;"
+        "border-radius:5px;cursor:pointer;color:#64748b;flex:none;visibility:hidden}"
+        ".bp-layer:hover .bp-only{visibility:visible}.bp-only:hover{border-color:#94a3b8;color:#0f172a}"
+        "#bindos-filter{margin:0 12px 8px;padding:5px 8px;font:12px system-ui;border:1px solid #cbd5e1;"
+        "border-radius:6px}"
+        ".bp-card{margin:0 12px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;"
+        "padding:9px 11px}"
+        ".bp-card-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}"
+        ".bp-card-head b{font-size:15px}"
+        ".bp-addr{font:10.5px ui-monospace,monospace;color:#64748b;margin:3px 0 7px}"
+        ".bp-card ul{list-style:none;margin:0;padding:0}"
+        ".bp-card li{display:flex;gap:7px;align-items:flex-start;padding:3px 0;font-size:12px;"
+        "border-top:1px solid #e9eef4}"
+        ".bp-card li:first-child{border-top:0}"
+        ".bp-meta{font-size:10.5px;color:#64748b;display:block}"
+        ".bp-x{font:14px system-ui;line-height:1;border:0;background:none;cursor:pointer;color:#64748b;padding:0 2px}"
+        ".bp-x:hover{color:#0f172a}"
+        ".bp-rows{padding:0 12px 12px}"
+        ".bp-group{margin-bottom:6px}"
+        ".bp-group>summary{cursor:pointer;font-size:11.5px;color:#475569;padding:3px 0;list-style:none;"
+        "display:flex;align-items:center;gap:6px}"
+        ".bp-group>summary::-webkit-details-marker{display:none}"
+        ".bp-group>summary::before{content:'▸';font-size:9px;color:#94a3b8}"
+        ".bp-group[open]>summary::before{content:'▾'}"
+        ".bindos-residue{cursor:pointer;padding:2px 6px;border-radius:5px;font-size:12px;"
+        "border-left:3px solid transparent}"
+        ".bindos-residue:hover{background:#f1f5f9}"
+        ".bindos-residue[data-on='1']{background:#fef9c3;border-left-color:#eab308}"
+        ".bindos-warning{color:#9a3412}"
+        ".bp-muted{font-size:11px;color:#64748b}"
+        "#bindos-residue-details{display:none}"
+        "</style>"
+    )
+    script = r"""<script>(function(){
+var root=document.getElementById('bindos-inspection-state');if(!root)return;
+var s=JSON.parse(root.textContent);
+var byId={};s.annotations.forEach(function(a){byId[a.annotation_id]=a;});
+var layerOf={};s.layers.forEach(function(l){layerOf[l.layer_id]=l;});
+var PLACEHOLDER='Click a residue to see every annotation on it.';
+var applying=false,selectedId=null,query='';
+function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function renderer(){var reg=window.py2dmol_viewers;if(!reg)return null;
+  var id=(s.viewer&&s.viewer.config&&s.viewer.config.viewer_id)||(window.viewerConfig&&window.viewerConfig.viewer_id);
+  var e=id?reg[id]:null;if(!e){var k=Object.keys(reg);if(k.length===1)e=reg[k[0]];}
+  return e&&e.renderer?e.renderer:null;}
+function indicesFor(res){var r=renderer(),out=[];if(!r||!res)return out;
+  for(var i=0;i<(r.residueNumbers||[]).length;i++){
+    if(r.chains&&r.chains[i]===res.chain_id&&r.residueNumbers[i]===res.author_residue_number)out.push(i);}
+  return out;}
+function sameResidue(a,b){return a&&b&&a.component_id===b.component_id&&a.copy_index===b.copy_index&&
+  a.canonical_position===b.canonical_position;}
+function box(id){return document.querySelector('[data-layer="'+CSS.escape(id)+'"]');}
+function layerVisible(id){var b=box(id);return !b||b.checked;}
+function rowMatches(a){if(!query)return true;
+  return (a.label+' '+a.annotation_id+' '+(layerOf[a.layer_id]?layerOf[a.layer_id].label:'')).toLowerCase().indexOf(query)>=0;}
+function syncVisibleLayers(){
+  var r=renderer(),selected={},shown=0;
+  for(var li=0;li<s.layers.length;li++){var l=s.layers[li];var vis=layerVisible(l.layer_id);
+    for(var ai=0;ai<l.annotation_ids.length;ai++){var id=l.annotation_ids[ai];var a=byId[id];
+      var row=document.querySelector('[data-annotation="'+CSS.escape(id)+'"]');
+      var on=vis&&rowMatches(a);
+      if(row)row.hidden=!on;
+      if(on)shown++;
+      if(vis&&a&&a.resolved){var ix=indicesFor(a.residue);for(var k=0;k<ix.length;k++)selected[ix[k]]=1;}}
+    var g=document.querySelector('[data-group="'+CSS.escape(l.layer_id)+'"]');if(g)g.hidden=!vis;}
+  var c=document.getElementById('bindos-count');
+  if(c)c.textContent=shown+' of '+s.annotations.length;
+  if(!r)return false;
+  if(s.highlight!=='halo'){
+    var name=r.currentObjectName,obj=r.objectsData&&r.objectsData[name];
+    if(obj){var off=0;if(typeof r.localRangeOf==='function'){var w=r.localRangeOf(name);
+        if(w&&typeof w.off==='number')off=w.off;}
+      var paint={},painted=false;
+      for(var li2=0;li2<s.layers.length;li2++){var l2=s.layers[li2];if(!layerVisible(l2.layer_id))continue;
+        for(var aj=0;aj<l2.annotation_ids.length;aj++){var a2=byId[l2.annotation_ids[aj]];
+          if(!a2||!a2.resolved||!a2.color)continue;
+          var ix2=indicesFor(a2.residue);for(var m=0;m<ix2.length;m++){paint[ix2[m]-off]=a2.color;painted=true;}}}
+      obj.color=painted?{type:'advanced',value:{position:paint}}:null;
+      r.colorsNeedUpdate=true;r.plddtColorsNeedUpdate=true;}}
+  var set=new Set();for(var key in selected)set.add(Number(key));
+  applying=true;try{if(s.highlight==='halo')r.setResidueSelection(set);
+    r.render('BindOS inspection layer visibility');}finally{applying=false;}
+  return true;}
+function showDetails(a){
+  var rows=document.querySelectorAll('[data-annotation]');
+  for(var i=0;i<rows.length;i++)rows[i].removeAttribute('data-on');
+  var related=s.annotations.filter(function(x){return sameResidue(x.residue,a.residue);});
+  if(!related.length)related=[a];
+  for(var j=0;j<related.length;j++){
+    var el=document.querySelector('[data-annotation="'+CSS.escape(related[j].annotation_id)+'"]');
+    if(el&&!el.hidden)el.setAttribute('data-on','1');}
+  var d=document.getElementById('bindos-residue-details');
+  if(d)d.textContent=a.label;
+  var card=document.getElementById('bindos-card');if(!card)return;
+  var res=a.residue||{};
+  var title=(a.label||'').split(' ')[0]||res.author_residue_number;
+  var items='';
+  for(var k=0;k<related.length;k++){var x=related[k];var lay=layerOf[x.layer_id]||{};
+    items+='<li><span class="bp-sw" style="background:'+esc(x.color||'#94a3b8')+'"></span><span>'+
+      esc(lay.label||x.layer_id||x.kind)+'<span class="bp-meta">'+esc(x.label)+'</span></span></li>';}
+  card.innerHTML='<div class="bp-card-head"><b>'+esc(title)+'</b>'+
+    '<button class="bp-x" id="bindos-card-close" title="clear (Esc)">&times;</button></div>'+
+    '<div class="bp-addr">chain '+esc(res.chain_id)+' &middot; author '+esc(res.author_residue_number)+
+    ' &middot; model index '+esc(res.canonical_position)+'</div><ul>'+items+'</ul>';
+  card.hidden=false;
+  var xb=document.getElementById('bindos-card-close');
+  if(xb)xb.addEventListener('click',function(ev){ev.stopPropagation();clearDetails();});}
+function clearDetails(){
+  var rows=document.querySelectorAll('[data-annotation]');
+  for(var i=0;i<rows.length;i++)rows[i].removeAttribute('data-on');
+  var d=document.getElementById('bindos-residue-details');if(d)d.textContent=PLACEHOLDER;
+  var card=document.getElementById('bindos-card');if(card){card.hidden=true;card.innerHTML='';}
+  selectedId=null;
+  var r=renderer();
+  if(r){applying=true;try{r.setResidueSelection(new Set());
+    r.render('BindOS clear residue selection');}finally{applying=false;}}}
+function selectInStructure(res){var r=renderer();if(!r)return;
+  applying=true;try{r.setResidueSelection(new Set(indicesFor(res)));
+    r.render('BindOS manifest residue selection');}finally{applying=false;}}
+function setAllLayers(on){for(var i=0;i<s.layers.length;i++){var b=box(s.layers[i].layer_id);
+    if(b)b.checked=on;}syncVisibleLayers();}
+function onlyLayer(id){for(var i=0;i<s.layers.length;i++){var b=box(s.layers[i].layer_id);
+    if(b)b.checked=(s.layers[i].layer_id===id);}syncVisibleLayers();}
+for(var i=0;i<s.layers.length;i++){var b=box(s.layers[i].layer_id);
+  if(b)b.addEventListener('change',syncVisibleLayers);}
+var onlys=document.querySelectorAll('[data-only]');
+for(var o=0;o<onlys.length;o++)(function(btn){btn.addEventListener('click',function(ev){
+  ev.preventDefault();ev.stopPropagation();onlyLayer(btn.getAttribute('data-only'));});})(onlys[o]);
+var rws=document.querySelectorAll('[data-annotation]');
+for(var w=0;w<rws.length;w++)(function(row){row.addEventListener('click',function(){
+  var id=row.dataset?row.dataset.annotation:row.getAttribute('data-annotation');
+  if(selectedId===id){clearDetails();return;}
+  selectedId=id;var a=byId[id];if(!a)return;showDetails(a);selectInStructure(a.residue);});})(rws[w]);
+var bAll=document.getElementById('bindos-layers-all');
+if(bAll)bAll.addEventListener('click',function(){setAllLayers(true);});
+var bNone=document.getElementById('bindos-layers-none');
+if(bNone)bNone.addEventListener('click',function(){setAllLayers(false);});
+var bClear=document.getElementById('bindos-clear-residue');
+if(bClear)bClear.addEventListener('click',clearDetails);
+var filt=document.getElementById('bindos-filter');
+if(filt)filt.addEventListener('input',function(){query=(filt.value||'').toLowerCase().trim();
+  syncVisibleLayers();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')clearDetails();});
+document.addEventListener('py2dmol-residue-selection-change',function(){
+  if(applying)return;var r=renderer();if(!r||!r.residueSelection||!r.residueSelection.size)return;
+  var hit=s.annotations.find(function(a){return indicesFor(a.residue).some(function(i){
+    return r.residueSelection.has(i);});});
+  if(hit){selectedId=hit.annotation_id;showDetails(hit);}});
+window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearDetails,
+  setAllLayers:setAllLayers,onlyLayer:onlyLayer,
+  selectAnnotation:function(id){var a=byId[id];if(a){selectedId=id;showDetails(a);
+    selectInStructure(a.residue);}}};
+var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
+  requestAnimationFrame(wait);})();
+})();</script>"""
+    panel = (css
+             + '<script id="bindos-inspection-state" type="application/json">__STATE__</script>'
+             + script).replace("__STATE__", payload)
+
+    counts = {item["layer_id"]: len(item["annotation_ids"]) for item in state["layers"]}
     layers = "".join(
-        f'<label class="bindos-layer"><input type="checkbox" checked data-layer="{html.escape(item["layer_id"], quote=True)}"> '
-        f'<span style="color:{item["color"]}">&#9679;</span> {html.escape(item["label"])}'
-        f'</label>'
+        '<div class="bp-layer">'
+        f'<label><input type="checkbox" checked data-layer="{html.escape(item["layer_id"], quote=True)}">'
+        f'<span class="bp-sw" style="background:{item["color"]}"></span>'
+        f'<span class="bp-lab" title="{html.escape(item["label"], quote=True)}">{html.escape(item["label"])}</span>'
+        '</label>'
+        f'<span class="bp-n">{counts[item["layer_id"]]}</span>'
+        f'<button type="button" class="bp-only" data-only="{html.escape(item["layer_id"], quote=True)}">only</button>'
+        '</div>'
         for item in state["layers"]
     )
-    rows = "".join(
-        f'<div class="bindos-residue{(" bindos-warning" if not item["resolved"] else "")}" data-annotation="{html.escape(item["annotation_id"], quote=True)}"><b>{html.escape(item["label"])}</b><br><small>{html.escape(str(item.get("method", "unknown")))} · {html.escape(", ".join(item.get("evidence_ids", [])) or "no evidence")}</small></div>'
-        for item in state["annotations"]
-    )
-    return f'<!doctype html><html><head><meta charset="utf-8"><title>BindOS structure inspection</title></head><body><main class="bindos-inspector"><section>{viewer_html}</section><aside class="bindos-panel"><h2>Inspection layers</h2>{layers}<h2>Selected residue</h2><pre id="bindos-residue-details">Click an annotated residue to inspect numbering, evidence, and warnings.</pre><h2>Residues and warnings</h2>{rows}</aside></main>{panel}</body></html>'
 
+    by_id = {a["annotation_id"]: a for a in state["annotations"]}
+    groups = []
+    for item in state["layers"]:
+        inner = "".join(
+            f'<div class="bindos-residue{"" if by_id[aid]["resolved"] else " bindos-warning"}" '
+            f'data-annotation="{html.escape(aid, quote=True)}">{html.escape(by_id[aid]["label"])}</div>'
+            for aid in item["annotation_ids"] if aid in by_id
+        )
+        groups.append(
+            f'<details class="bp-group" data-group="{html.escape(item["layer_id"], quote=True)}">'
+            f'<summary><span class="bp-sw" style="background:{item["color"]}"></span>'
+            f'{html.escape(item["label"])} <span class="bp-n">{counts[item["layer_id"]]}</span></summary>'
+            f'{inner}</details>'
+        )
+    rows = "".join(groups)
+
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<title>BindOS structure inspection</title></head><body>'
+        '<main class="bindos-inspector">'
+        f'<section>{viewer_html}</section>'
+        '<aside class="bindos-panel">'
+        '<div class="bp-head"><h2>Layers</h2><div class="bp-btns">'
+        '<button type="button" class="bp-btn" id="bindos-layers-all">All</button>'
+        '<button type="button" class="bp-btn" id="bindos-layers-none">None</button>'
+        '</div></div>'
+        f'<div class="bp-layers">{layers}</div>'
+        '<div class="bp-head"><h2>Residues</h2>'
+        '<span class="bp-muted" id="bindos-count"></span></div>'
+        '<input id="bindos-filter" type="search" placeholder="Filter residues \u2014 try 433, His, glycan">'
+        '<div class="bp-card" id="bindos-card" hidden></div>'
+        '<pre id="bindos-residue-details">Click a residue to see every annotation on it.</pre>'
+        '<button type="button" class="bp-btn" id="bindos-clear-residue" style="display:none">Clear</button>'
+        f'<div class="bp-rows">{rows}</div>'
+        '</aside></main>'
+        f'{panel}</body></html>'
+    )
 
 def render_inspection_bundle(
     *,
@@ -294,8 +506,8 @@ def render_inspection_bundle(
 
     viewer = py2Dmol.view(
         size=(int(options.get("width", 720)), int(options.get("height", 720))),
-        style=options.get("style", "cartoon"),
-        color=options.get("color", "chain"),
+        style=options.get("style", "tube"),
+        color=options.get("color", "gray"),
         bg=options.get("background", "white"),
         gpu=False,
         controls=True,
