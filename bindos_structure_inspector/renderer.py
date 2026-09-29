@@ -39,6 +39,17 @@ UPSTREAM_LICENSE = (
     "stuff. If we meet some day, and you think this stuff is worth it, you can "
     "buy me a beer in return. Sergey Ovchinnikov"
 )
+INSPECTOR_REPOSITORY = "https://github.com/profdocpizza/bindos-structure-inspector"
+# The additions are on the SAME terms as the viewer, so a reader who is allowed
+# to reuse py2Dmol is allowed to reuse the whole bundle rather than having to
+# work out where one ends and the other begins.
+INSPECTOR_LICENSE = (
+    '"THE BEER-WARE LICENSE" (Revision 42): profdocpizza '
+    "<https://github.com/profdocpizza> wrote the BindOS Structure Inspector "
+    "additions. As long as you retain this notice you can do whatever you want "
+    "with this stuff. If we meet some day, and you think this stuff is worth "
+    "it, you can buy me a beer in return. profdocpizza"
+)
 
 _ALLOWED_LAYER_KINDS = {
     "prediction_confidence",
@@ -854,16 +865,24 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
             for i, t in enumerate(about))
 
     credit = (
-        f'<!--\n  Rendered by BindOS structure inspector {INSPECTOR_VERSION}.\n'
+        '<!--\n  This file is free to reuse. Both notices below are BEER-WARE\n'
+        '  (Revision 42) and both ask the same one thing: keep them here.\n\n'
         f'  Viewer: py2Dmol by Sergey Ovchinnikov -- {UPSTREAM_REPOSITORY}\n'
-        f'  at revision {UPSTREAM_REVISION}, inlined in this file.\n\n'
-        f'  {UPSTREAM_LICENSE}\n-->'
+        f'  at revision {UPSTREAM_REVISION}, inlined in this file.\n'
+        f'  {UPSTREAM_LICENSE}\n\n'
+        f'  Annotation layers, morph and export: BindOS structure inspector\n'
+        f'  {INSPECTOR_VERSION} -- {INSPECTOR_REPOSITORY}\n'
+        f'  {INSPECTOR_LICENSE}\n-->'
     )
     credit_line = (
         '<footer class="bindos-credit">Structure viewer: '
-        f'<a href="{UPSTREAM_REPOSITORY}">py2Dmol</a> by Sergey Ovchinnikov '
-        f'(BEER-WARE licence, rev&nbsp;{UPSTREAM_REVISION[:7]}), inlined in this file. '
-        f'Annotation layers by BindOS structure inspector {INSPECTOR_VERSION}.</footer>'
+        f'<a href="{UPSTREAM_REPOSITORY}">py2Dmol</a> by Sergey Ovchinnikov, '
+        f'rev&nbsp;{UPSTREAM_REVISION[:7]}, inlined in this file. '
+        'Annotation layers, morph and export: '
+        f'<a href="{INSPECTOR_REPOSITORY}">BindOS structure inspector</a> '
+        f'{INSPECTOR_VERSION} by profdocpizza. '
+        'Both BEER-WARE (Revision&nbsp;42) — free to reuse, keep the notice. '
+        'See the comment at the top of this file.</footer>'
     )
     return (
         '<!doctype html><html><head><meta charset="utf-8">'

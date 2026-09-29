@@ -5,7 +5,11 @@ This repository is derived from sokrypton/py2Dmol at revision
 78c2d489d0b5c5d19accd9eeeef878c2868f5271.
 Source: https://github.com/sokrypton/py2Dmol
 
-The original BEER-WARE notice is retained verbatim in LICENSE.  The BindOS
+The original BEER-WARE notice is retained verbatim in LICENSE, alongside a
+second BEER-WARE notice covering the BindOS additions (profdocpizza).  The
+additions are deliberately on the SAME terms as the viewer they are built on,
+so anyone allowed to reuse py2Dmol can reuse the whole thing without having to
+work out where one ends and the other begins.  The BindOS
 changes add a local-only immutable-mmCIF/inspection-manifest interface, typed
 validation at the package boundary, semantic inspection layers, and hashed
 HTML/JSON/SVG/PNG export.  Arbitrary PDB/AFDB fetching is not part of the new
@@ -19,8 +23,9 @@ Every rendered HTML bundle inlines the py2Dmol viewer (~1 MB of minified
 JavaScript), and minification strips the BEER-WARE notice from the source.
 Since inspector 1.13 the renderer therefore writes the notice back into each
 export -- as an HTML comment at the top of the file and as a visible credit
-line at the foot of the page -- naming Sergey Ovchinnikov, the upstream
-repository and the pinned revision.  The bundle is the artefact that travels,
+line at the foot of the page.  Both notices travel: py2Dmol's, naming Sergey
+Ovchinnikov with the upstream repository and pinned revision, and the BindOS
+one.  A bundle is therefore as free to reuse as the code that produced it.  The bundle is the artefact that travels,
 so a notice kept only in this repository would not reach the person holding
 the file.
 
@@ -43,7 +48,13 @@ Code written in this repository rather than vendored:
   CDN library, so the notebook viewer loads nothing but py2Dmol's own
   resources.
 
-The reusable package must be distributed with LICENSE and this NOTICE.  Note
-that setup.py currently declares no `license_files` and the repository has no
-MANIFEST.in or pyproject.toml, so a built wheel ships neither file -- this
-NOTICE's own requirement is not yet met by the packaging.
+The reusable package must be distributed with LICENSE and this NOTICE.
+setup.py declares `license_files=['LICENSE', 'NOTICE']` so a built wheel
+carries both.
+
+Package authorship: setup.py previously declared author 'sokrypton' with
+so3@mit.edu and the py2Dmol URL as this package's home.  That credited
+generously but falsely -- it implied the upstream author wrote and endorsed
+this derivative, and would have routed its bug reports to him.  The package is
+now authored as profdocpizza, with py2Dmol listed as a project URL and
+credited in LICENSE, here, and in every export.

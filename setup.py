@@ -10,13 +10,28 @@ VERSION = re.search(r'^__version__ = "([^"]+)"', _init, re.M).group(1)
 
 setup(
     name='bindos-structure-inspector',
-    version='0.1.0',
-    author='sokrypton',
-    author_email='so3@mit.edu',
-    description='Local-only, manifest-driven structural inspection derived from py2Dmol.',
-    long_description='A local-only structure inspector that retains and reuses py2Dmol.',
+    version='1.13.0',
+    # AUTHORSHIP OF THIS PACKAGE, not of the viewer it is built on. These
+    # fields said 'sokrypton' / so3@mit.edu / the py2Dmol URL, which credited
+    # generously but falsely: it implied Sergey Ovchinnikov wrote and endorsed
+    # this derivative, and it would have sent its bug reports to him. He is
+    # credited where credit is due -- LICENSE, NOTICE, and every exported
+    # bundle -- and the upstream URL is below as a project URL rather than as
+    # this package's home.
+    author='profdocpizza',
+    description='Manifest-driven structural inspection bundles, built on py2Dmol.',
+    long_description=(
+        'Single-file interactive structure inspection bundles: annotation '
+        'layers, conformation morphing and partner toggles over the py2Dmol '
+        'viewer by Sergey Ovchinnikov, which is inlined into every export and '
+        'credited there. Both parts are BEER-WARE (Revision 42). See NOTICE.'
+    ),
     long_description_content_type='text/markdown',
-    url='https://github.com/sokrypton/py2Dmol',
+    url='https://github.com/profdocpizza/bindos-structure-inspector',
+    project_urls={'Upstream viewer (py2Dmol)': 'https://github.com/sokrypton/py2Dmol'},
+    # NOTICE requires both files to travel with the package, and without this
+    # a built wheel shipped neither.
+    license_files=['LICENSE', 'NOTICE'],
     packages=find_packages(),
     include_package_data=True,
     # EVERY RESOURCE viewer.py OPENS. It reads these by name through

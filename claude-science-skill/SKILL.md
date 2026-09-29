@@ -16,9 +16,12 @@ shadow, conserved-vs-divergent positions between orthologues, contacts in a
 docked pose, liabilities in a design.
 
 Built on **py2Dmol** by Sergey Ovchinnikov
-(<https://github.com/sokrypton/py2Dmol>, BEER-WARE licence), which is inlined
-into every bundle and credited in the exported file itself. The annotation
-layers, manifest schema and morph are the BindOS inspector's additions.
+(<https://github.com/sokrypton/py2Dmol>), which is inlined into every bundle.
+The annotation layers, manifest schema, morph and partner toggle are the
+BindOS inspector's additions, by profdocpizza. Both parts are BEER-WARE
+(Revision 42) — free to reuse for anything, keep the notice — and every
+exported bundle carries both notices so the file stays as reusable as the
+code that made it. Don't strip the credit footer from a bundle you pass on.
 
 ## Setup
 

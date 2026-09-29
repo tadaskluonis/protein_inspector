@@ -1,8 +1,29 @@
+Two notices, because this repository is two pieces of work.
+
+The viewer is py2Dmol, by Sergey Ovchinnikov, under the notice below.  It is
+reproduced verbatim and unchanged; it is the whole of what that licence asks.
+
 /*
  * ----------------------------------------------------------------------------
  * "THE BEER-WARE LICENSE" (Revision 42):
  * <so3@mit.edu> wrote this file.  As long as you retain this notice you
  * can do whatever you want with this stuff. If we meet some day, and you think
  * this stuff is worth it, you can buy me a beer in return.  Sergey Ovchinnikov
+ * ----------------------------------------------------------------------------
+ */
+
+The BindOS Structure Inspector additions -- the inspection-manifest interface,
+the annotation layers, the conformation morph, the partner toggle, the export
+bundle and the Claude Science skill in claude-science-skill/ -- are released on
+the same terms, so that the whole thing stays as free to reuse as the viewer it
+is built on.
+
+/*
+ * ----------------------------------------------------------------------------
+ * "THE BEER-WARE LICENSE" (Revision 42):
+ * profdocpizza <https://github.com/profdocpizza> wrote the BindOS Structure
+ * Inspector additions.  As long as you retain this notice you can do whatever
+ * you want with this stuff.  If we meet some day, and you think this stuff is
+ * worth it, you can buy me a beer in return.  profdocpizza
  * ----------------------------------------------------------------------------
  */

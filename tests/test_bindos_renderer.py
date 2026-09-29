@@ -726,3 +726,8 @@ def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
     # Not only in a comment: a reader of the page can see who wrote the viewer.
     assert 'class="bindos-credit"' in text
     assert "py2Dmol</a> by Sergey Ovchinnikov" in text
+    # BOTH notices, because the additions are on the same terms -- a reader
+    # allowed to reuse py2Dmol should not have to work out where it ends.
+    assert "profdocpizza" in text
+    assert "https://github.com/profdocpizza/bindos-structure-inspector" in text
+    assert "free to reuse" in text
