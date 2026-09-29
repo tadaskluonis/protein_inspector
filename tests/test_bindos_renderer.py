@@ -199,3 +199,55 @@ def test_unknown_highlight_style_is_rejected(tmp_path):
             inspection_manifest={"schema_version": "bindos-inspection-manifest-1",
                                  "annotations": [], "highlight": "both"},
             output_dir=str(tmp_path / "out2"))
+
+
+def test_every_export_is_self_contained(tmp_path):
+    """Render TWICE in one process; both bundles must carry the library.
+
+    py2Dmol shares its library across view() calls in a process — right for
+    notebook cells, fatal for a file on disk, because the borrower looks for a
+    lender that does not exist and dies with "the viewer library never loaded".
+    Rendering once cannot catch it: the first export is always fine.
+    """
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    digest = hashlib.sha256(cif.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": "bindos-inspection-manifest-1",
+        "annotations": [
+            {
+                "annotation_id": "a-1",
+                "kind": "custom",
+                "label": "probe",
+                "resolved": True,
+                "residue": {
+                    "component_id": "t",
+                    "canonical_position": 2,
+                    "chain_id": "A",
+                    "author_residue_number": 2,
+                },
+                "evidence_ids": [],
+                "method": "test",
+            }
+        ],
+    }
+    sizes = []
+    for index in (1, 2):
+        out = tmp_path / f"out{index}"
+        render_inspection_bundle(
+            mmcif_path=str(cif),
+            mmcif_sha256=digest,
+            inspection_manifest=manifest,
+            output_dir=str(out),
+            output_name="inspection",
+        )
+        page = (out / "inspection.html").read_text(encoding="utf-8")
+        assert "initializePy2DmolViewer" in page, f"export {index} has no viewer library"
+        assert "BroadcastChannel('py2dmol_lib')" not in page, (
+            f"export {index} borrows the library instead of inlining it"
+        )
+        assert "the viewer library never" in page, (
+            f"export {index} lost the bootstrap diagnostic"
+        )
+        sizes.append(len(page))
+    assert min(sizes) > 400_000, f"a bundle is too small to contain the library: {sizes}"

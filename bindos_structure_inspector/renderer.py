@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.5"
+INSPECTOR_VERSION = "bindos-inspector-1.6"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -512,6 +512,22 @@ def render_inspection_bundle(
         gpu=False,
         controls=True,
     )
+    # INLINE THE LIBRARY IN EVERY EXPORT, ALWAYS.
+    #
+    # py2Dmol's default is notebook semantics: the first view() of a process
+    # writes the ~1 MB library and offers it over a BroadcastChannel, and every
+    # later view() writes a short borrow stub instead. That is right for cells
+    # in one document and wrong for a file on disk. A bundle is opened on its
+    # own, often on another machine, with no lender anywhere on the page — the
+    # stub then fails with "the viewer library never loaded. Re-run the first
+    # cell in this notebook that created a viewer", which is advice that cannot
+    # be followed for an exported file.
+    #
+    # The failure is silent at render time and depends on how many bundles the
+    # process rendered before this one, so only the FIRST export of a session
+    # worked. tests/test_bindos_renderer.py::test_every_export_is_self_contained
+    # renders twice in one process and fails if the second borrows.
+    viewer._share_library = False
     viewer.add_pdb(str(source), use_biounit=False, filter_additives=False, load_ligands=True, name="prepared-target")
     if not any(item.get("frames") for item in viewer.objects):
         raise ValueError("py2Dmol could not load a renderable structure")
