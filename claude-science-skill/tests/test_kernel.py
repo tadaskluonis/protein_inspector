@@ -113,7 +113,8 @@ def test_conformers_ship_endpoints_only(tmp_path):
         conformers=[{"path": str(_cif(tmp_path / "b.cif", bend=1.5)), "label": "Bent"}],
         morph_steps=10, out=str(tmp_path / "m.html"))
     assert report["morph"]["frames_in_file"] == 2
-    assert report["morph"]["frames_after_expansion"] == 11
+    assert report["morph"]["stored_intermediates"] == 0
+    assert report["morph"]["animation_steps"] == 10
     assert report["morph"]["conformers"][1]["rmsd_to_reference_A"] > 0
 
 
