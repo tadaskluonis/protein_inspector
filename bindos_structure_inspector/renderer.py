@@ -352,26 +352,45 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         "html,body{margin:0;background:#fff}body{padding:14px;box-sizing:border-box}"
         ".bindos-inspector{font:14px/1.45 system-ui,sans-serif;display:grid;"
         "grid-template-columns:minmax(0,1fr) 360px;gap:14px;color:#0f172a;align-items:start}"
-        # THE VIEWER IS A FIXED 948px BOX (py2Dmol sets that width on
-        # .py2dmol-viewer-instance). In a narrow frame -- an embedded panel, a
-        # split editor pane, a chat artifact tile -- an unconstrained grid
-        # column lets that box paint straight over the Layers panel beside it,
-        # and the Orient/Focus/Rotate controls then swallow clicks meant for
-        # the layer checkboxes underneath. The stage is the clamp: min-width:0
-        # lets the column shrink below its content, and the scroller keeps the
-        # overflow inside the stage instead of on top of the panel.
-        ".bindos-stage{position:relative;min-width:0;overflow-x:auto;padding-top:30px}"
-        "#bindos-controls{position:absolute;top:0;right:2px;z-index:4}"
-        ".bindos-morph{display:flex;flex-wrap:wrap;align-items:center;gap:6px;"
-        "padding:0 0 8px;max-width:calc(100% - 120px)}"
-        ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff;border-color:#0f172a}"
-        ".bm-btn[disabled]{opacity:.45;cursor:default}"
-        # Collapsing the controls also releases the 948px, so the canvas alone
-        # can use the whole narrow column rather than sitting in a fixed gutter.
-        ".bindos-stage[data-controls='0'] #controlsContainer{display:none!important}"
-        ".bindos-stage[data-controls='0'] .py2dmol-viewer-instance{width:auto}"
+        # THE TOOLS BELONG INSIDE THE PICTURE. py2Dmol lays the viewer out as
+        # a flex row -- canvas, then a 340px column of Orient/Focus/Rotate/
+        # Style/Clip/Capture -- and pins .py2dmol-viewer-instance to 948px to
+        # fit both. In any frame narrower than that (an embedded panel, a split
+        # editor pane, a chat artifact tile) the column overflowed its grid
+        # column and painted over the Layers panel, swallowing the checkbox
+        # clicks underneath. Floating it over the top-right of the canvas fixes
+        # the overlap and the crowding together: the instance is then only as
+        # wide as its canvas, and the controls sit on the thing they act on.
+        ".bindos-stage{position:relative;min-width:0;overflow-x:auto;padding-top:34px}"
+        "#bindos-controls{position:absolute;top:0;right:2px;z-index:6}"
+        ".bindos-stage .py2dmol-viewer-instance{width:auto!important}"
+        ".bindos-stage #mainContainer{display:block!important}"
+        ".bindos-stage #viewerWrapper{position:relative}"
+        ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;right:10px;"
+        "z-index:5;width:340px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
+        "overflow-y:auto;background:rgba(255,255,255,.93);border:1px solid #e2e8f0;"
+        "border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.14)}"
+        ".bindos-stage[data-controls='0'] #rightPanelContainer{display:none!important}"
+        # With a conformation ring there is nothing left for the frame
+        # transport to say, and a Play button that walks the interpolation
+        # buffer says something untrue. updateUIControls() rewrites the inline
+        # display on these, so the rule has to be !important -- and the nodes
+        # stay in the DOM because the renderer binds to them unguarded.
+        ".bindos-stage[data-morph='1'] #controlsContainer{display:none!important}"
         "@media (max-width:1340px){.bindos-inspector{grid-template-columns:minmax(0,1fr)}"
         ".bindos-panel{max-height:60vh}}"
+        # THE RING. One segment per conformation in a single pill, so the set
+        # of states is visible at a glance and the current one is obvious
+        # without reading a label.
+        ".bindos-morph{display:flex;flex-wrap:wrap;align-items:center;gap:8px;"
+        "padding:0 0 8px;max-width:calc(100% - 120px)}"
+        ".bm-ring{display:inline-flex;align-items:center;gap:2px;padding:3px;"
+        "border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc}"
+        ".bm-btn{font:11.5px system-ui;padding:5px 13px;border:0;background:none;"
+        "border-radius:999px;cursor:pointer;color:#475569;white-space:nowrap}"
+        ".bm-btn:hover:not([aria-pressed='true']){background:#fff;color:#0f172a}"
+        ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff}"
+        ".bindos-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
         ".bindos-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:880px;overflow:auto;"
         "display:flex;flex-direction:column;background:#fff}"
         ".bp-head{position:sticky;top:0;z-index:2;background:#fff;display:flex;justify-content:space-between;"
@@ -565,58 +584,70 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
 document.addEventListener('py2dmol-color-change',function(){
   var r=renderer();if(!r||!r.colorMode||baseMode===r.colorMode)return;
   baseMode=r.colorMode;syncVisibleLayers();});
-// MORPH, EXPANDED HERE RATHER THAN SHIPPED. The file carries one frame per
-// conformation; the frames between them are a straight line, so the page works
-// them out once on load instead of the bundle carrying (N-1)*steps coordinate
-// sets it could have derived. Cartesian interpolation is a depiction of the
-// endpoints, not a pathway -- the intermediates are not physical.
+// MORPH, INTERPOLATED ON DEMAND. The file carries one frame per conformation
+// and nothing between them: the in-between coordinates are a straight line, so
+// the page works them out as it draws. That is what makes ANY pair reachable
+// directly -- a chain of stored intermediates can only be walked in order, so
+// going from the first state to the last had to travel through every state in
+// between, which is a claim about a pathway the data does not make. Cartesian
+// interpolation is a depiction of two endpoints; the frames between them are
+// not physical and bond geometry is not preserved there.
+//
+// One scratch frame, appended past the conformations, is the animation buffer.
+// _loadFrameData re-reads object.frames[i] on every setFrame with no caching,
+// so rewriting that one frame's coords and asking for it again is the whole
+// mechanism.
 var morph=(s.morph&&s.morph.mode==='browser')?s.morph:null,
-    morphSteps=(morph&&morph.steps_between)||12,morphAt=0,morphBusy=false,morphReady=false;
+    morphSteps=(morph&&morph.animation_steps)||18,morphAt=0,morphBusy=false,morphReady=false,
+    morphScratch=-1;
 function morphNow(){return (window.performance&&window.performance.now)
   ?window.performance.now():Date.now();}
 function morphObject(){var r=renderer();if(!r)return null;
   var name=r.currentObjectName||'prepared-target';
   return (r.objectsData&&r.objectsData[name])||null;}
-function morphFrameOf(i){return i*morphSteps;}
 function expandMorph(){
   if(!morph||morphReady)return;
   var r=renderer(),obj=morphObject(),n=morph.conformers.length;
   if(!r||!obj||!obj.frames||obj.frames.length<n)return;
   if(obj.frames.length===n){
-    var ends=obj.frames.slice(),out=[];
-    for(var i=0;i<ends.length-1;i++){
-      var a=ends[i].coords,b=ends[i+1].coords;
-      out.push(ends[i]);
-      for(var st=1;st<morphSteps;st++){
-        var t=st/morphSteps,c=new Array(a.length);
-        for(var k=0;k<a.length;k++){
-          c[k]=[a[k][0]+(b[k][0]-a[k][0])*t,a[k][1]+(b[k][1]-a[k][1])*t,
-                a[k][2]+(b[k][2]-a[k][2])*t];}
-        var mid={};for(var key in ends[i])mid[key]=ends[i][key];
-        mid.coords=c;mid.pae=undefined;out.push(mid);}}
-    out.push(ends[ends.length-1]);
-    obj.frames=out;
+    var seed={},base=obj.frames[0];
+    for(var key in base)seed[key]=base[key];
+    seed.coords=base.coords.map(function(p){return [p[0],p[1],p[2]];});
+    seed.pae=undefined;
+    obj.frames.push(seed);
     if(typeof r.updateUIControls==='function')r.updateUIControls();}
-  morphReady=true;setMorphButtons(0);}
+  morphScratch=n;morphReady=true;setMorphButtons(morphAt);}
 function setMorphButtons(active){
   var bs=document.querySelectorAll('.bm-btn');
   for(var i=0;i<bs.length;i++)bs[i].setAttribute('aria-pressed',
     String(Number(bs[i].getAttribute('data-conf'))===active));
+  var bar=document.getElementById('bindos-morph');
+  if(bar)bar.setAttribute('data-busy',morphBusy?'1':'0');
   var note=document.getElementById('bindos-morph-note');
   if(note&&morph){var c=morph.conformers[active];
-    note.textContent=c?(c.rmsd_to_reference_A?c.rmsd_to_reference_A+' \u00c5 C\u03b1 RMSD from '
-      +morph.conformers[0].label:'reference'):'';}}
+    note.textContent=(c&&c.rmsd_to_reference_A)
+      ?c.rmsd_to_reference_A+' \u00c5 C\u03b1 RMSD from '+morph.conformers[0].label
+      :'reference';}}
 function goMorph(target){
   var r=renderer();if(!morph||!r||morphBusy||target===morphAt)return;
   expandMorph();if(!morphReady)return;
-  morphBusy=true;
-  var from=morphFrameOf(morphAt),to=morphFrameOf(target),
-      t0=morphNow(),
-      dur=Math.max(260,Math.abs(to-from)*36);
+  var obj=morphObject(),from=obj.frames[morphAt],to=obj.frames[target],
+      buf=obj.frames[morphScratch];
+  if(!from||!to||!buf)return;
+  morphBusy=true;setMorphButtons(morphAt);
+  var a=from.coords,b=to.coords,out=buf.coords,
+      t0=morphNow(),dur=Math.max(320,Math.min(900,morphSteps*36));
   (function step(){
     var p=Math.min(1,(morphNow()-t0)/dur),e=p<0.5?2*p*p:-1+(4-2*p)*p;
-    r.setFrame(Math.round(from+(to-from)*e));
+    for(var k=0;k<out.length&&k<a.length;k++){
+      out[k][0]=a[k][0]+(b[k][0]-a[k][0])*e;
+      out[k][1]=a[k][1]+(b[k][1]-a[k][1])*e;
+      out[k][2]=a[k][2]+(b[k][2]-a[k][2])*e;}
+    r.setFrame(morphScratch);
     if(p<1){requestAnimationFrame(step);return;}
+    // Land on the conformation's own frame, so the viewer is showing a real
+    // structure and not the buffer once the animation stops.
+    r.setFrame(target);
     morphAt=target;morphBusy=false;setMorphButtons(target);})();}
 var morphBtns=document.querySelectorAll('.bm-btn');
 for(var mb=0;mb<morphBtns.length;mb++)(function(btn){
@@ -632,7 +663,9 @@ function setControls(on){if(!stage)return;stage.setAttribute('data-controls',on?
   if(ctlBtn){ctlBtn.textContent=on?'Hide controls':'Show controls';
     ctlBtn.setAttribute('aria-pressed',on?'true':'false');}
   var r=renderer();if(r)r.render('BindOS controls toggle');}
-function autofitControls(){if(ctlPinned||!stage)return;setControls(stage.clientWidth>=964);}
+// The tool column floats over the canvas now, so width no longer decides
+// whether it FITS -- only whether it would cover the structure it acts on.
+function autofitControls(){if(ctlPinned||!stage)return;setControls(stage.clientWidth>=560);}
 if(ctlBtn)ctlBtn.addEventListener('click',function(){ctlPinned=true;
   setControls(stage.getAttribute('data-controls')!=='1');});
 window.addEventListener('resize',autofitControls);
@@ -688,14 +721,14 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
     morphbar = ""
     if morph.get("mode") == "browser":
         buttons = "".join(
-            '<button type="button" class="bp-btn bm-btn" '
+            '<button type="button" class="bm-btn" '
             f'data-conf="{index}" aria-pressed="{"true" if index == 0 else "false"}">'
             f'{html.escape(item["label"])}</button>'
             for index, item in enumerate(morph.get("conformers", []))
         )
-        morphbar = ('<div class="bindos-morph" id="bindos-morph">'
-                    '<span class="bp-muted">Conformation</span>'
-                    f'{buttons}<span class="bp-muted" id="bindos-morph-note"></span></div>')
+        morphbar = ('<div class="bindos-morph" id="bindos-morph" data-busy="0">'
+                    f'<div class="bm-ring" role="group" aria-label="Conformation">{buttons}</div>'
+                    '<span class="bp-muted" id="bindos-morph-note"></span></div>')
 
     about = state.get("about") or []
     tabstrip = ""
@@ -717,7 +750,8 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         '<title>BindOS structure inspection</title></head><body>'
         f'{tabstrip}{panes_open}'
         '<main class="bindos-inspector">'
-        '<section class="bindos-stage" id="bindos-stage" data-controls="1">'
+        '<section class="bindos-stage" id="bindos-stage" data-controls="1" '
+        f'data-morph="{"1" if morphbar else "0"}">'
         '<button type="button" class="bp-btn" id="bindos-controls" '
         'aria-pressed="true">Hide controls</button>'
         f'{morphbar}{viewer_html}</section>'
@@ -832,9 +866,9 @@ def render_inspection_bundle(
                        residue_numbers=residue_numbers, position_names=names,
                        name="prepared-target", align=(index == 0), allow_reflection=False)
         morph_report["mode"] = "browser"
-        morph_report["steps_between"] = int(morph_steps)
+        morph_report["animation_steps"] = int(morph_steps)
         morph_report["frames_in_file"] = len(stacks)
-        morph_report["frames_after_expansion"] = (len(stacks) - 1) * int(morph_steps) + 1
+        morph_report["stored_intermediates"] = 0
     elif morph_to:
         # A MORPH IS ONE OBJECT WITH MANY FRAMES, which is what keeps the
         # colouring still. Layer colour is written per POSITION onto the object

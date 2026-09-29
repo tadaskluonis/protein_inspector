@@ -564,29 +564,33 @@ def _morph_bundle(tmp_path, n_conformers=3, mapping="exact", steps=6, ragged=Fal
     return result, Path(html)
 
 
-def test_conformers_ship_endpoints_only_and_the_page_expands_them(tmp_path):
-    """The whole point of browser-side morphing: N frames in, N+(N-1)*steps out."""
+def test_conformers_ship_endpoints_only_and_the_page_interpolates(tmp_path):
+    """N frames in the file and NO stored intermediates; the page draws them."""
     result, html = _morph_bundle(tmp_path, n_conformers=3, steps=6)
     assert result["morph"]["mode"] == "browser"
     assert result["morph"]["frames_in_file"] == 3
-    assert result["morph"]["frames_after_expansion"] == 13
-    # Three frames on disk, not thirteen.
+    assert result["morph"]["stored_intermediates"] == 0
     state = json.loads(html.read_text().split('id="bindos-inspection-state" type="application/json">')[1]
                        .split("</script>")[0].replace("<\\/", "</"))
     assert len(state["viewer"]["objects"][0]["frames"]) == 3
 
     report = _run_dom_harness(html, {"chains": ["A"] * 8, "residueNumbers": [1, 2, 3, 4, 5, 6, 7, 8]})
     assert report["morph"]["framesInFile"] == 3
-    assert report["morph"]["framesAfterExpansion"] == 13
-    # A button press animates THROUGH the intermediates and lands on the
-    # target conformer's own frame, not merely on the target.
+    # One scratch frame is appended as the animation buffer -- and only one.
+    assert report["morph"]["framesAfterExpansion"] == 4
+    # FIRST TO LAST GOES STRAIGHT THERE. Every drawn frame is the buffer, and
+    # the animation lands on the target conformation's own frame; it must never
+    # pass through the middle conformation's frame on the way.
     assert report["morph"]["visitedCount"] > 3
-    assert report["morph"]["monotonic"] is True
-    assert report["morph"]["landedOn"] == report["morph"]["expectedLanding"] == 12
+    assert report["morph"]["buffersOnly"] is True
+    assert report["morph"]["landedOn"] == report["morph"]["expectedLanding"] == 2
     assert report["morph"]["pressedAfter"] == ["false", "false", "true"]
-    # An interpolated frame is a genuine blend of its endpoints; the harness
-    # seeds endpoint k at y = 10k, so the midpoint of the first leg is y = 5.
-    assert report["morph"]["midpointY"] == 5
+    # The buffer is a genuine blend of the two endpoints it was asked for: the
+    # harness seeds conformer k at y = 10k, so halfway from 0 to 2 reads y = 10
+    # -- which is also what the middle conformer sits at, so the test checks
+    # the buffer got there by interpolation, not by visiting frame 1.
+    assert 0 < report["morph"]["bufferMaxY"] <= 20
+    assert report["morph"]["bufferEndY"] == 20
 
 
 def test_reference_label_and_button_per_conformation(tmp_path):
@@ -595,9 +599,12 @@ def test_reference_label_and_button_per_conformation(tmp_path):
     text = html.read_text()
     for index in range(3):
         assert f'data-conf="{index}"' in text
-    assert "Conformation" in text
-    # A slider is the thing this replaces.
-    assert 'class="bp-btn bm-btn"' in text
+    assert 'class="bm-ring"' in text
+    # A ring of segments is the thing this replaces the slider with, and the
+    # frame transport (Play included) is gone with it.
+    assert 'class="bm-btn"' in text
+    assert "data-morph=\"1\"" in text
+    assert ".bindos-stage[data-morph='1'] #controlsContainer{display:none!important}" in text
 
 
 def test_exact_mapping_refuses_a_ragged_conformer(tmp_path):
@@ -632,5 +639,9 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     assert ".bindos-stage{position:relative;min-width:0;overflow-x:auto" in text
     assert "@media (max-width:1340px)" in text
     assert 'id="bindos-controls"' in text
+    # Orient/Focus/Rotate/Style/Clip/Capture float over the top-right of the
+    # canvas instead of sitting in a 340px column beside it.
+    assert ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;right:10px;" in text
+    assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important}" in text
     report = _run_dom_harness(html, {"chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5]})
     assert report["controlsAfterClick"] == "0"

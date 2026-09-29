@@ -75,12 +75,18 @@ inspect_structure(
 )
 ```
 
-Only the endpoint traces are written to the file; the page interpolates the
-in-between coordinates on load, so N conformations cost N frames rather than
-`N + (N-1)×steps`. The animation is **Cartesian interpolation — a depiction of
-the endpoints, not a pathway**; intermediates are not physical and bond geometry
-is not preserved. Say so in an `about` tab whenever the morph is part of an
-argument.
+The control is a **ring of segments**, one per conformation, and **any state
+morphs straight to any other** — first to last does not travel through the
+states in between. Only the endpoint traces are written to the file; the page
+interpolates whichever pair you ask for as it draws, so N conformations cost N
+frames and no stored intermediates. `morph_steps` sets the animation length,
+not the file size. The frame transport (Play, slider, counter) is hidden when a
+morph is present: it has nothing left to say, and a Play button that walks the
+interpolation buffer would imply a trajectory.
+
+The animation is **Cartesian interpolation — a depiction of two endpoints, not
+a pathway**; intermediates are not physical and bond geometry is not preserved.
+Say so in an `about` tab whenever the morph is part of an argument.
 
 `morph_mapping="exact"` (default in the engine) refuses anything but an
 identical residue set across all files. `"intersection"` opts in to the shared
@@ -94,7 +100,10 @@ lost. Check it: a dropped epitope is a silent hole in the comparison.
 save_artifacts(files=[report["path"]], language="python")
 ```
 
-Then embed the returned version id inline. Keep bundles under ~20 MB
+Then embed the returned version id inline. Orient/Focus/Rotate/Style/Clip/
+Capture float over the top-right of the canvas rather than sitting in a column
+beside it, so the bundle stays usable in a narrow frame; `Hide controls` folds
+them away. Keep bundles under ~20 MB
 (`report["size_warning"]` appears above that) — a big structure with a morph is
 the usual cause; trim the chain or drop a conformer.
 

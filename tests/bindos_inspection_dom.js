@@ -79,6 +79,9 @@ const stage = {attrs: {'data-controls': '1'}, clientWidth: spec.stageWidth || 12
     getAttribute(k) { return this.attrs[k]; },
     querySelector() { return null; }};
 buttons['bindos-stage'] = stage;
+const morphBar = {attrs: {'data-busy': '0'}, setAttribute(k, v) { this.attrs[k] = v; },
+    getAttribute(k) { return this.attrs[k]; }};
+buttons['bindos-morph'] = morphBar;
 
 // One button per conformation, discovered the way the page discovers them.
 const morphButtons = ((state.morph && state.morph.conformers) || []).map((c, i) => {
@@ -145,7 +148,8 @@ const renderer = {
     residueSelection: new Set(),
     framesVisited: [],
     setResidueSelection(next) { this.residueSelection = next; },
-    setFrame(i) { this.currentFrame = i; this.framesVisited.push(i); renders++; },
+    setFrame(i) { this.currentFrame = i; this.framesVisited.push(i);
+        if (this.onFrame) this.onFrame(i); renders++; },
     updateUIControls() { uiUpdates++; },
     render() { renders++; },
 };
@@ -179,27 +183,36 @@ const report = {initial: paint(), renders, frames: frame, steps: {}};
 // the target conformation's own frame.
 if (state.morph && state.morph.mode === 'browser' && morphButtons.length) {
     const target = morphButtons.length - 1;
-    const stride = state.morph.steps_between;
     report.morph = {
         framesInFile: state.morph.conformers.length,
-        framesAfterExpansion: object.frames.length,
         uiUpdates,
         pressedBefore: morphButtons.map((b) => b.getAttribute('aria-pressed')),
     };
     renderer.framesVisited.length = 0;
+    // Record what the buffer held at each drawn step, so "went straight there"
+    // can be told apart from "walked through the middle conformation".
+    const trail = [];
+    renderer.onFrame = (i) => {
+        const f = object.frames[i];
+        if (f) trail.push({index: i, y: f.coords[0][1]});
+    };
     morphButtons[target].click();
     drain(400);
+    renderer.onFrame = null;
     const visited = renderer.framesVisited;
+    report.morph.framesAfterExpansion = object.frames.length;
     report.morph.visitedCount = visited.length;
-    report.morph.firstFrame = visited[0];
     report.morph.landedOn = visited[visited.length - 1];
-    report.morph.expectedLanding = target * stride;
-    report.morph.monotonic = visited.every((v, i) => i === 0 || v >= visited[i - 1]);
+    report.morph.expectedLanding = target;
+    // Every frame drawn DURING the animation is the scratch buffer; only the
+    // final frame is a conformation. Passing through frame 1 would mean the
+    // old chain behaviour is back.
+    report.morph.buffersOnly = visited.slice(0, -1)
+        .every((v) => v === state.morph.conformers.length);
+    report.morph.bufferMaxY = Math.max(...trail.map((t) => t.y));
+    report.morph.bufferEndY = trail[trail.length - 1].y;
     report.morph.pressedAfter = morphButtons.map((b) => b.getAttribute('aria-pressed'));
     report.morph.note = buttons['bindos-morph-note'].textContent;
-    // An interpolated frame must be a genuine blend, not a copy of an endpoint.
-    const mid = object.frames[Math.floor(stride / 2)];
-    report.morph.midpointY = mid ? mid.coords[0][1] : null;
 }
 
 // --- controls collapse ----------------------------------------------------
