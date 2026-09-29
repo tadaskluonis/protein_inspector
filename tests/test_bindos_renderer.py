@@ -645,7 +645,7 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     # setupViewport writes an INLINE pixel width on #canvasContainer, so the
     # override has to be !important or the picture stays a fixed box.
     assert '.bindos-stage #canvasContainer{display:block!important;width:auto!important;' in text
-    assert "max-width:100%;resize:vertical}" in text
+    assert "max-width:100%;resize:none!important}" in text
     # ...and the observer's write-back to #viewerWrapper must be inert, or
     # container and wrapper size from each other and the picture walks itself
     # narrower by one border per resize. Only reproducible in a real layout
@@ -654,7 +654,7 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     assert ".bindos-stage #canvasContainer canvas{max-width:100%}" in text
     # The Layers panel keeps its own column beside the structure, and there is
     # no collapse button to hide the viewer's controls with.
-    assert "grid-template-columns:minmax(0,1fr) 340px" in text
+    assert "grid-template-columns:minmax(240px,1fr) 11px var(--bindos-panel,340px)" in text
     assert "@media (max-width:820px)" in text
     assert 'id="bindos-controls"' not in text
     assert "Hide controls" not in text
@@ -914,3 +914,33 @@ def test_the_partner_button_does_not_move_the_conformation(tmp_path):
     assert partners["frameAfterShowOnState"] == expected
     # ...and on the first state too, where the bug is invisible.
     assert partners["frameAfterToggle"] == 0
+
+
+def test_the_two_panes_share_one_draggable_boundary(tmp_path):
+    """Sized independently, the picture can always overlap the panel or leave
+    a gap. One seam, owned by the grid, removes both states."""
+    html = _two_layer_bundle(tmp_path)
+    text = Path(html).read_text()
+    assert 'id="bindos-split"' in text
+    assert 'role="separator"' in text
+    # gap:0 -- the panes touch; the seam IS the gutter.
+    assert "var(--bindos-panel,340px);gap:0;" in text
+    # The picture is no longer independently resizable.
+    assert "resize:none!important" in text
+    assert ".bindos-stage #canvasContainer .resize-handle{display:none!important}" in text
+
+    report = _run_dom_harness(html, {"chains": ["A"] * 5,
+                                     "residueNumbers": [1, 2, 3, 4, 5]})
+    split = report["split"]
+    assert split["dragAttr"] == "1"
+    # Grid spans 0..1000, so a pointer at 600 asks for a 400px panel.
+    assert split["at600"] == 400
+    # Clamped: never wider than width - 320 stage, never below 240.
+    assert split["clampedWide"] == 680
+    assert split["clampedNarrow"] == 240
+    assert split["dragAttrAfter"] is None
+    # Released, the seam stops following the pointer.
+    assert split["afterRelease"] == 240
+    # Keyboard moves it too -- left widens the panel.
+    assert split["afterArrowLeft"] == 256
+    assert split["afterHome"] == 340

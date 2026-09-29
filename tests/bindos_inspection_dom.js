@@ -97,7 +97,28 @@ const morphButtons = ((state.morph && state.morph.conformers) || []).map((c, i) 
     return b;
 });
 
+// The split grid: enough of a box model to exercise the clamp. The grid is
+// 1000px wide starting at x=0, so a pointer at clientX=x asks for a panel of
+// (1000 - x) px, which the page must clamp to [240, 1000-320].
+const grid = {
+    props: {'--bindos-panel': '340px'},
+    style: {setProperty(k, v) { grid.props[k] = v; }},
+    getBoundingClientRect: () => ({left: 0, right: 1000, width: 1000, top: 0, bottom: 800, height: 800}),
+};
+const splitter = {
+    attrs: {}, handlers: {},
+    addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    removeAttribute(k) { delete this.attrs[k]; },
+    getAttribute(k) { return this.attrs[k]; },
+    fire(type, ev) { (this.handlers[type] || []).forEach((fn) => fn(Object.assign(
+        {preventDefault() {}, clientX: 0, shiftKey: false}, ev))); },
+};
+buttons['bindos-split'] = splitter;
+global.getComputedStyle = (el) => ({getPropertyValue: (k) => (el.props || {})[k] || ''});
+
 function bySelector(sel) {
+    if (sel === '.bindos-inspector') return grid;
     let m = sel.match(/data-layer="([^"]+)"/);
     if (m) return layerBoxes[m[1]] || null;
     m = sel.match(/data-annotation="([^"]+)"/);
@@ -303,6 +324,31 @@ if (state.partners && state.partners.owner) {
             .sort((a, b) => a - b);
         report.partners.disabledAfterMorph = partnerBtn.disabled;
     }
+}
+
+// --- the split boundary ----------------------------------------------------
+// Dragging the seam must move the panel and clamp at both ends, so the two
+// panes can neither overlap nor leave the stage unusably narrow.
+if (splitter.handlers.pointerdown) {
+    const panel = () => parseFloat(grid.props['--bindos-panel']);
+    splitter.fire('pointerdown', {pointerId: 1});
+    report.split = {dragAttr: splitter.getAttribute('data-drag')};
+    splitter.fire('pointermove', {clientX: 600});
+    report.split.at600 = panel();
+    splitter.fire('pointermove', {clientX: 100});   // asks for 900, too wide
+    report.split.clampedWide = panel();
+    splitter.fire('pointermove', {clientX: 990});   // asks for 10, too narrow
+    report.split.clampedNarrow = panel();
+    splitter.fire('pointerup', {});
+    // JSON.stringify drops undefined keys, so say null out loud.
+    report.split.dragAttrAfter = splitter.getAttribute('data-drag') || null;
+    // ...and a pointermove after release must not move it.
+    splitter.fire('pointermove', {clientX: 500});
+    report.split.afterRelease = panel();
+    splitter.fire('keydown', {key: 'ArrowLeft'});
+    report.split.afterArrowLeft = panel();
+    splitter.fire('keydown', {key: 'Home'});
+    report.split.afterHome = panel();
 }
 
 // --- controls collapse ----------------------------------------------------

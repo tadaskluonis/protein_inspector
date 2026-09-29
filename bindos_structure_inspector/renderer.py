@@ -374,7 +374,19 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         "<style>"
         "html,body{margin:0;background:#fff}body{padding:14px;box-sizing:border-box}"
         ".bindos-inspector{font:14px/1.45 system-ui,sans-serif;display:grid;"
-        "grid-template-columns:minmax(0,1fr) 340px;gap:16px;color:#0f172a;align-items:start}"
+        "grid-template-columns:minmax(240px,1fr) 11px var(--bindos-panel,340px);gap:0;"
+        "color:#0f172a;align-items:stretch}"
+        # THE TWO PANES TOUCH, AND THE SEAM IS THE CONTROL. A picture that can
+        # be sized independently of the panel beside it can always be sized
+        # into overlapping it, or into leaving a band of nothing between them.
+        # One draggable boundary removes both states: the grid owns the split,
+        # the stage takes whatever is left of it, and the canvas follows.
+        ".bindos-split{cursor:col-resize;position:relative;touch-action:none;"
+        "align-self:stretch;min-height:120px}"
+        ".bindos-split::before{content:'';position:absolute;top:2px;bottom:2px;left:4px;"
+        "width:3px;border-radius:2px;background:#e2e8f0}"
+        ".bindos-split:hover::before,.bindos-split[data-drag='1']::before{background:#94a3b8}"
+        ".bindos-split:focus-visible{outline:2px solid #2563eb;outline-offset:-2px}"
         # THE TOOLS BELONG INSIDE THE PICTURE. py2Dmol lays the viewer out as
         # a flex row -- canvas, then a 340px column of Orient/Focus/Rotate/
         # Style/Clip/Capture -- and pins .py2dmol-viewer-instance to 948px to
@@ -407,7 +419,8 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # size. A ResizeObserver on this element re-renders, so the canvas
         # follows. Height stays the caller's, and stays draggable.
         ".bindos-stage #canvasContainer{display:block!important;width:auto!important;"
-        "max-width:100%;resize:vertical}"
+        "max-width:100%;resize:none!important}"
+        ".bindos-stage #canvasContainer .resize-handle{display:none!important}"
         ".bindos-stage #canvasContainer canvas{max-width:100%}"
         ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;"
         "z-index:5;width:336px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
@@ -419,7 +432,7 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # where a side-by-side would leave the canvas unusably narrow.
         ".bindos-stage[data-morph='1'] #controlsContainer{display:none!important}"
         "@media (max-width:820px){.bindos-inspector{grid-template-columns:minmax(0,1fr)}"
-        ".bindos-panel{max-height:60vh}}"
+        ".bindos-split{display:none}.bindos-panel{max-height:60vh;margin-top:12px}}"
         # THE RING. One segment per conformation in a single pill, so the set
         # of states is visible at a glance and the current one is obvious
         # without reading a label.
@@ -642,6 +655,42 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
 document.addEventListener('py2dmol-color-change',function(){
   var r=renderer();if(!r||!r.colorMode||baseMode===r.colorMode)return;
   baseMode=r.colorMode;syncVisibleLayers();});
+// ONE BOUNDARY, DRAGGED. The panel width is a custom property on the grid,
+// so moving the seam re-lays out both panes at once and they cannot come
+// apart or overlap. The canvas takes its width from the column it is in and
+// py2Dmol's own ResizeObserver redraws it.
+(function(){
+  var grid=document.querySelector('.bindos-inspector'),
+      split=document.getElementById('bindos-split');
+  if(!grid||!split)return;
+  var MIN_PANEL=240,MIN_STAGE=320,dragging=false;
+  function panelWidth(){
+    var v=parseFloat(getComputedStyle(grid).getPropertyValue('--bindos-panel'));
+    return isFinite(v)&&v>0?v:340;}
+  function setPanel(px){
+    var box=grid.getBoundingClientRect(),
+        most=Math.max(MIN_PANEL,box.width-MIN_STAGE);
+    grid.style.setProperty('--bindos-panel',
+      Math.round(Math.min(Math.max(px,MIN_PANEL),most))+'px');
+    split.setAttribute('aria-valuenow',String(Math.round(panelWidth())));}
+  function fromPointer(e){setPanel(grid.getBoundingClientRect().right-e.clientX);}
+  split.addEventListener('pointerdown',function(e){
+    dragging=true;split.setAttribute('data-drag','1');
+    if(split.setPointerCapture)try{split.setPointerCapture(e.pointerId);}catch(err){}
+    e.preventDefault();});
+  split.addEventListener('pointermove',function(e){if(dragging)fromPointer(e);});
+  window.addEventListener('pointermove',function(e){if(dragging)fromPointer(e);});
+  function stop(){if(!dragging)return;dragging=false;split.removeAttribute('data-drag');}
+  split.addEventListener('pointerup',stop);
+  window.addEventListener('pointerup',stop);
+  window.addEventListener('pointercancel',stop);
+  // A seam that only a mouse can move is a seam some readers cannot move.
+  split.addEventListener('keydown',function(e){
+    var step=e.shiftKey?48:16;
+    if(e.key==='ArrowLeft'){setPanel(panelWidth()+step);e.preventDefault();}
+    else if(e.key==='ArrowRight'){setPanel(panelWidth()-step);e.preventDefault();}
+    else if(e.key==='Home'){setPanel(340);e.preventDefault();}});
+})();
 // A CAPTURE THE READER CAN KEEP, WHEREVER THE PAGE IS EMBEDDED.
 //
 // Save Image builds a Blob, clicks a <a download>, revokes the URL and then
@@ -937,6 +986,9 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         f'{morphbar}{viewer_html}'
         '<div class="bindos-capture" id="bindos-capture" hidden></div>'
         '</section>'
+        '<div class="bindos-split" id="bindos-split" role="separator" '
+        'aria-orientation="vertical" tabindex="0" '
+        'aria-label="Resize the panel"></div>'
         '<aside class="bindos-panel">'
         '<div class="bp-head"><h2>Layers</h2><div class="bp-btns">'
         '<button type="button" class="bp-btn" id="bindos-layers-all">All</button>'
