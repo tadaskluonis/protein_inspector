@@ -105,20 +105,34 @@ asserting their strings appear.
 - `window.bindosInspection` exposes `syncVisibleLayers`, `clearDetails`,
   `setAllLayers`, `onlyLayer` and `selectAnnotation`.
 
-## Colour (inspector 1.7)
+## Colour (inspector 1.9)
 
-The structure is painted a neutral grey (`BASE_COLOR`) and layer colour is the
-only hue that carries meaning. **Do not try to get a flat base out of
-`display_options={"color": ...}`** — py2Dmol's modes are `auto`, `chain`,
-`rainbow`, `plddt`, `deepmind`, `entropy`, `object`, `hydrophobicity`, `ss`;
-there is no grey, and an unrecognised name is NOT rejected: `ui.js` falls back
-to `auto`, which is rainbow on a single chain. The base therefore comes from
-the per-position colour map, in `_color_annotations` and again in the page's
-`syncVisibleLayers`, and it is present when every layer is off — dropping the
-map to `null` there is what used to expose the rainbow.
+The panel's **Base colour** control chooses how the un-annotated structure is
+coloured: `Custom colour` (the default, a flat `BASE_COLOR` grey with a native
+colour picker beside it) or any mode the page reports from
+`window.py2dmol_colorModes()` — `auto`, `chain`, `rainbow`, `plddt`, `ss`,
+`hydrophobicity`, `entropy`, `deepmind`, `object`. The option list is built at
+runtime from that function, not hardcoded, because `geom.js` registers `ss` at
+load. Set the starting point with the manifest's `base_mode` / `base_color`.
 
-Halo mode is the deliberate exception and paints no base, because it exists to
-leave a pLDDT- or chain-coloured structure intact and annotate on top of it.
+**A flat base is one CHOICE among the modes, not a floor under them.** py2Dmol's
+rule is that an explicit per-position colour beats the mode and "the mode only
+decides the ones nobody spoke for" (`src/parts/embed.js`), so painting every
+position — which 1.7 did unconditionally — speaks for all of them and silently
+disables rainbow/plddt/chain/ss. The base is therefore seeded **only** when the
+mode is `custom`, in `_color_annotations` and again in `syncVisibleLayers`.
+
+Two consequences worth knowing. Under `custom`, unticking every layer leaves a
+clean flat structure rather than the rainbow that `auto` resolves to on a single
+chain. And changing the viewer's own colour dropdown drops the panel out of
+`custom`, because otherwise the base would silently override it.
+
+Changing a mode needs all three steps the viewer's dropdown performs —
+`colorMode`, `colorsNeedUpdate`, `plddtColorsNeedUpdate`, then `render()`.
+Setting `colorMode` alone is inert; the colours sit behind two caches.
+
+Halo mode paints no base at all, because it exists to leave a pLDDT- or
+chain-coloured structure intact and annotate on top of it.
 
 The default render style is **`tube`**. Pass `display_options={"style": ...}`
 for `cartoon` / `richardson` / `ribbon` / `3d` when a specific figure needs it.

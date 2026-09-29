@@ -316,7 +316,8 @@ def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
     assert state["viewer"]["config"]["color"]["mode"] in VALID_COLOR_MODES
 
     page = Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html")).read_text()
-    assert "var BASE=s.base_color" in page, "JS repaint does not seed the base colour"
+    assert "if(baseMode==='custom')" in page, "JS repaint does not gate the base on custom mode"
+    assert 'id="bindos-base-mode"' in page and 'id="bindos-base-color"' in page
 
 
 def test_default_render_is_one_file_with_about_tabs(tmp_path):
@@ -387,3 +388,62 @@ def test_about_body_cannot_smuggle_script(tmp_path):
     assert "steal()" not in about, "script contents survived into the page"
     assert "onclick" not in about
     assert "javascript:" not in about
+
+
+def test_base_mode_other_than_custom_leaves_the_colour_mode_alone(tmp_path):
+    """A flat base is one CHOICE among the modes, not a floor under them.
+
+    py2Dmol: an explicit per-position colour beats the mode, and "the mode only
+    decides the ones nobody spoke for". Painting every position — what 1.7 did —
+    therefore disabled rainbow/plddt/chain/ss outright. Under a real mode only
+    the annotated residues may be painted.
+    """
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    digest = hashlib.sha256(cif.read_bytes()).hexdigest()
+
+    def render(base_mode):
+        manifest = {
+            "schema_version": "bindos-inspection-manifest-1",
+            "base_mode": base_mode,
+            "annotations": [
+                {
+                    "annotation_id": "a-1", "kind": "custom", "label": "probe",
+                    "color": "#dc2626", "resolved": True,
+                    "residue": {"component_id": "t", "canonical_position": 2,
+                                "chain_id": "A", "author_residue_number": 2},
+                    "evidence_ids": [], "method": "test",
+                }
+            ],
+        }
+        out = tmp_path / f"out-{base_mode}"
+        result = render_inspection_bundle(
+            mmcif_path=str(cif), mmcif_sha256=digest, inspection_manifest=manifest,
+            output_dir=str(out), extras=True,
+        )
+        state_path = next(i["path"] for i in result["artifacts"] if i["kind"] == "viewer_state")
+        return json.loads(Path(state_path).read_text())
+
+    rainbow = render("rainbow")
+    assert rainbow["base_mode"] == "rainbow"
+    paint = rainbow["viewer"]["objects"][0]["color"]["value"]["position"]
+    assert paint == {"1": "#dc2626"}, (
+        f"under a colour mode only annotated residues may be painted, got {paint}"
+    )
+
+    custom = render("custom")
+    paint = custom["viewer"]["objects"][0]["color"]["value"]["position"]
+    assert len(paint) == 5 and paint["1"] == "#dc2626", "custom mode must still paint a full base"
+
+
+def test_base_color_must_be_a_hex_value(tmp_path):
+    import pytest
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    with pytest.raises(ValueError, match="base_color must be"):
+        render_inspection_bundle(
+            mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+            inspection_manifest={"schema_version": "bindos-inspection-manifest-1",
+                                 "annotations": [], "base_color": "grey"},
+            output_dir=str(tmp_path / "out"),
+        )

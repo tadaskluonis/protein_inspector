@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.8"
+INSPECTOR_VERSION = "bindos-inspector-1.9"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -171,6 +171,14 @@ def _validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
     if value.get("highlight", "color") not in _HIGHLIGHT_STYLES:
         raise ValueError(f"highlight must be one of {sorted(_HIGHLIGHT_STYLES)}")
     _about_tabs(value.get("about"))          # validate early, render later
+    base_color = value.get("base_color", BASE_COLOR)
+    if not isinstance(base_color, str) or not _HEX_COLOR.fullmatch(base_color):
+        raise ValueError("base_color must be a #RRGGBB value")
+    # base_mode is NOT validated against py2Dmol's list here: the page owns that
+    # list (getAllValidColorModes registers custom modes such as 'ss' at load)
+    # and the control is rebuilt from it at runtime.
+    if not isinstance(value.get("base_mode", "custom"), str):
+        raise ValueError("base_mode must be a string")
     return value
 
 
@@ -208,7 +216,7 @@ def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: list[dict[str, Any]],
-                       base_color: str = BASE_COLOR) -> None:
+                       base_color: str = BASE_COLOR, paint_base: bool = True) -> None:
     """Paint a neutral base over the whole chain, then each layer on top.
 
     The base is painted EXPLICITLY rather than left to the viewer's colour
@@ -228,7 +236,13 @@ def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: l
     positions: dict[tuple[str, int], list[int]] = {}
     for index, (chain, number) in enumerate(zip(chains, frame.get("residue_numbers") or [])):
         positions.setdefault((str(chain), int(number)), []).append(index)
-    if chains:
+    # ONLY IN CUSTOM MODE. py2Dmol's contract is that an explicit per-position
+    # colour beats the colour mode and "the mode only decides the ones nobody
+    # spoke for" (src/parts/embed.js). Seeding every position therefore speaks
+    # for all of them and silently disables rainbow/plddt/chain/ss entirely --
+    # which is what shipped in 1.7. A flat base is one CHOICE among the modes,
+    # not a floor under them.
+    if paint_base and chains:
         viewer.set_color(base_color, position=list(range(len(chains))))
     by_id = {item["annotation_id"]: item for item in annotations}
     for layer in layers:
@@ -377,6 +391,10 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bindos-residue[data-on='1']{background:#fef9c3;border-left-color:#eab308}"
         ".bindos-warning{color:#9a3412}"
         ".bp-muted{font-size:11px;color:#64748b}"
+        ".bp-base{display:flex;gap:7px;align-items:center;padding:6px 12px 10px}"
+        ".bp-sel{flex:1;min-width:0;font:12.5px system-ui;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#0f172a}"
+        ".bp-swatch{width:34px;height:26px;padding:0;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer}"
+        ".bp-swatch[disabled]{opacity:.35;cursor:not-allowed}"
         ".bindos-tabs{display:flex;gap:2px;border-bottom:1px solid #e2e8f0;margin:0 0 14px;font:14px system-ui,sans-serif}"
         ".bindos-tab{font:13px system-ui;padding:8px 16px;border:0;background:none;cursor:pointer;color:#64748b;border-bottom:2px solid transparent;margin-bottom:-1px}"
         ".bindos-tab:hover{color:#0f172a}"
@@ -398,6 +416,7 @@ var byId={};s.annotations.forEach(function(a){byId[a.annotation_id]=a;});
 var layerOf={};s.layers.forEach(function(l){layerOf[l.layer_id]=l;});
 var PLACEHOLDER='Click a residue to see every annotation on it.';
 var applying=false,selectedId=null,query='';
+var baseMode=s.base_mode||'custom',baseColor=s.base_color||'#b9bfc7';
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function renderer(){var reg=window.py2dmol_viewers;if(!reg)return null;
@@ -432,8 +451,11 @@ function syncVisibleLayers(){
     if(obj){var off=0;if(typeof r.localRangeOf==='function'){var w=r.localRangeOf(name);
         if(w&&typeof w.off==='number')off=w.off;}
       var paint={},painted=false;
-      var BASE=s.base_color||'#b9bfc7',ntot=(r.residueNumbers||[]).length;
-      for(var bi=0;bi<ntot;bi++){paint[bi-off]=BASE;painted=true;}
+      // A flat base is one CHOICE among the colour modes, not a floor under
+      // them: an explicit per-position colour beats the mode, so seeding every
+      // position would disable rainbow/plddt/chain/ss outright.
+      if(baseMode==='custom'){var ntot=(r.residueNumbers||[]).length;
+        for(var bi=0;bi<ntot;bi++){paint[bi-off]=baseColor;painted=true;}}
       for(var li2=0;li2<s.layers.length;li2++){var l2=s.layers[li2];if(!layerVisible(l2.layer_id))continue;
         for(var aj=0;aj<l2.annotation_ids.length;aj++){var a2=byId[l2.annotation_ids[aj]];
           if(!a2||!a2.resolved||!a2.color)continue;
@@ -513,6 +535,45 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
   setAllLayers:setAllLayers,onlyLayer:onlyLayer,
   selectAnnotation:function(id){var a=byId[id];if(a){selectedId=id;showDetails(a);
     selectInStructure(a.residue);}}};
+function applyBaseMode(){
+  var r=renderer(),sel=document.getElementById('bindos-base-mode'),
+      sw=document.getElementById('bindos-base-color');
+  if(sw)sw.disabled=(baseMode!=='custom');
+  if(sel&&sel.value!==baseMode)sel.value=baseMode;
+  if(r&&baseMode!=='custom'){
+    // renderer.colorMode alone is inert: the colours sit behind two caches.
+    // This is the same three-step the viewer's own dropdown performs.
+    r.colorMode=baseMode;r.colorsNeedUpdate=true;r.plddtColorsNeedUpdate=true;
+    if(r.colorSelect&&typeof r._colorSelectValue==='function'){
+      try{r.colorSelect.value=r._colorSelectValue();}catch(e){}}}
+  syncVisibleLayers();}
+function buildBaseControl(){
+  var sel=document.getElementById('bindos-base-mode');if(!sel||sel.options.length)return false;
+  // The page owns the mode list — geom.js registers 'ss' at load — so the
+  // options are read from it rather than hardcoded here.
+  var modes=(typeof window.py2dmol_colorModes==='function')?window.py2dmol_colorModes():
+    ['auto','chain','rainbow','plddt','deepmind','entropy','object','hydrophobicity'];
+  var opts=['<option value="custom">Custom colour</option>'];
+  for(var i=0;i<modes.length;i++){var m=modes[i];
+    opts.push('<option value="'+m+'">'+m.charAt(0).toUpperCase()+m.slice(1)+'</option>');}
+  sel.innerHTML=opts.join('');
+  sel.value=baseMode;
+  var sw=document.getElementById('bindos-base-color');
+  if(sw){sw.value=baseColor;sw.disabled=(baseMode!=='custom');
+    sw.addEventListener('input',function(){baseColor=sw.value;
+      if(baseMode!=='custom'){baseMode='custom';sel.value='custom';sw.disabled=false;}
+      applyBaseMode();});}
+  sel.addEventListener('change',function(){baseMode=sel.value;applyBaseMode();});
+  return true;}
+// Touching the viewer's own colour control drops you out of Custom, otherwise
+// the base would silently override whatever it was set to.
+document.addEventListener('py2dmol-color-change',function(){
+  var r=renderer();if(!r||!r.colorMode)return;
+  if(baseMode===r.colorMode)return;
+  baseMode=r.colorMode;
+  var sel=document.getElementById('bindos-base-mode');if(sel)sel.value=baseMode;
+  var sw=document.getElementById('bindos-base-color');if(sw)sw.disabled=true;
+  syncVisibleLayers();});
 var tabs=document.querySelectorAll('[data-tab]');
 for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',function(){
   var want=btn.getAttribute('data-tab');
@@ -522,8 +583,9 @@ for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',functi
   for(var j=0;j<panes.length;j++)panes[j].hidden=(panes[j].getAttribute('data-pane')!==want);
   // The canvas is sized on layout; coming back from a hidden pane needs a nudge.
   if(want==='structure'){var r=renderer();if(r)r.render('BindOS tab shown');}});})(tabs[t]);
-var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
-  requestAnimationFrame(wait);})();
+var tries=0;(function wait(){buildBaseControl();
+  if(syncVisibleLayers()){applyBaseMode();return;}
+  if(++tries>600)return;requestAnimationFrame(wait);})();
 })();</script>"""
     panel = (css
              + '<script id="bindos-inspection-state" type="application/json">__STATE__</script>'
@@ -580,6 +642,11 @@ var tries=0;(function wait(){if(syncVisibleLayers()||++tries>600)return;
         '<main class="bindos-inspector">'
         f'<section>{viewer_html}</section>'
         '<aside class="bindos-panel">'
+        '<div class="bp-head"><h2>Base colour</h2></div>'
+        '<div class="bp-base">'
+        '<select id="bindos-base-mode" class="bp-sel"></select>'
+        '<input type="color" id="bindos-base-color" class="bp-swatch" title="pick the flat base colour">'
+        '</div>'
         '<div class="bp-head"><h2>Layers</h2><div class="bp-btns">'
         '<button type="button" class="bp-btn" id="bindos-layers-all">All</button>'
         '<button type="button" class="bp-btn" id="bindos-layers-none">None</button>'
@@ -669,10 +736,13 @@ def render_inspection_bundle(
     layers = _layers(manifest["annotations"])
     highlight = manifest.get("highlight", "color")
     if highlight == "color":
-        _color_annotations(viewer, manifest["annotations"], layers)
+        _color_annotations(viewer, manifest["annotations"], layers,
+                           base_color=manifest.get("base_color", BASE_COLOR),
+                           paint_base=manifest.get("base_mode", "custom") == "custom")
     state = {
         "highlight": highlight,
-        "base_color": BASE_COLOR,
+        "base_color": manifest.get("base_color", BASE_COLOR),
+        "base_mode": manifest.get("base_mode", "custom"),
         "schema_version": "bindos-viewer-state-1",
         "inspector_version": INSPECTOR_VERSION,
         "upstream_revision": UPSTREAM_REVISION,
