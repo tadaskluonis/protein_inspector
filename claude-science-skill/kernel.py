@@ -131,7 +131,8 @@ def inspect_structure(structure, layers=None, out="inspection.html", chain=None,
                                        highlight=highlight, about=about)
     prepared = None
     if conformers:
-        prepared = [{"path": to_mmcif(c["path"], out_dir), "label": c.get("label")}
+        prepared = [{"path": to_mmcif(c["path"], out_dir), "label": c.get("label"),
+                     "partner_chains": list(c.get("partner_chains") or ()) or None}
                     for c in conformers]
     report = engine.render_inspection_bundle(
         mmcif_path=cif,
