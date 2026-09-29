@@ -160,6 +160,8 @@ def _nest_config(**flat):
     # None = leave the key out so the renderer's default palette applies
     if flat.get("ss_palette") is not None:
         config["color"]["ss_palette"] = flat["ss_palette"]
+    if flat.get("chain_palette") is not None:
+        config["color"]["chain_palette"] = flat["chain_palette"]
     
     # PAE
     if "pae" in flat: config["pae"]["enabled"] = flat["pae"]
@@ -643,7 +645,7 @@ def _strip_advanced_color(holder, advanced_color):
 
 class view:
     def __init__(self, size=(400,400), controls=True, box=True,
-        color="auto", colorblind=False, ss_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
+        color="auto", colorblind=False, ss_palette=None, chain_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
         pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
@@ -884,6 +886,9 @@ class view:
         outline_tint = float(outline_tint)
         if not 0.0 <= outline_tint <= 1.0:
             raise ValueError("outline_tint must be between 0.0 (black) and 1.0 (element color).")
+        if chain_palette is not None and chain_palette not in ("pymol", "greys"):
+            raise ValueError(
+                f'Invalid chain_palette "{chain_palette}" - expected "pymol" or "greys".')
         if ss_palette is not None and ss_palette not in ("pymol", "jmol"):
             raise ValueError(
                 f'Invalid ss_palette "{ss_palette}" - expected "pymol" or "jmol".')
@@ -910,6 +915,7 @@ class view:
             highlight=highlight,
             outline_tint=outline_tint,
             ss_palette=ss_palette,
+            chain_palette=chain_palette,
             base_plates=base_plates,
             # the RESOLVED preset, not just 3d: the viewer derives the
             # richardson geometry profile (cartoonRichardson) from this, so

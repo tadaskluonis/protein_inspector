@@ -594,6 +594,37 @@ function lightenRgb(color, factor = LIGHTEN_FACTOR) { return { r: Math.round(col
 function lightenHex(hex, factor = LIGHTEN_FACTOR) { return rgbToHex(lightenRgb(hexToRgb(hex), factor)); }
 const chainColors = pymolColors.map(hex => lightenHex(hex));
 const chainColorsColorblind = colorblindSafeChainColors.map(hex => lightenHex(hex));
+// A NEUTRAL CHAIN PALETTE, opt-in via renderer.chainPalette = 'greys'.
+// Hue is a scarce channel: a viewer that spends it on chain identity has none
+// left for whatever the figure is actually about. Luminance still separates the
+// chains, so this is a swap of channel rather than a loss of information. The
+// ramp is interleaved light/dark so ADJACENT chains differ strongly rather than
+// walking down the scale in barely-separable steps, and it starts below white
+// and stops above black so both ends stay visible on a white background.
+const chainColorsGreys = [
+    '#b4b4b4', '#6e6e6e', '#d2d2d2', '#8c8c8c', '#5a5a5a', '#c0c0c0',
+    '#7d7d7d', '#a0a0a0', '#4d4d4d', '#dcdcdc', '#969696', '#646464',
+];
+const CHAIN_PALETTES = { pymol: chainColors, greys: chainColorsGreys };
+/**
+ * The colour chain `index` is drawn in. A per-chain override set from the Style
+ * panel wins over the palette; everything that draws a chain goes through here
+ * so an override cannot be honoured in the viewport and missed on the sequence
+ * strip.
+ */
+function chainColorHexFor(renderer, chainKey, index) {
+    const over = renderer && renderer.chainColorOverrides;
+    if (over && chainKey && over[chainKey]) return over[chainKey];
+    const palette = chainPaletteFor(renderer);
+    return palette[index % palette.length];
+}
+function chainPaletteFor(renderer) {
+    if (renderer && renderer.colorblindMode) return chainColorsColorblind;
+    const named = renderer && renderer.chainPalette;
+    return (named && CHAIN_PALETTES[named]) || chainColors;
+}
+window.py2dmol_chainPalettes = () => Object.keys(CHAIN_PALETTES);
+window.py2dmol_chainPaletteColors = (name) => (CHAIN_PALETTES[name] || chainColors).slice();
 const DEFAULT_GREY = { r: 160, g: 160, b: 160 };
 const DEFAULT_CONTACT_COLOR = { r: 255, g: 255, b: 0 };
 function hsvToRgb(h, s, v) {
@@ -1074,7 +1105,10 @@ function normalizeConfig(rawConfig = {}) {
             colorblind: cfg.color?.colorblind ?? cfg.colorblind ?? DEFAULT_CONFIG.color.colorblind,
             // named palette for the 'ss' colour mode; undefined = the
             // renderer's default palette (owned by cartoon/geom.js)
-            ss_palette: cfg.color?.ss_palette ?? cfg.ss_palette
+            ss_palette: cfg.color?.ss_palette ?? cfg.ss_palette,
+            // Whitelisted like the rest: a key that is not named here is
+            // silently dropped before any consumer sees it.
+            chain_palette: cfg.color?.chain_palette ?? cfg.chain_palette
         },
         pae: {
             enabled: cfg.pae?.enabled ?? cfg.pae ?? DEFAULT_CONFIG.pae.enabled,
@@ -9578,7 +9612,7 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 const loaded = Object.keys(this.objectsData || {});
                 const at = Math.max(0, loaded.indexOf(
                     owner ? owner.name : this.currentObjectName));
-                const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
+                const colorArray = chainPaletteFor(this);
                 color = hexToRgb(colorArray[at % colorArray.length]);
             } else if (effectiveColorMode === 'chain') {
                 // by SOURCE and chain: both objects have a chain A
@@ -9588,17 +9622,9 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                     color = DEFAULT_GREY;
                 } else {
                     // Regular positions, or ligands in ligand-only chains, get chain color
-                    if (this.chainIndexMap && this.chainIndexMap.has(chainId)) {
-                        const chainIndex = this.chainIndexMap.get(chainId);
-                        const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
-                        const hex = colorArray[chainIndex % colorArray.length];
-                        color = hexToRgb(hex);
-                    } else {
-                        // Fallback: use a default color if chainIndexMap is not initialized
-                        const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
-                        const hex = colorArray[0]; // Use first color as default
-                        color = hexToRgb(hex);
-                    }
+                    const chainIndex = (this.chainIndexMap
+                        && this.chainIndexMap.get(chainId)) || 0;
+                    color = hexToRgb(chainColorHexFor(this, chainId, chainIndex));
                 }
             } else if (window.py2dmol_customColors && window.py2dmol_customColors[effectiveColorMode]) {
                 // Custom color mode registered by external code
@@ -9718,9 +9744,8 @@ function initializePy2DmolViewer(containerElement, viewerId) {
             const chainIndex = (this.chainIndexMap.has(key)
                 ? this.chainIndexMap.get(key)
                 : this.chainIndexMap.get(chainId)) || 0;
-            const colorArray = this.colorblindMode ? chainColorsColorblind : chainColors;
-            const hex = colorArray[chainIndex % colorArray.length];
-            return hexToRgb(hex);
+            const overKey = this.chainIndexMap.has(key) ? key : chainId;
+            return hexToRgb(chainColorHexFor(this, overKey, chainIndex));
         }
 
         // Calculate segment colors (chain or rainbow)

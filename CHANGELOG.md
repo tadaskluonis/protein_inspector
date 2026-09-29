@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+**`chain_palette=` on `view()`, and a colour per chain in the Style panel.**
+Chain mode drew from one hard-coded palette — `chainColors`, a module-level
+`const` in `core/mol.js` — so the only way to change what colour a chain came
+out was to edit the source. Two ways in now:
+
+- `view(color='chain', chain_palette='greys')` picks a named palette.
+  `'pymol'` (the previous colours) is still the default, so nothing that does
+  not ask changes. `window.py2dmol_chainPalettes()` lists them.
+- Style → Chain shows one swatch per chain ID. Picking a colour pins that
+  chain; double-clicking the swatch puts it back on the palette. Overrides are
+  keyed by the renderer's chain key rather than the bare letter, because in a
+  merged view two objects both have a chain `A`.
+
+Colourblind mode still outranks both: it is an accessibility setting, not a
+preference.
+
+Everything that draws a chain — the viewport and the sequence strip — now goes
+through one resolver, `chainColorHexFor`, so an override cannot be honoured in
+one place and missed in the other. That was four separate palette lookups
+before.
+
+### Fixed
+
+**`normalizeConfig` dropped unrecognised `color` keys silently.** It rebuilds
+`config.color` from a named whitelist, so a key plumbed end to end through
+`view()` and read back in `parts/ui.js` never arrived, with no error on the
+way — the renderer simply used the default. Worth knowing when adding the
+next colour option: the emitted JSON carrying a key proves nothing about
+whether the code that consumes it kept it.
+
+### Tests
+
+`tests/test_chain_colors.py` executes the real `src/core/mol.js` under QuickJS
+(new, test-only, `importorskip`-guarded) rather than asserting that strings
+appear in the bundle. The system Node is 12.x and cannot parse the optional
+chaining the source uses, which is how the whitelist bug survived review.
+
 ## 2.0.0
 
 280 commits since `v1.6.5`. The major number is not for the size of it — it is

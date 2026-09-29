@@ -2136,3 +2136,29 @@ table.layout-table td {
     height: 24px; font-size: 12px;
 }
 [hidden] { display: none !important; }
+
+/* Per-chain colour swatches in the Style panel (parts/ui.js). Wraps rather
+   than scrolls: a structure with twenty chains should show all twenty, and a
+   horizontal scroller in a settings panel hides controls that look absent. */
+.chain-color-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.chain-color-cell {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+}
+.chain-color-cell input[type="color"] {
+    width: 22px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: none;
+    cursor: pointer;
+}

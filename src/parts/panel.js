@@ -117,6 +117,17 @@ const STYLE_PANEL_ROWS = [
        options: [['highlight', 'Highlight'], ['outline', 'Outline'],
                  ['none', 'None']] }],
 
+    // ONE SWATCH PER CHAIN, and only while Chain is the colour mode - the
+    // question "what colour is chain B" has no answer in any other mode, and a
+    // row of dead controls is worse than no row. parts/ui.js fills it from the
+    // renderer's own chain list, so it says what is actually loaded rather than
+    // what the page guessed. Empty for a single unnamed chain: a picker for
+    // "the chain" is the base colour under another name, and that already
+    // exists as a mode.
+    [{ kind: 'slot', id: 'chainColorRow', label: 'Chains',
+       title: 'Colour of each chain while the Color mode is Chain.'
+            + ' Double-click a swatch to put it back on the palette.' }],
+
     // THE ORDER IS THE LAYOUT, and it is one wrapping flow rather than tidy
     // rows. A cell belonging to the other style collapses and the rest pack
     // themselves, which only reads as whole lines if the cartoon-only ones come

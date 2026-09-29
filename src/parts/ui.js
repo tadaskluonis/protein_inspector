@@ -446,6 +446,8 @@ if (colorSelect && renderer.colorMode) {
 // Palette for the 'ss' colour mode (config.color.ss_palette / the SSE
 // dropdown). Unset = cartoon/geom.js's default palette.
 if (config.color?.ss_palette) renderer.ssPalette = config.color.ss_palette;
+// Chain palette: 'pymol' (default) or 'greys'. See chainPaletteFor in core/mol.js.
+if (config.color?.chain_palette) renderer.chainPalette = config.color.chain_palette;
 
 colorSelect.addEventListener('change', (e) => {
     // `ss:pymol` is the mode and the palette in one value - the only option in
@@ -628,8 +630,118 @@ renderer._syncStyleControls = () => {
 
 };
 
-renderer._syncStylePanel = syncStylePanel;
-syncStylePanel();
+
+// ---- Per-chain colour ------------------------------------------------
+// Chain mode draws each chain from a palette by index. This row lets a chain
+// be pinned to a colour instead, which is the only way to say "this one is the
+// target and that one is the binder" in a picture someone else has to read.
+//
+// Native <input type="color"> rather than the swatch-grid popup the selection
+// panel uses: that popup is a closure over the selection's own apply/current
+// pair, so reusing it means factoring it out, and it offers a fixed grid where
+// this wants the whole space. The grid is the right control for "mark this
+// selection" (a few recognisable colours, picked fast); a chain's colour is
+// chosen once and wants to be exact.
+//
+// Overrides are keyed by the renderer's chain KEY, not the bare chain id -
+// in a merged view two objects both have a chain A and they are different
+// chains.
+const chainColorRow = stylePanel && stylePanel.querySelector('#chainColorRow');
+
+function chainKeysForPicker() {
+    const map = renderer.chainIndexMap;
+    if (!map || map.size < 1) return [];
+    return [...map.keys()].filter((k) => k !== undefined && k !== null && k !== '');
+}
+
+/** Label a chain key the way the user refers to it: the trailing chain id. */
+function chainLabelFor(key) {
+    const cut = String(key).lastIndexOf(':');
+    return cut < 0 ? String(key) : String(key).slice(cut + 1);
+}
+
+function rgbToHex(c) {
+    if (!c) return '#808080';
+    if (typeof c === 'string') return c;
+    const to255 = (v) => {
+        const n = v <= 1 ? Math.round(v * 255) : Math.round(v);
+        return Math.max(0, Math.min(255, n));
+    };
+    const [r, g, b] = Array.isArray(c) ? c : [c.r, c.g, c.b];
+    return '#' + [r, g, b].map((v) => to255(v).toString(16).padStart(2, '0')).join('');
+}
+
+function buildChainColorRow() {
+    if (!chainColorRow) return;
+    const keys = chainKeysForPicker();
+    const row = chainColorRow.parentElement;
+    // SHOWN FOR ONE CHAIN TOO. The first cut hid the row below two chains, on
+    // the grounds that "the chain" and "the structure" are the same thing --
+    // which is exactly why it has to stay: with one chain this picker IS the
+    // flat-colour control, and it is the only one, so hiding it leaves a
+    // single-chain structure with no way to set its colour at all.
+    const useful = keys.length >= 1;
+    if (row) row.hidden = !useful || renderer.colorMode !== 'chain';
+    chainColorRow.hidden = row ? false : (!useful || renderer.colorMode !== 'chain');
+    if (!useful) { chainColorRow.textContent = ''; return; }
+    const signature = keys.join('\u0000') + '|' + (renderer.chainPalette || '')
+        + '|' + JSON.stringify(renderer.chainColorOverrides || {});
+    if (chainColorRow.__signature === signature) return;
+    chainColorRow.__signature = signature;
+    chainColorRow.textContent = '';
+    const strip = document.createElement('div');
+    strip.className = 'chain-color-strip';
+    for (const key of keys) {
+        const cell = document.createElement('label');
+        cell.className = 'chain-color-cell';
+        cell.title = 'Colour of chain ' + chainLabelFor(key)
+                   + ' \u2014 double-click to return it to the palette';
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.value = rgbToHex(renderer.getChainColorForChainId
+            ? renderer.getChainColorForChainId(key) : null);
+        const repaint = () => {
+            renderer.colorsNeedUpdate = true;
+            renderer.plddtColorsNeedUpdate = true;
+            renderer.render();
+            document.dispatchEvent(new CustomEvent('py2dmol-color-change'));
+        };
+        input.addEventListener('input', () => {
+            renderer.chainColorOverrides = renderer.chainColorOverrides || {};
+            renderer.chainColorOverrides[key] = input.value;
+            chainColorRow.__signature = null;
+            repaint();
+        });
+        // An override has to be revocable, or the palette is gone for good the
+        // first time someone opens the picker to look at it.
+        cell.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            if (!renderer.chainColorOverrides) return;
+            delete renderer.chainColorOverrides[key];
+            chainColorRow.__signature = null;
+            repaint();
+            buildChainColorRow();
+        });
+        const tag = document.createElement('span');
+        tag.textContent = chainLabelFor(key);
+        cell.appendChild(input);
+        cell.appendChild(tag);
+        strip.appendChild(cell);
+    }
+    chainColorRow.appendChild(strip);
+}
+renderer._syncChainColorRow = buildChainColorRow;
+// Chains arrive with the structure, not with the panel, so rebuild on both the
+// mode change and any repaint that could have loaded one.
+document.addEventListener('py2dmol-color-change', buildChainColorRow);
+
+const syncStylePanelBase = syncStylePanel;
+function syncStylePanelWithChains() {
+    syncStylePanelBase();
+    buildChainColorRow();
+}
+renderer._syncStylePanel = syncStylePanelWithChains;
+syncStylePanelWithChains();
 
 // ---- Slider value readouts (calibration aid) --------------------------
 // Every range input gets a small bubble above its thumb naming the option
