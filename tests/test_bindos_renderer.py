@@ -642,9 +642,10 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     # canvas instead of sitting in a 340px column beside it.
     assert ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;" in text
     assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}" in text
-    # #canvasContainer is `resize: both` with an explicit pixel width, so it
-    # needs a ceiling or it can be dragged out from under the Layers panel.
-    assert ".bindos-stage #canvasContainer{max-width:100%}" in text
+    # setupViewport writes an INLINE pixel width on #canvasContainer, so the
+    # override has to be !important or the picture stays a fixed box.
+    assert '.bindos-stage #canvasContainer{display:block!important;width:auto!important;' in text
+    assert "max-width:100%;resize:vertical}" in text
     assert ".bindos-stage #canvasContainer canvas{max-width:100%}" in text
     # The Layers panel keeps its own column beside the structure, and there is
     # no collapse button to hide the viewer's controls with.

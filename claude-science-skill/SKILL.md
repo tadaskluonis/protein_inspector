@@ -102,6 +102,10 @@ residue you named. There is also a CLI:
 
 ## Notes
 
+The display area is fluid: it fills the column beside the Layers panel at
+whatever width the page opens in, so `display={"height": ...}` is the size
+worth setting and width is ignored in practice.
+
 Keep bundles under ~20 MB so they stay emailable; `report["size_warning"]`
 appears above that. Save Image writes a capture bar under the viewer with a
 right-click-saveable PNG, because the browser download is silently dropped in

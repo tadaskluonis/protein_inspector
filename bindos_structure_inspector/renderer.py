@@ -390,7 +390,16 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # reader can drag the picture out from under the Layers panel -- or
         # simply be handed a bundle whose canvas is wider than the frame it
         # opens in. The cap is the column, so the two never overlap.
-        ".bindos-stage #canvasContainer{max-width:100%}"
+        # THE PICTURE IS AS WIDE AS ITS COLUMN. setupViewport writes an inline
+        # pixel width on #canvasContainer, which makes the display area a fixed
+        # box that is either narrower than the space it has or wide enough to
+        # slide under the Layers panel. Overriding it with !important (inline
+        # styles lose to that, and only to that) hands the width back to the
+        # grid, so the right edge lands just short of the panel at any frame
+        # size. A ResizeObserver on this element re-renders, so the canvas
+        # follows. Height stays the caller's, and stays draggable.
+        ".bindos-stage #canvasContainer{display:block!important;width:auto!important;"
+        "max-width:100%;resize:vertical}"
         ".bindos-stage #canvasContainer canvas{max-width:100%}"
         ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;"
         "z-index:5;width:336px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
@@ -691,14 +700,22 @@ function applyPartners(){
       shown++;}
     pos.add(i);
     if(typeof r.chainKeyAt==='function')chs.add(r.chainKeyAt(i));}
-  // THE BUTTON IS INDEPENDENT OF THE CONFORMATION. Applying a visibility
-  // patch sends the renderer back to the first frame on its own, which turned
-  // showing or hiding a partner into an unasked-for jump back to the
-  // reference state. Remember where we were and go back to it.
-  var keep=(typeof r.currentFrame==='number'&&r.currentFrame>=0)?r.currentFrame:0;
+  // THE BUTTON IS INDEPENDENT OF THE CONFORMATION. A visibility patch sends
+  // the renderer back to the first frame, so showing or hiding a partner was
+  // an unasked-for jump to the reference state. `morphAt` -- not whatever the
+  // renderer currently holds -- is the authority on which conformation is on
+  // screen, and the frame index of conformation k is k. Re-assert it after
+  // the patch AND on the next animation frame, because the drop does not
+  // always land inside the setVisibility call.
+  var keep=(morph&&morphReady)?morphAt
+    :((typeof r.currentFrame==='number'&&r.currentFrame>=0)?r.currentFrame:0);
   r.setVisibility(chs.size?{positions:pos,chains:chs}:{positions:pos});
-  if(typeof r.setFrame==='function'&&r.currentFrame!==keep)r.setFrame(keep);
-  else r.render('BindOS partners');
+  function holdFrame(){
+    var live=renderer();if(!live)return;
+    if(typeof live.setFrame==='function'&&live.currentFrame!==keep)live.setFrame(keep);
+    else live.render('BindOS partners');}
+  holdFrame();
+  requestAnimationFrame(holdFrame);
   return shown;}
 function hasPartnersHere(){
   if(!partners)return false;

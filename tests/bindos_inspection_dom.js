@@ -161,7 +161,14 @@ const renderer = {
     // py2Dmol's own setVisibility sends the viewer back to the first frame.
     // The stub reproduces that so the page's restore is actually exercised;
     // without it the regression is invisible here and visible to the reader.
-    setVisibility(patch) { this.visibility = patch; this.currentFrame = 0; },
+    // It drops the frame inline AND again on the next animation frame: a
+    // restore that only runs synchronously loses to the late one, which is
+    // what the first fix did.
+    setVisibility(patch) {
+        this.visibility = patch;
+        this.currentFrame = 0;
+        requestAnimationFrame(() => { this.currentFrame = 0; });
+    },
     setFrame(i) { this.currentFrame = i; this.framesVisited.push(i);
         if (this.onFrame) this.onFrame(i); renders++; },
     updateUIControls() { uiUpdates++; },
@@ -276,8 +283,10 @@ if (state.partners && state.partners.owner) {
         drain(400);
         partnerBtn.disabled = false;
         partnerBtn.click();
+        drain(6);
         report.partners.frameAfterHideOnState = renderer.currentFrame;
         partnerBtn.click();
+        drain(6);
         report.partners.frameAfterShowOnState = renderer.currentFrame;
         report.partners.expectedFrameOnState = last;
         morphButtons[0].click();
