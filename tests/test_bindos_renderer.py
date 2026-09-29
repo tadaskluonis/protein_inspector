@@ -656,3 +656,60 @@ def test_a_blocked_download_still_leaves_the_capture_recoverable(tmp_path):
     assert "URL.createObjectURL=function(blob){lastBlob=blob" in text
     assert "URL.revokeObjectURL=function(url){setTimeout(" in text
     assert "blocks downloads" in text
+
+
+def _partner_bundle(tmp_path, morph=False):
+    """One file: chain A is the target, chain P is a bound partner."""
+    structure = Structure.Structure("fixture")
+    model = Model.Model(0)
+    for chain_id, shift in (("A", 0.0), ("P", 12.0)):
+        chain = Chain.Chain(chain_id)
+        for index in range(1, 5):
+            residue = Residue.Residue((" ", index, " "), "ALA", " ")
+            residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2) + shift, 0.0),
+                                  0.0, 1.0, " ", "CA", index, element="C"))
+            chain.add(residue)
+        model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    cif = tmp_path / "complex.cif"
+    io.save(str(cif))
+
+    conformers = None
+    if morph:
+        other = tmp_path / "bent.cif"
+        _fixture(other, n=4, bend=1.5)
+        conformers = [{"path": str(other), "label": "Bent"}]
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        output_dir=str(tmp_path / "out"), partner_chains=["P"], partner_label="Fab",
+        conformers=conformers, morph_mapping="exact", morph_steps=6)
+    html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
+    return result, Path(html)
+
+
+def test_partner_chains_get_a_toggle_that_hides_exactly_them(tmp_path):
+    _, html = _partner_bundle(tmp_path)
+    text = html.read_text()
+    assert 'id="bindos-partners"' in text
+    assert "Show Fab" in text
+    report = _run_dom_harness(html, {"chains": ["A", "A", "A", "A", "P", "P", "P", "P"],
+                                     "residueNumbers": [1, 2, 3, 4, 1, 2, 3, 4]})
+    assert report["partners"]["mode"] == "patch"
+    assert report["partners"]["shown"] == [0, 1, 2, 3] == report["partners"]["expected"]
+    assert report["partners"]["chainKeys"] == ["obj:A"]
+    # Re-ticking restores everything rather than leaving a narrowed selection.
+    assert report["partners"]["afterRetick"] == "all"
+
+
+def test_a_partner_is_excluded_from_the_morph_and_held_still(tmp_path):
+    """The partner exists in the reference only; interpolating it is meaningless."""
+    result, _ = _partner_bundle(tmp_path, morph=True)
+    morph = result["morph"]
+    # The residue mapping is the target chain alone -- the conformer has no P.
+    assert morph["n_residues"] == 4
+    assert morph["mapping"] == "exact"
+    # ...but the partner is still drawn, identically in every frame.
+    assert morph["partner_positions_static"] == 4

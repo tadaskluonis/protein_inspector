@@ -391,6 +391,9 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bm-btn:hover:not([aria-pressed='true']){background:#fff;color:#0f172a}"
         ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff}"
         ".bindos-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
+        ".bm-toggle{display:inline-flex;align-items:center;gap:6px;font:12px system-ui;"
+        "color:#475569;cursor:pointer;white-space:nowrap}"
+        ".bm-toggle:hover{color:#0f172a}"
         # A CAPTURE THE READER CAN ACTUALLY KEEP. See the script: a download
         # anchor is dropped without error in a frame that lacks
         # allow-downloads, and the viewer reports success regardless.
@@ -640,6 +643,27 @@ document.addEventListener('py2dmol-color-change',function(){
       var img=document.createElement('img');img.src=url;img.alt=name;box.appendChild(img);}
     box.hidden=false;}
 })();
+// PARTNERS ARE DRAWN, NOT ANNOTATED. They live in the same file as extra
+// chains, so the viewer already has them; the toggle is a visibility patch on
+// the positions that are not the target's, through the viewer's own
+// setVisibility API rather than by reloading anything.
+var partners=s.partners&&s.partners.chains&&s.partners.chains.length?s.partners:null;
+function setPartners(on){
+  var r=renderer();if(!r||!partners)return false;
+  if(on){if(typeof r.showAll!=='function')return false;r.showAll();}
+  else{
+    var hide={},pos=new Set(),chs=new Set(),list=r.chains||[];
+    for(var h=0;h<partners.chains.length;h++)hide[partners.chains[h]]=1;
+    if(!list.length)return false;
+    for(var i=0;i<list.length;i++){
+      if(hide[list[i]])continue;
+      pos.add(i);
+      if(typeof r.chainKeyAt==='function')chs.add(r.chainKeyAt(i));}
+    r.setVisibility(chs.size?{positions:pos,chains:chs}:{positions:pos});}
+  r.render('BindOS partners toggle');
+  return true;}
+var partnerBox=document.getElementById('bindos-partners');
+if(partnerBox)partnerBox.addEventListener('change',function(){setPartners(partnerBox.checked);});
 // MORPH, INTERPOLATED ON DEMAND. The file carries one frame per conformation
 // and nothing between them: the in-between coordinates are a straight line, so
 // the page works them out as it draws. That is what makes ANY pair reachable
@@ -773,6 +797,15 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
 
     # ONE BUTTON PER CONFORMATION, not a scrub bar. A slider asks the reader to
     # find the endpoints; a button says where it is going and gets there.
+    # THE TOGGLE SITS BY THE PICTURE, not in the Layers panel: partners are
+    # part of what is drawn, not an annotation over it.
+    partners = state.get("partners") or {}
+    partnerbar = ""
+    if partners.get("chains"):
+        partnerbar = ('<label class="bm-toggle"><input type="checkbox" id="bindos-partners" '
+                      f'checked>Show {html.escape(partners.get("label") or "partners")}'
+                      f' <span class="bp-n">{len(partners["chains"])}</span></label>')
+
     morph = state.get("morph") or {}
     morphbar = ""
     if morph.get("mode") == "browser":
@@ -784,7 +817,11 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         )
         morphbar = ('<div class="bindos-morph" id="bindos-morph" data-busy="0">'
                     f'<div class="bm-ring" role="group" aria-label="Conformation">{buttons}</div>'
+                    f'{partnerbar}'
                     '<span class="bp-muted" id="bindos-morph-note"></span></div>')
+    elif partnerbar:
+        morphbar = f'<div class="bindos-morph" id="bindos-morph">{partnerbar}</div>'
+    stage_has_ring = morph.get("mode") == "browser"
 
     about = state.get("about") or []
     tabstrip = ""
@@ -807,7 +844,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         f'{tabstrip}{panes_open}'
         '<main class="bindos-inspector">'
         '<section class="bindos-stage" id="bindos-stage" data-controls="1" '
-        f'data-morph="{"1" if morphbar else "0"}">'
+        f'data-morph="{"1" if stage_has_ring else "0"}">'
         '<button type="button" class="bp-btn" id="bindos-controls" '
         'aria-pressed="true">Hide controls</button>'
         f'{morphbar}{viewer_html}'
@@ -841,6 +878,8 @@ def render_inspection_bundle(
     display_options: dict[str, Any] | None = None,
     extras: bool = False,
     conformers: list[dict[str, Any]] | None = None,
+    partner_chains: list[str] | None = None,
+    partner_label: str = "Partners",
     morph_mapping: str = "exact",
     morph_reference_label: str = "reference",
     morph_to: list[dict[str, Any]] | None = None,
@@ -916,9 +955,25 @@ def render_inspection_bundle(
         # page expands them to N + (N-1)*steps on load. At 600 residues that
         # is the difference between 15 frames and 3 in the file.
         keys, names, stacks, labels, morph_report = _conformer_stacks(
-            source, conformers, morph_mapping, morph_reference_label)
+            source, conformers, morph_mapping, morph_reference_label,
+            exclude_chains=partner_chains)
         chain_ids = [k[0] for k in keys]
         residue_numbers = [k[1] for k in keys]
+        if partner_chains:
+            # A PARTNER DOES NOT MOVE. It exists in the reference only, so it
+            # is appended to every frame unchanged: the target morphs and the
+            # partner stays where the reference put it. Interpolating it
+            # towards nothing, or dropping it from the morph, would both be
+            # worse than saying plainly that only the target is animated.
+            static = _ca_trace(source)
+            extra = sorted(k for k in static if k[0] in set(partner_chains))
+            if extra:
+                block = np.array([static[k][1] for k in extra], dtype=float)
+                stacks = [np.vstack([stack, block]) for stack in stacks]
+                chain_ids += [k[0] for k in extra]
+                residue_numbers += [k[1] for k in extra]
+                names += [static[k][0] for k in extra]
+                morph_report["partner_positions_static"] = len(extra)
         for index, coords in enumerate(stacks):
             viewer.add(np.asarray(coords, dtype=float), chains=chain_ids,
                        residue_numbers=residue_numbers, position_names=names,
@@ -962,6 +1017,8 @@ def render_inspection_bundle(
         "overlays": manifest.get("overlays", []),
         "about": _about_tabs(manifest.get("about")),
         "morph": morph_report,
+        "partners": ({"chains": list(partner_chains), "label": partner_label}
+                     if partner_chains else None),
         "viewer": {"config": viewer.config, "objects": viewer.objects},
     }
     html_path = base.with_suffix(".html")
@@ -1139,7 +1196,8 @@ def _superpose(mobile: np.ndarray, target: np.ndarray) -> np.ndarray:
 
 
 def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
-                      mapping: str = "exact", reference_label: str = "reference"):
+                      mapping: str = "exact", reference_label: str = "reference",
+                      exclude_chains: list[str] | None = None):
     """Superpose any number of conformers onto a shared residue mapping.
 
     Returns (keys, residue_names, stacks, labels, report) where `stacks` holds
@@ -1155,14 +1213,15 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     """
     if mapping not in {"exact", "intersection"}:
         raise ValueError('morph_mapping must be "exact" or "intersection"')
-    ref = _ca_trace(reference)
+    skip = set(exclude_chains or ())
+    ref = {k: v for k, v in _ca_trace(reference).items() if k[0] not in skip}
     traces, labels, digests = [ref], [reference_label], [_sha256(reference)]
     for entry in conformers:
         path = Path(entry["path"]).resolve()
         digest = _sha256(path)
         if entry.get("sha256") and entry["sha256"] != digest:
             raise ValueError(f"{path.name}: morph conformer hash does not match")
-        traces.append(_ca_trace(path))
+        traces.append({k: v for k, v in _ca_trace(path).items() if k[0] not in skip})
         labels.append(entry.get("label") or path.stem)
         digests.append(digest)
 

@@ -94,11 +94,37 @@ residues — needed to compare a crystal chain against a full-length prediction 
 and `report["morph"]["conformers"][i]["residues_dropped"]` says what each file
 lost. Check it: a dropped epitope is a silent hole in the comparison.
 
+## Binding partners
+
+Partner chains live in the **same mmCIF** as the target and get a
+Show-partners toggle beside the viewer:
+
+```python
+inspect_structure("EGFR_with_Fab.cif", layers=layers, chain="A",
+                  partner_chains=["B", "C"], partner_label="cetuximab Fab")
+```
+
+`chain=` names the target (what your layers are numbered against);
+`partner_chains` names everything else you want drawn. The toggle is a
+visibility patch through the viewer's own API — nothing is reloaded — so
+unticking it clears the epitope for a clean look at the surface.
+
+Partners are **excluded from the morph residue mapping** and appended
+unchanged to every frame: a partner exists in the reference structure only, so
+interpolating it towards nothing would be fiction. Note in an `about` tab that
+a non-reference conformation shown under a partner drawn at its reference
+position is a composite, not an observation.
+
 ## Delivering it
 
 ```python
 save_artifacts(files=[report["path"]], language="python")
 ```
+
+A capture bar appears under the viewer when you press Save Image, carrying the
+PNG as a right-click-saveable link and the image itself. It exists because the
+viewer's download anchor is dropped without error in a frame that blocks
+downloads, while its status line still reports success.
 
 Then embed the returned version id inline. Orient/Focus/Rotate/Style/Clip/
 Capture float over the top-right of the canvas rather than sitting in a column

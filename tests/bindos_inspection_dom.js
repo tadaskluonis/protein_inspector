@@ -82,6 +82,13 @@ buttons['bindos-stage'] = stage;
 const morphBar = {attrs: {'data-busy': '0'}, setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; }};
 buttons['bindos-morph'] = morphBar;
+// The partners checkbox: a real checked/unchecked input whose change handler
+// the harness fires, so a dead toggle cannot pass.
+const partnerBox = {checked: true, handlers: [],
+    addEventListener(type, fn) { this.handlers.push(fn); },
+    setAttribute() {}, getAttribute() { return null; },
+    change() { this.handlers.forEach((fn) => fn()); }};
+buttons['bindos-partners'] = partnerBox;
 
 // One button per conformation, discovered the way the page discovers them.
 const morphButtons = ((state.morph && state.morph.conformers) || []).map((c, i) => {
@@ -148,6 +155,10 @@ const renderer = {
     residueSelection: new Set(),
     framesVisited: [],
     setResidueSelection(next) { this.residueSelection = next; },
+    visibility: null,
+    showAll() { this.visibility = 'all'; },
+    chainKeyAt(i) { return 'obj:' + this.chains[i]; },
+    setVisibility(patch) { this.visibility = patch; },
     setFrame(i) { this.currentFrame = i; this.framesVisited.push(i);
         if (this.onFrame) this.onFrame(i); renders++; },
     updateUIControls() { uiUpdates++; },
@@ -213,6 +224,25 @@ if (state.morph && state.morph.mode === 'browser' && morphButtons.length) {
     report.morph.bufferEndY = trail[trail.length - 1].y;
     report.morph.pressedAfter = morphButtons.map((b) => b.getAttribute('aria-pressed'));
     report.morph.note = buttons['bindos-morph-note'].textContent;
+}
+
+// --- partners --------------------------------------------------------------
+// Unticking must hide exactly the partner chains' positions and nothing else.
+if (state.partners && state.partners.chains) {
+    partnerBox.checked = false;
+    partnerBox.change();
+    const v = renderer.visibility;
+    const hidden = new Set(state.partners.chains);
+    const expected = chains.map((c, i) => [c, i]).filter(([c]) => !hidden.has(c)).map(([, i]) => i);
+    report.partners = {
+        mode: v === 'all' ? 'all' : 'patch',
+        shown: v && v.positions ? Array.from(v.positions).sort((a, b) => a - b) : null,
+        expected,
+        chainKeys: v && v.chains ? Array.from(v.chains).sort() : null,
+    };
+    partnerBox.checked = true;
+    partnerBox.change();
+    report.partners.afterRetick = renderer.visibility;
 }
 
 // --- controls collapse ----------------------------------------------------
