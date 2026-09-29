@@ -148,7 +148,7 @@ global.document = {
     querySelectorAll: (sel) => (sel === '[data-annotation]'
         ? Object.values(annotationRows)
         : (sel === '[data-layer]' ? Object.values(layerBoxes)
-            : (sel === '.bm-btn' ? morphButtons : []))),
+            : (sel === '.bm-btn[data-conf]' ? morphButtons : []))),
     addEventListener: () => {},
 };
 

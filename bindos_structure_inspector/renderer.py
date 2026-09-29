@@ -393,7 +393,11 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # fit both. Floating that column over the top-right of the canvas
         # frees the width, puts the controls on the thing they act on, and
         # leaves the grid's second column for the Layers panel.
-        ".bindos-stage{position:relative;min-width:0;overflow-x:auto}"
+        ".bindos-stage{position:relative;min-width:0;overflow:hidden}"
+        # The viewer's own root div carries an id and NO class in an export,
+        # so a `.py2dmol-viewer-instance` selector silently matches nothing --
+        # it is reached from JS below instead, by walking up from
+        # #mainContainer. Left here for the builds that do carry the class.
         ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}"
         ".bindos-stage #mainContainer{display:block!important;max-width:100%}"
         # WIDTH FLOWS ONE WAY ONLY. py2Dmol's ResizeObserver answers a
@@ -418,8 +422,8 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # grid, so the right edge lands just short of the panel at any frame
         # size. A ResizeObserver on this element re-renders, so the canvas
         # follows. Height stays the caller's, and stays draggable.
-        ".bindos-stage #canvasContainer{display:block!important;width:auto!important;"
-        "max-width:100%;resize:none!important}"
+        ".bindos-stage #canvasContainer{display:block!important;max-width:100%;"
+        "resize:none!important}"
         ".bindos-stage #canvasContainer .resize-handle{display:none!important}"
         ".bindos-stage #canvasContainer canvas{max-width:100%}"
         ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;"
@@ -436,12 +440,19 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # THE RING. One segment per conformation in a single pill, so the set
         # of states is visible at a glance and the current one is obvious
         # without reading a label.
+        # max-width was `calc(100% - 120px)`, reserving room for a button that
+        # no longer exists, and the ring could not wrap -- so on a narrow
+        # stage the later conformations ran off the edge, were clipped by the
+        # stage's overflow, and their clicks landed on the Layers header
+        # behind them. A control you can see the label of but cannot press is
+        # worse than one that has wrapped onto a second line.
         ".bindos-morph{display:flex;flex-wrap:wrap;align-items:center;gap:8px;"
-        "padding:0 0 8px;max-width:calc(100% - 120px)}"
-        ".bm-ring{display:inline-flex;align-items:center;gap:2px;padding:3px;"
-        "border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc}"
+        "padding:0 0 8px;max-width:100%}"
+        ".bm-ring{display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px;padding:3px;"
+        "border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc;max-width:100%}"
         ".bm-btn{font:11.5px system-ui;padding:5px 13px;border:0;background:none;"
-        "border-radius:999px;cursor:pointer;color:#475569;white-space:nowrap}"
+        "border-radius:999px;cursor:pointer;color:#475569;white-space:nowrap;"
+        "max-width:100%;overflow:hidden;text-overflow:ellipsis}"
         ".bm-btn:hover:not([aria-pressed='true']){background:#fff;color:#0f172a}"
         ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff}"
         ".bindos-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
@@ -655,6 +666,51 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
 document.addEventListener('py2dmol-color-change',function(){
   var r=renderer();if(!r||!r.colorMode||baseMode===r.colorMode)return;
   baseMode=r.colorMode;syncVisibleLayers();});
+// THE PICTURE FILLS ITS PANE, AND KEEPS FILLING IT. Width is set here, in
+// pixels, from the stage -- not left to `width:auto` and the cascade. Two
+// reasons it has to be JS. The viewer's root element carries an id and no
+// class in an export, so there is nothing stable to select it by; and it is
+// an inline-block, so every box inside it shrink-wraps its content. Together
+// those meant the canvas opened at its authored width inside a much wider
+// pane, and then LATCHED: narrowing the window shrank it and widening again
+// never brought it back, because shrink-to-fit had no reason to grow.
+//
+// Writing an explicit width on #canvasContainer each time the stage changes
+// removes the guesswork in both directions. py2Dmol's own ResizeObserver
+// watches that element and redraws the canvas to match.
+(function(){
+  var stage=document.getElementById('bindos-stage');
+  if(!stage)return;
+  var lastFit=-1;
+  function fitViewer(){
+    var main=stage.querySelector('#mainContainer'),
+        box=stage.querySelector('#canvasContainer');
+    if(!main||!box)return false;
+    var instance=main.parentElement;
+    if(instance&&instance!==stage){
+      instance.style.setProperty('display','block','important');
+      instance.style.setProperty('width','auto','important');
+      instance.style.setProperty('max-width','100%','important');
+      instance.style.setProperty('margin','0','important');}
+    // #mainContainer carries 8px of padding, which is 16px of pane the
+    // picture would otherwise never reach.
+    main.style.setProperty('padding','0','important');
+    var wrapper=stage.querySelector('#viewerWrapper');
+    if(wrapper)wrapper.style.setProperty('width','auto','important');
+    var want=Math.max(240,Math.floor(stage.clientWidth));
+    if(Math.abs(want-lastFit)<1)return true;
+    lastFit=want;
+    box.style.setProperty('width',want+'px','important');
+    return true;}
+  var tries=0;(function wait(){if(fitViewer()||++tries>600)return;
+    requestAnimationFrame(wait);})();
+  if(window.ResizeObserver)new ResizeObserver(fitViewer).observe(stage);
+  window.addEventListener('resize',fitViewer);
+  // The seam moves the stage without resizing the window.
+  var seam=document.getElementById('bindos-split');
+  if(seam){seam.addEventListener('pointermove',fitViewer);
+    seam.addEventListener('keydown',function(){requestAnimationFrame(fitViewer);});}
+})();
 // ONE BOUNDARY, DRAGGED. The panel width is a custom property on the grid,
 // so moving the seam re-lays out both panes at once and they cannot come
 // apart or overlap. The canvas takes its width from the column it is in and
@@ -746,14 +802,15 @@ document.addEventListener('py2dmol-color-change',function(){
 // off as an observation. `owner` maps each partner chain to the conformation
 // it came from; everything not in it is the target and is always visible.
 var partners=(s.partners&&s.partners.owner)?s.partners:null,partnersOn=true;
-function applyPartners(){
+function applyPartners(showFor){
+  var state=(showFor===undefined)?morphAt:showFor;
   var r=renderer();if(!r||!partners)return false;
   var list=r.chains||[];if(!list.length)return false;
   var pos=new Set(),chs=new Set(),shown=0;
   for(var i=0;i<list.length;i++){
     var of=partners.owner[list[i]];
     if(of!==undefined){
-      if(!partnersOn||of!==morphAt)continue;
+      if(!partnersOn||of!==state)continue;
       shown++;}
     pos.add(i);
     if(typeof r.chainKeyAt==='function')chs.add(r.chainKeyAt(i));}
@@ -766,6 +823,7 @@ function applyPartners(){
   // always land inside the setVisibility call.
   var keep=(morph&&morphReady)?morphAt
     :((typeof r.currentFrame==='number'&&r.currentFrame>=0)?r.currentFrame:0);
+  if(keep<0)keep=0;
   r.setVisibility(chs.size?{positions:pos,chains:chs}:{positions:pos});
   function holdFrame(){
     var live=renderer();if(!live)return;
@@ -824,7 +882,11 @@ function expandMorph(){
   morphScratch=n;morphReady=true;setMorphButtons(morphAt);
   applyPartners();syncPartnerButton();}
 function setMorphButtons(active){
-  var bs=document.querySelectorAll('.bm-btn');
+  // [data-conf] MATTERS. The partners control wears .bm-btn too, so that it
+  // looks like it belongs beside the ring -- and a bare .bm-btn query swept
+  // it into the ring's own handlers. Number(null) is 0, so pressing
+  // "partners" also asked to morph to the first conformation.
+  var bs=document.querySelectorAll('.bm-btn[data-conf]');
   for(var i=0;i<bs.length;i++)bs[i].setAttribute('aria-pressed',
     String(Number(bs[i].getAttribute('data-conf'))===active));
   var bar=document.getElementById('bindos-morph');
@@ -844,7 +906,7 @@ function goMorph(target){
   // The outgoing partner goes the moment the target starts moving: leaving it
   // on through the animation shows it bound to coordinates it was never
   // solved against.
-  var wasAt=morphAt;morphAt=-1;applyPartners();morphAt=wasAt;syncPartnerButton();
+  applyPartners(-1);syncPartnerButton();
   var a=from.coords,b=to.coords,out=buf.coords,
       t0=morphNow(),dur=Math.max(320,Math.min(900,morphSteps*36));
   (function step(){
@@ -860,7 +922,19 @@ function goMorph(target){
     r.setFrame(target);
     morphAt=target;morphBusy=false;setMorphButtons(target);
     applyPartners();syncPartnerButton();})();}
-var morphBtns=document.querySelectorAll('.bm-btn');
+// A WATCHDOG, BECAUSE THE FRAME MOVES BEHIND OUR BACK. Applying a visibility
+// patch makes py2Dmol jump the frame -- sometimes inside the call, sometimes
+// on a later tick, and sometimes to the LAST frame (the interpolation buffer)
+// rather than the first. Chasing each path with a targeted restore kept
+// missing one, so this watches the renderer's own frame-change event and puts
+// the frame back whenever it disagrees with the conformation the reader
+// chose. setFrame re-fires the event, but the guard makes the correction
+// idempotent, so it settles in one pass.
+document.addEventListener('py2dmol-frame-change',function(){
+  if(!morph||!morphReady||morphBusy)return;
+  var r=renderer();if(!r||typeof r.setFrame!=='function')return;
+  if(r.currentFrame!==morphAt)r.setFrame(morphAt);});
+var morphBtns=document.querySelectorAll('.bm-btn[data-conf]');
 for(var mb=0;mb<morphBtns.length;mb++)(function(btn){
   btn.addEventListener('click',function(){goMorph(Number(btn.getAttribute('data-conf')));});
 })(morphBtns[mb]);

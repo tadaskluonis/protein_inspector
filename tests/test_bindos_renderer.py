@@ -637,15 +637,19 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     """py2Dmol fixes .py2dmol-viewer-instance at 948px; the stage must clamp it."""
     html = _two_layer_bundle(tmp_path)
     text = Path(html).read_text()
-    assert ".bindos-stage{position:relative;min-width:0;overflow-x:auto" in text
+    assert ".bindos-stage{position:relative;min-width:0;overflow:hidden}" in text
     # Orient/Focus/Rotate/Style/Clip/Capture float over the top-LEFT of the
     # canvas instead of sitting in a 340px column beside it.
     assert ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;" in text
     assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}" in text
     # setupViewport writes an INLINE pixel width on #canvasContainer, so the
     # override has to be !important or the picture stays a fixed box.
-    assert '.bindos-stage #canvasContainer{display:block!important;width:auto!important;' in text
-    assert "max-width:100%;resize:none!important}" in text
+    assert '.bindos-stage #canvasContainer{display:block!important;max-width:100%;' in text
+    assert "resize:none!important}" in text
+    # The viewer root has an id and no class in an export, so the width is
+    # driven from JS by walking up from #mainContainer.
+    assert "var instance=main.parentElement" in text
+    assert "box.style.setProperty('width',want+'px','important')" in text
     # ...and the observer's write-back to #viewerWrapper must be inert, or
     # container and wrapper size from each other and the picture walks itself
     # narrower by one border per resize. Only reproducible in a real layout
@@ -944,3 +948,30 @@ def test_the_two_panes_share_one_draggable_boundary(tmp_path):
     # Keyboard moves it too -- left widens the panel.
     assert split["afterArrowLeft"] == 256
     assert split["afterHome"] == 340
+
+
+def test_the_conformation_ring_wraps_instead_of_running_off_the_stage(tmp_path):
+    """A label you can read but cannot press is worse than a second line.
+
+    The stage clips its overflow, so a ring that cannot wrap put the later
+    conformations off the edge with their hit areas over the Layers panel.
+    """
+    _, html = _morph_bundle(tmp_path, n_conformers=3)
+    text = html.read_text()
+    assert ".bm-ring{display:inline-flex;flex-wrap:wrap;" in text
+    assert "max-width:100%}" in text
+    # The old reservation was for a control that has since been removed.
+    assert "calc(100% - 120px)" not in text
+
+
+def test_the_partners_button_is_not_swept_into_the_conformation_ring(tmp_path):
+    """It wears .bm-btn so it looks of a piece with the ring; it must not be
+    wired like one. `Number(null)` is 0, so a bare `.bm-btn` query made
+    pressing "partners" also morph to the first conformation."""
+    _, html = _two_partner_bundle(tmp_path)
+    text = html.read_text()
+    assert "document.querySelectorAll('.bm-btn')" not in text
+    assert text.count("document.querySelectorAll('.bm-btn[data-conf]')") == 2
+    # The partners button carries no data-conf, which is what excludes it.
+    partners_tag = text.split('id="bindos-partners"')[0].rsplit("<button", 1)[1]
+    assert "data-conf" not in partners_tag
