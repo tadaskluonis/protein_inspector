@@ -384,7 +384,15 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bindos-stage{position:relative;min-width:0;overflow-x:auto}"
         ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}"
         ".bindos-stage #mainContainer{display:block!important;max-width:100%}"
-        ".bindos-stage #viewerWrapper{position:relative;max-width:100%}"
+        # WIDTH FLOWS ONE WAY ONLY. py2Dmol's ResizeObserver answers a
+        # container resize by writing the observed width back onto
+        # #viewerWrapper as an inline style. Once #canvasContainer is fluid,
+        # that closes a loop -- wrapper width from container, container width
+        # from wrapper -- and each pass loses the container's border, so the
+        # picture starts at the right size and then walks itself narrow. The
+        # !important here makes the observer's write inert: the wrapper takes
+        # its width from the grid column and nothing else.
+        ".bindos-stage #viewerWrapper{position:relative;width:auto!important;max-width:100%}"
         # THE DISPLAY AREA STOPS AT ITS OWN COLUMN. #canvasContainer carries
         # `resize: both` and an explicit pixel width, so without a ceiling the
         # reader can drag the picture out from under the Layers panel -- or

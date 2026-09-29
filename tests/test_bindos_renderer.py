@@ -646,6 +646,11 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     # override has to be !important or the picture stays a fixed box.
     assert '.bindos-stage #canvasContainer{display:block!important;width:auto!important;' in text
     assert "max-width:100%;resize:vertical}" in text
+    # ...and the observer's write-back to #viewerWrapper must be inert, or
+    # container and wrapper size from each other and the picture walks itself
+    # narrower by one border per resize. Only reproducible in a real layout
+    # engine, so this guards the rule rather than the behaviour.
+    assert ".bindos-stage #viewerWrapper{position:relative;width:auto!important;max-width:100%}" in text
     assert ".bindos-stage #canvasContainer canvas{max-width:100%}" in text
     # The Layers panel keeps its own column beside the structure, and there is
     # no collapse button to hide the viewer's controls with.
