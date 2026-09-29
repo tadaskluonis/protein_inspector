@@ -1,5 +1,6 @@
 import hashlib
 import json
+import numpy as np
 import pytest
 from pathlib import Path
 
@@ -637,14 +638,16 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     html = _two_layer_bundle(tmp_path)
     text = Path(html).read_text()
     assert ".bindos-stage{position:relative;min-width:0;overflow-x:auto" in text
-    assert "@media (max-width:1340px)" in text
-    assert 'id="bindos-controls"' in text
     # Orient/Focus/Rotate/Style/Clip/Capture float over the top-right of the
     # canvas instead of sitting in a 340px column beside it.
     assert ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;right:10px;" in text
     assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important}" in text
-    report = _run_dom_harness(html, {"chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5]})
-    assert report["controlsAfterClick"] == "0"
+    # The Layers panel keeps its own column beside the structure, and there is
+    # no collapse button to hide the viewer's controls with.
+    assert "grid-template-columns:minmax(0,1fr) 340px" in text
+    assert "@media (max-width:820px)" in text
+    assert 'id="bindos-controls"' not in text
+    assert "Hide controls" not in text
 
 
 def test_a_blocked_download_still_leaves_the_capture_recoverable(tmp_path):
@@ -830,3 +833,55 @@ def test_a_colliding_partner_chain_is_renamed_not_merged(tmp_path):
     blocks = result["morph"]["partner_blocks"]
     assert [b["chains"] for b in blocks] == [["B"], ["B1"]]
     assert blocks[1]["renamed_from"] == {"B1": "B"}
+
+
+def test_a_conformers_partner_travels_with_its_receptor(tmp_path):
+    """The fit applied to the target must be applied to its partner too.
+
+    Otherwise the receptor rotates onto the reference and its partner stays
+    where its own crystal put it -- floating in space beside nothing.
+    """
+    def complex_cif(path, rotate_by, partner_chain):
+        angle = np.deg2rad(rotate_by)
+        rot = np.array([[np.cos(angle), -np.sin(angle), 0.0],
+                        [np.sin(angle), np.cos(angle), 0.0],
+                        [0.0, 0.0, 1.0]])
+        structure = Structure.Structure("fixture")
+        model = Model.Model(0)
+        for chain_id, offset in (("A", 0.0), (partner_chain, 9.0)):
+            chain = Chain.Chain(chain_id)
+            for index in range(1, 7):
+                xyz = np.array([float(index * 3), float(index % 2) + offset, 0.0]) @ rot.T
+                residue = Residue.Residue((" ", index, " "), "ALA", " ")
+                residue.add(Atom.Atom("CA", tuple(xyz), 0.0, 1.0, " ", "CA", index, element="C"))
+                chain.add(residue)
+            model.add(chain)
+        structure.add(model)
+        io = MMCIFIO()
+        io.set_structure(structure)
+        io.save(str(path))
+        return path
+
+    # Same complex, one rotated 70 degrees in the plane. Superposing the
+    # targets must bring the partners on top of each other too.
+    reference = complex_cif(tmp_path / "ref.cif", 0.0, "P")
+    turned = complex_cif(tmp_path / "turned.cif", 70.0, "Q")
+    result = render_inspection_bundle(
+        mmcif_path=str(reference),
+        mmcif_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        output_dir=str(tmp_path / "out"), partner_chains=["P"],
+        conformers=[{"path": str(turned), "label": "Turned", "partner_chains": ["Q"]}],
+        morph_mapping="exact", extras=True)
+
+    state = json.loads(Path(next(item["path"] for item in result["artifacts"]
+                                 if item["kind"] == "viewer_state")).read_text())
+    frame = state["viewer"]["objects"][0]["frames"][0]
+    chains = frame["chains"]
+    coords = np.array(frame["coords"], dtype=float)
+    p_block = coords[[i for i, c in enumerate(chains) if c == "P"]]
+    q_block = coords[[i for i, c in enumerate(chains) if c == "Q"]]
+    assert len(p_block) == len(q_block) == 6
+    # The turned copy's partner lands on the reference's partner, not 70
+    # degrees away from it.
+    assert np.abs(p_block - q_block).max() < 1e-6

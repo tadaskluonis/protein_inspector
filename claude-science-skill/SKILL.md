@@ -1,170 +1,114 @@
 ---
 name: bindos-inspector
-description: "Build a single self-contained interactive HTML structure viewer with annotated, toggleable residue layers — epitopes, hotspots, glycans, domains, mutations, interface contacts — and optional button-driven morphing between any number of conformations. Use when visualizing a binder-design target, showing which residues an analysis picked out on a protein, sharing a structure figure someone must be able to rotate and click rather than read off a PNG, or checking a design's contacts against a reference structure. Renders inline in chat as an artifact; no external viewer needed."
+description: "Turn a structure and a set of residues into one self-contained interactive HTML page: named colour layers the reader can toggle, optional partner chains, and optional button-driven morphing between any number of conformations. Reach for it whenever an analysis has picked out residues that someone needs to see ON the structure rather than read as a list — epitopes, hotspots, pockets, conserved or divergent positions, mutations, contacts, confidence, anything per-residue. Renders inline in chat as an artifact and opens anywhere with no install."
 ---
 
-# BindOS structure inspector
+# Structure inspection bundles
 
-One structure, any number of named residue layers, one HTML file. The file is
-self-contained — it opens with no server, no network and no install, and in
-Claude Science it renders **inline** as an artifact, so the reader never leaves
-the conversation.
+One structure in, one HTML file out. It opens with no server, no network and
+no install, and in Claude Science it renders **inline** as an artifact, so the
+reader never leaves the conversation.
 
-Use it whenever an analysis produces a *set of residues* that someone has to
-look at on the structure: a predicted epitope, hotspot residues, a glycan
-shadow, conserved-vs-divergent positions between orthologues, contacts in a
-docked pose, liabilities in a design.
+The unit it works in is a **layer**: a named, coloured set of residues with an
+optional note on each. What a layer *means* is entirely yours — the tool has
+no opinion about biology. A layer has been a crystallographic epitope, a
+docking hotspot set, columns of a conservation alignment, residues above a
+pLDDT cutoff, positions a mutagenesis scan called dead, the output of a
+clustering run, or just "the twelve residues I want you to look at".
 
-Built on **py2Dmol** by Sergey Ovchinnikov
-(<https://github.com/sokrypton/py2Dmol>), which is inlined into every bundle.
-The annotation layers, manifest schema, morph and partner toggle are the
-BindOS inspector's additions, by profdocpizza. Both parts are BEER-WARE
-(Revision 42) — free to reuse for anything, keep the notice — and every
-exported bundle carries both notices so the file stays as reusable as the
-code that made it. Don't strip the credit footer from a bundle you pass on.
+Use it whenever the result of some work is *which residues*, and a list of
+numbers would make the reader open a viewer themselves. That covers far more
+than design work: showing a collaborator what your script found, checking your
+own annotation landed where you meant, putting a rotatable figure in a report,
+or handing someone a structure they can interrogate without your environment.
+
+## The one thing to get right
+
+**Show less than you have.** A bundle with every layer you could compute is a
+legend with a structure behind it. Pick the few that carry the argument; the
+reader can always be sent a second bundle. Six layers visible at once is
+plenty, and two is often the whole point.
 
 ## Setup
-
-The engine is a separate package. Once per environment:
 
 ```bash
 pip install git+https://github.com/profdocpizza/bindos-structure-inspector@v1.13
 ```
 
-If the user has a local checkout instead, set `BINDOS_INSPECTOR_HOME` to it —
-`inspector_engine()` also probes `~/code/bindos-structure-inspector`.
-`gemmi` is needed only when you hand it a `.pdb`.
+Or set `BINDOS_INSPECTOR_HOME` to a local checkout (`~/code/bindos-structure-inspector`
+is probed by default). `gemmi` is needed only for `.pdb` input.
 
-## Workflow
-
-1. **Prepare one mmCIF per structure.** One model, one chain per file is
-   simplest. Author residue numbering is what you will annotate against, so
-   renumber to UniProt positions *before* rendering if that is the numbering
-   your analysis speaks.
-2. **Write the layer spec** — an ordered list, background first, since later
-   layers paint over earlier ones.
-3. **Render**, then `save_artifacts` the HTML and embed it inline.
-4. **Read it back** with `inspection_table()` to verify the residues actually
-   landed where you meant.
+## Making one
 
 ```python
 report = inspect_structure(
     "target.cif",
     layers=[
-        {"id": "domain-III", "label": "Domain III", "color": "#8fa8bd",
-         "residues": range(310, 481)},
-        {"id": "epitope", "label": "Cetuximab epitope", "color": "#dc2626",
-         "residues": {356: "Q384 rim", 384: "core contact", 468: "hot spot"}},
+        {"id": "core", "label": "Hydrophobic core", "color": "#8fa8bd",
+         "residues": range(40, 78)},
+        {"id": "picked", "label": "Residues from the scan", "color": "#dc2626",
+         "residues": {56: "largest effect", 60: "second", 91: "third"}},
     ],
-    about={"Why this target": "...prose, HTML allowed..."},
-    out="target_inspection.html",
+    about={"What this is": "...prose, HTML allowed, becomes a tab..."},
+    out="inspection.html",
 )
-report["path"], report["unmapped_residues"]
-```
-
-`residues` takes a list/range of author residue numbers, or a
-`{number: note}` mapping when each residue deserves its own caption.
-Always check `report["unmapped_residues"]` — residues absent from the model are
-skipped silently otherwise.
-
-## Morphing between conformations
-
-Pass `conformers=` to compare states — apo/holo, tethered/extended, crystal vs
-prediction, wild-type vs design. Any number of structures; **one button per
-conformation**, no slider hunting.
-
-```python
-inspect_structure(
-    "6ARU_A.cif",                                  # the reference
-    layers=layers,
-    conformers=[{"path": "1NQL_A.cif",  "label": "Tethered (1NQL)"},
-                {"path": "AF-P00533.cif", "label": "AlphaFold"}],
-    morph_mapping="intersection",                  # or "exact"
-)
-```
-
-The control is a **ring of segments**, one per conformation, and **any state
-morphs straight to any other** — first to last does not travel through the
-states in between. Only the endpoint traces are written to the file; the page
-interpolates whichever pair you ask for as it draws, so N conformations cost N
-frames and no stored intermediates. `morph_steps` sets the animation length,
-not the file size. The frame transport (Play, slider, counter) is hidden when a
-morph is present: it has nothing left to say, and a Play button that walks the
-interpolation buffer would imply a trajectory.
-
-The animation is **Cartesian interpolation — a depiction of two endpoints, not
-a pathway**; intermediates are not physical and bond geometry is not preserved.
-Say so in an `about` tab whenever the morph is part of an argument.
-
-`morph_mapping="exact"` (default in the engine) refuses anything but an
-identical residue set across all files. `"intersection"` opts in to the shared
-residues — needed to compare a crystal chain against a full-length prediction —
-and `report["morph"]["conformers"][i]["residues_dropped"]` says what each file
-lost. Check it: a dropped epitope is a silent hole in the comparison.
-
-## Binding partners
-
-Partner chains live in the **same mmCIF** as the structure they are bound to,
-and each conformation may carry its own:
-
-```python
-inspect_structure("EGFR_with_Fab.cif", layers=layers, chain="A",
-                  partner_chains=["B", "C"], partner_label="cetuximab Fab",
-                  conformers=[{"path": "1NQL_A.cif", "label": "Tethered"},
-                              {"path": "design_complex.cif", "label": "Design",
-                               "partner_chains": ["D"]}])
-```
-
-`chain=` names the target (what your layers are numbered against);
-`partner_chains` names everything else drawn alongside it, for the reference
-structure, and each conformer takes its own `partner_chains`. One button
-toggles them, and **partners belong to the conformation they came from**:
-morph away and that state's partner goes with it, morph back and it returns.
-A conformation with no partner of its own greys the button out.
-
-That is not a convenience — a partner solved against one conformation, left
-draped over another's coordinates, is a composite passed off as an
-observation. Each partner is drawn only while its own state is on screen.
-
-Partners are excluded from the morph residue mapping and held still within
-their state (they do not interpolate). If two conformations carry the same
-chain id, the later one is renamed rather than merged —
-`report["morph"]["partner_blocks"][i]["renamed_from"]` records it.
-
-## Delivering it
-
-```python
 save_artifacts(files=[report["path"]], language="python")
 ```
 
-A capture bar appears under the viewer when you press Save Image, carrying the
-PNG as a right-click-saveable link and the image itself. It exists because the
-viewer's download anchor is dropped without error in a frame that blocks
-downloads, while its status line still reports success.
+`residues` takes a range, a list, or a `{number: note}` mapping when each
+residue deserves its own caption. Numbers are **author residue numbers** in
+the file, so renumber before rendering if your analysis speaks a different
+numbering. Later layers paint over earlier ones — order background first.
 
-Then embed the returned version id inline. Orient/Focus/Rotate/Style/Clip/
-Capture float over the top-right of the canvas rather than sitting in a column
-beside it, so the bundle stays usable in a narrow frame; `Hide controls` folds
-them away. Keep bundles under ~20 MB
-(`report["size_warning"]` appears above that) — a big structure with a morph is
-the usual cause; trim the chain or drop a conformer.
+Always read `report["unmapped_residues"]`: residues absent from the model are
+skipped, and silently if you don't look.
 
-## Verifying
+## What else it can do
 
-`inspection_table(path)` returns one row per modelled residue —
-`chain_id, author_residue_number, canonical_position, residue_name, x/y/z,
-plddt, color, layers[], labels[]` — recovered from the rendered file itself, so
-it proves what the reader will actually see. There is also a no-import CLI:
+**Partner chains.** Anything in the same file that isn't the target —
+`partner_chains=["B", "C"]` — gets one toggle button. Any chain: a bound
+antibody, a ligand-bearing chain, the other half of a dimer, a docked design.
+
+**Conformations.** `conformers=[{"path": ..., "label": ...}]`, any number, one
+button each, and any state morphs straight to any other. Only the endpoints
+are stored; the page interpolates. Each conformer may bring its own
+`partner_chains`, and a partner is shown only while its own state is on
+screen — a partner solved against one conformation, left draped over
+another's coordinates, is a composite passed off as an observation.
+
+Two warnings worth repeating to your reader in an `about` tab:
+
+- The morph is **Cartesian interpolation between endpoints, not a pathway**.
+  Intermediates are not physical and bond geometry is not preserved.
+- `morph_mapping="intersection"` (as against `"exact"`) drops residues not
+  shared by every file. Check
+  `report["morph"]["conformers"][i]["residues_dropped"]` — a silently dropped
+  region is a hole in the comparison.
+
+**About tabs.** `about=` takes a string, a `{title: body}` mapping, or a list
+of `{"title", "body"}`; each becomes a tab beside the structure. HTML is
+allowed and images can be inlined as data URIs. Context belongs here rather
+than in a second file — a bundle is one file precisely so that nothing arrives
+detached from it.
+
+## Checking it
+
+`inspection_table(path)` reads the rendered file back and returns one row per
+modelled residue — chain, author number, canonical position, residue name,
+coordinates, pLDDT, colour, layers, labels. It reports what the reader will
+actually see, so it is the honest check that an annotation landed on the
+residue you named. There is also a CLI:
 `python -m bindos_structure_inspector bundle.html residues`.
 
-## Choosing layers
+## Notes
 
-- **Six or fewer layers** on screen at once. Beyond that the legend is the
-  figure and the structure is decoration.
-- **One fact per layer.** "Epitope" and "glycan shadow" are two layers, not one
-  two-colour layer.
-- **Tiling layers hide the base.** Four domain layers covering the whole chain
-  means every residue is painted; add them last and expect the reader to untick
-  them to see anything underneath.
-- Let colour carry annotation meaning only — leave the unannotated chain in the
-  engine's grey and don't also set `style`/`color` display options.
+Keep bundles under ~20 MB so they stay emailable; `report["size_warning"]`
+appears above that. Save Image writes a capture bar under the viewer with a
+right-click-saveable PNG, because the browser download is silently dropped in
+some embedded frames.
+
+Built on **py2Dmol** by Sergey Ovchinnikov
+(<https://github.com/sokrypton/py2Dmol>), inlined into every bundle. Layers,
+morph, partners and export are by profdocpizza. Both BEER-WARE (Revision 42) —
+free to reuse, keep the notice. Every bundle carries both; don't strip the
+credit footer from one you pass on.

@@ -374,33 +374,27 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         "<style>"
         "html,body{margin:0;background:#fff}body{padding:14px;box-sizing:border-box}"
         ".bindos-inspector{font:14px/1.45 system-ui,sans-serif;display:grid;"
-        "grid-template-columns:minmax(0,1fr) 360px;gap:14px;color:#0f172a;align-items:start}"
+        "grid-template-columns:minmax(0,1fr) 340px;gap:16px;color:#0f172a;align-items:start}"
         # THE TOOLS BELONG INSIDE THE PICTURE. py2Dmol lays the viewer out as
         # a flex row -- canvas, then a 340px column of Orient/Focus/Rotate/
         # Style/Clip/Capture -- and pins .py2dmol-viewer-instance to 948px to
-        # fit both. In any frame narrower than that (an embedded panel, a split
-        # editor pane, a chat artifact tile) the column overflowed its grid
-        # column and painted over the Layers panel, swallowing the checkbox
-        # clicks underneath. Floating it over the top-right of the canvas fixes
-        # the overlap and the crowding together: the instance is then only as
-        # wide as its canvas, and the controls sit on the thing they act on.
-        ".bindos-stage{position:relative;min-width:0;overflow-x:auto;padding-top:34px}"
-        "#bindos-controls{position:absolute;top:0;right:2px;z-index:6}"
+        # fit both. Floating that column over the top-right of the canvas
+        # frees the width, puts the controls on the thing they act on, and
+        # leaves the grid's second column for the Layers panel.
+        ".bindos-stage{position:relative;min-width:0;overflow-x:auto}"
         ".bindos-stage .py2dmol-viewer-instance{width:auto!important}"
         ".bindos-stage #mainContainer{display:block!important}"
         ".bindos-stage #viewerWrapper{position:relative}"
         ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;right:10px;"
-        "z-index:5;width:340px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
-        "overflow-y:auto;background:rgba(255,255,255,.93);border:1px solid #e2e8f0;"
+        "z-index:5;width:336px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
+        "overflow-y:auto;background:rgba(255,255,255,.94);border:1px solid #e2e8f0;"
         "border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.14)}"
-        ".bindos-stage[data-controls='0'] #rightPanelContainer{display:none!important}"
-        # With a conformation ring there is nothing left for the frame
-        # transport to say, and a Play button that walks the interpolation
-        # buffer says something untrue. updateUIControls() rewrites the inline
-        # display on these, so the rule has to be !important -- and the nodes
-        # stay in the DOM because the renderer binds to them unguarded.
+        # THE LAYERS PANEL STAYS BESIDE THE STRUCTURE. Ticking a layer and
+        # watching the structure change is the whole interaction, and it does
+        # not survive the panel being pushed below the fold. It only stacks
+        # where a side-by-side would leave the canvas unusably narrow.
         ".bindos-stage[data-morph='1'] #controlsContainer{display:none!important}"
-        "@media (max-width:1340px){.bindos-inspector{grid-template-columns:minmax(0,1fr)}"
+        "@media (max-width:820px){.bindos-inspector{grid-template-columns:minmax(0,1fr)}"
         ".bindos-panel{max-height:60vh}}"
         # THE RING. One segment per conformation in a single pill, so the set
         # of states is visible at a glance and the current one is obvious
@@ -427,8 +421,9 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bindos-capture a{color:#1d4ed8}"
         ".bindos-capture img{display:block;margin:8px 0 0;max-width:100%;max-height:260px;"
         "border:1px solid #e2e8f0;border-radius:6px;background:#fff}"
-        ".bindos-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:880px;overflow:auto;"
-        "display:flex;flex-direction:column;background:#fff}"
+        ".bindos-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:88vh;overflow:auto;"
+        "display:flex;flex-direction:column;background:#fff;position:sticky;top:14px;"
+        "box-shadow:0 8px 24px rgba(15,23,42,.06)}"
         ".bp-head{position:sticky;top:0;z-index:2;background:#fff;display:flex;justify-content:space-between;"
         "align-items:center;gap:8px;padding:10px 12px 6px;border-bottom:1px solid #f1f5f9}"
         ".bp-head h2{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#475569;margin:0}"
@@ -782,22 +777,6 @@ var morphBtns=document.querySelectorAll('.bm-btn');
 for(var mb=0;mb<morphBtns.length;mb++)(function(btn){
   btn.addEventListener('click',function(){goMorph(Number(btn.getAttribute('data-conf')));});
 })(morphBtns[mb]);
-// CONTROLS COLLAPSE. Auto only until the reader decides: a bundle opened in a
-// narrow frame starts with the viewer's own control column folded away, so the
-// Layers panel is clickable on first paint, but one click on the button pins
-// the choice and resizing never overrides it again.
-var stage=document.getElementById('bindos-stage'),ctlBtn=document.getElementById('bindos-controls'),
-    ctlPinned=false;
-function setControls(on){if(!stage)return;stage.setAttribute('data-controls',on?'1':'0');
-  if(ctlBtn){ctlBtn.textContent=on?'Hide controls':'Show controls';
-    ctlBtn.setAttribute('aria-pressed',on?'true':'false');}
-  var r=renderer();if(r)r.render('BindOS controls toggle');}
-// The tool column floats over the canvas now, so width no longer decides
-// whether it FITS -- only whether it would cover the structure it acts on.
-function autofitControls(){if(ctlPinned||!stage)return;setControls(stage.clientWidth>=560);}
-if(ctlBtn)ctlBtn.addEventListener('click',function(){ctlPinned=true;
-  setControls(stage.getAttribute('data-controls')!=='1');});
-window.addEventListener('resize',autofitControls);
 var tabs=document.querySelectorAll('[data-tab]');
 for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',function(){
   var want=btn.getAttribute('data-tab');
@@ -811,7 +790,7 @@ if(partners&&!morph){var pt=0;(function pwait(){
   if(applyPartners()!==false||++pt>600){syncPartnerButton();return;}
   requestAnimationFrame(pwait);})();}
 var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
-  if((ok&&(!morph||morphReady))||++tries>600){autofitControls();return;}
+  if((ok&&(!morph||morphReady))||++tries>600)return;
   requestAnimationFrame(wait);})();
 })();</script>"""
     panel = (css
@@ -917,8 +896,6 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         '<main class="bindos-inspector">'
         '<section class="bindos-stage" id="bindos-stage" data-controls="1" '
         f'data-morph="{"1" if stage_has_ring else "0"}">'
-        '<button type="button" class="bp-btn" id="bindos-controls" '
-        'aria-pressed="true">Hide controls</button>'
         f'{morphbar}{viewer_html}'
         '<div class="bindos-capture" id="bindos-capture" hidden></div>'
         '</section>'
@@ -1037,7 +1014,7 @@ def render_inspection_bundle(
         for entry in conformers:
             partner_spec.append(list(entry.get("partner_chains") or ()))
         excluded = sorted({c for group in partner_spec for c in group})
-        keys, names, stacks, labels, morph_report = _conformer_stacks(
+        keys, names, stacks, labels, morph_report, fits = _conformer_stacks(
             source, conformers, morph_mapping, morph_reference_label,
             exclude_chains=excluded)
         chain_ids = [k[0] for k in keys]
@@ -1066,7 +1043,10 @@ def render_inspection_bundle(
                 taken.add(label)
                 renamed[chain] = label
                 owner[label] = index
-            block = np.array([trace[k][1] for k in extra], dtype=float)
+            # THE PARTNER MOVES WITH ITS RECEPTOR. Conformer i's target was
+            # rotated onto the reference; its partner has to take the same
+            # trip or it is left floating where the original crystal put it.
+            block = fits[index](np.array([trace[k][1] for k in extra], dtype=float))
             stacks = [np.vstack([stack, block]) for stack in stacks]
             chain_ids += [renamed[k[0]] for k in extra]
             residue_numbers += [k[1] for k in extra]
@@ -1298,13 +1278,29 @@ def _ca_trace(cif_path: Path) -> dict[tuple[str, int], tuple[str, list[float]]]:
     return out
 
 
-def _superpose(mobile: np.ndarray, target: np.ndarray) -> np.ndarray:
-    """Kabsch, reflection forbidden. Returns `mobile` moved onto `target`."""
-    mc, tc = mobile - mobile.mean(0), target - target.mean(0)
+def _kabsch(mobile: np.ndarray, target: np.ndarray):
+    """Return the transform that moves `mobile` onto `target`. No reflection.
+
+    Returned as a callable rather than as coordinates, because everything that
+    travels with the mobile body -- a bound partner, a ligand -- has to move by
+    the SAME transform. Applying the fit to the receptor and leaving its
+    partner in the original frame leaves the partner floating in space beside
+    a receptor that has rotated out from under it.
+    """
+    mobile_center, target_center = mobile.mean(0), target.mean(0)
+    mc, tc = mobile - mobile_center, target - target_center
     v, _, wt = np.linalg.svd(mc.T @ tc)
     d = np.sign(np.linalg.det(v @ wt))
     rotation = v @ np.diag([1.0, 1.0, d]) @ wt
-    return mc @ rotation + target.mean(0)
+
+    def apply(points: np.ndarray) -> np.ndarray:
+        return (np.asarray(points, dtype=float) - mobile_center) @ rotation + target_center
+    return apply
+
+
+def _superpose(mobile: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Kabsch, reflection forbidden. Returns `mobile` moved onto `target`."""
+    return _kabsch(mobile, target)(mobile)
 
 
 def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
@@ -1356,8 +1352,12 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     keys = sorted(common)
     names = [ref[k][0] for k in keys]
     base = np.array([ref[k][1] for k in keys], dtype=float)
-    stacks = [base] + [_superpose(np.array([t[k][1] for k in keys], dtype=float), base)
-                       for t in traces[1:]]
+    stacks, transforms = [base], [lambda points: np.asarray(points, dtype=float)]
+    for trace in traces[1:]:
+        moved = np.array([trace[k][1] for k in keys], dtype=float)
+        fit = _kabsch(moved, base)
+        stacks.append(fit(moved))
+        transforms.append(fit)
     report = {
         "mapping": mapping,
         "n_residues": len(keys),
@@ -1368,7 +1368,7 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
             for label, digest, drop, stack in zip(labels, digests, dropped, stacks)
         ],
     }
-    return keys, names, stacks, labels, report
+    return keys, names, stacks, labels, report, transforms
 
 
 def _morph_frames(reference: Path, conformers: list[dict[str, Any]], steps: int):
@@ -1381,7 +1381,7 @@ def _morph_frames(reference: Path, conformers: list[dict[str, Any]], steps: int)
     endpoints, NOT a pathway: intermediates are not physical and bond geometry
     is not preserved.
     """
-    keys, names, stacks, labels, report = _conformer_stacks(reference, conformers, "exact")
+    keys, names, stacks, labels, report, _ = _conformer_stacks(reference, conformers, "exact")
     frames, rmsds = [], []
     for index in range(len(stacks) - 1):
         start, end = stacks[index], stacks[index + 1]
