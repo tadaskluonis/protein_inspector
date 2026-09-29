@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.6"
+INSPECTOR_VERSION = "bindos-inspector-1.7"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 
@@ -55,6 +55,10 @@ _ALLOWED_LAYER_KINDS = {
 _HIGHLIGHT_STYLES = {"color", "halo"}
 _LAYER_COLORS = ("#dc2626", "#2563eb", "#059669", "#9333ea", "#d97706", "#0891b2")
 _HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+# The neutral backdrop every bundle paints before its layers. Not a py2Dmol
+# colour mode -- see _color_annotations for why a mode cannot do this.
+BASE_COLOR = "#b9bfc7"
 
 
 def _sha256(path: Path) -> str:
@@ -144,12 +148,29 @@ def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: list[dict[str, Any]]) -> None:
-    """Apply each declared layer color to its resolved residue positions."""
+def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: list[dict[str, Any]],
+                       base_color: str = BASE_COLOR) -> None:
+    """Paint a neutral base over the whole chain, then each layer on top.
+
+    The base is painted EXPLICITLY rather than left to the viewer's colour
+    mode. py2Dmol's mode list is {auto, chain, rainbow, plddt, deepmind,
+    entropy, object, hydrophobicity, ss} — there is no flat-grey member, and an
+    unrecognised name is not an error: `ui.js` silently falls back to `auto`,
+    which on a single-chain object is rainbow. A rainbow backdrop competes with
+    every layer colour, which is the one channel here that carries meaning.
+
+    Painting the base also fixes the all-layers-off case. The per-position map
+    is dropped entirely when nothing is painted (`object.color = null`), so
+    unticking every layer used to reveal the rainbow rather than a neutral
+    structure.
+    """
     frame = viewer.objects[-1]["frames"][0]
+    chains = frame.get("chains") or []
     positions: dict[tuple[str, int], list[int]] = {}
-    for index, (chain, number) in enumerate(zip(frame.get("chains") or [], frame.get("residue_numbers") or [])):
+    for index, (chain, number) in enumerate(zip(chains, frame.get("residue_numbers") or [])):
         positions.setdefault((str(chain), int(number)), []).append(index)
+    if chains:
+        viewer.set_color(base_color, position=list(range(len(chains))))
     by_id = {item["annotation_id"]: item for item in annotations}
     for layer in layers:
         indices: list[int] = []
@@ -341,6 +362,8 @@ function syncVisibleLayers(){
     if(obj){var off=0;if(typeof r.localRangeOf==='function'){var w=r.localRangeOf(name);
         if(w&&typeof w.off==='number')off=w.off;}
       var paint={},painted=false;
+      var BASE=s.base_color||'#b9bfc7',ntot=(r.residueNumbers||[]).length;
+      for(var bi=0;bi<ntot;bi++){paint[bi-off]=BASE;painted=true;}
       for(var li2=0;li2<s.layers.length;li2++){var l2=s.layers[li2];if(!layerVisible(l2.layer_id))continue;
         for(var aj=0;aj<l2.annotation_ids.length;aj++){var a2=byId[l2.annotation_ids[aj]];
           if(!a2||!a2.resolved||!a2.color)continue;
@@ -507,7 +530,7 @@ def render_inspection_bundle(
     viewer = py2Dmol.view(
         size=(int(options.get("width", 720)), int(options.get("height", 720))),
         style=options.get("style", "tube"),
-        color=options.get("color", "gray"),
+        color=options.get("color", "chain"),
         bg=options.get("background", "white"),
         gpu=False,
         controls=True,
@@ -537,6 +560,7 @@ def render_inspection_bundle(
         _color_annotations(viewer, manifest["annotations"], layers)
     state = {
         "highlight": highlight,
+        "base_color": BASE_COLOR,
         "schema_version": "bindos-viewer-state-1",
         "inspector_version": INSPECTOR_VERSION,
         "upstream_revision": UPSTREAM_REVISION,

@@ -138,22 +138,27 @@ def test_layer_checkboxes_repaint_the_structure(tmp_path):
         ],
     }
     report = _run_dom_harness(html_path, spec)
+    base = "#b9bfc7"
+    lit = {"0": "#111111", "1": "#222222", "2": base, "3": base, "4": base}
     # Manifest order decides overlap: layer-b is emitted second, so it owns residue 2.
-    assert report["initial"] == {"0": "#111111", "1": "#222222"}
+    # Everything else carries the neutral base rather than the viewer's colour mode.
+    assert report["initial"] == lit
     assert report["renders"] >= 1
-    # Layer A off: its exclusive residue loses colour, layer B's survives.
-    assert report["steps"]["hide_a"]["paint"] == {"1": "#222222"}
-    # Everything off: colour map cleared entirely, back to the default mode.
-    assert report["steps"]["hide_both"]["paint"] is None
+    # Layer A off: its exclusive residue falls back to the base, layer B's survives.
+    assert report["steps"]["hide_a"]["paint"] == {**lit, "0": base}
+    # Everything off: a fully neutral structure. NOT None — dropping the map here
+    # is what used to expose the rainbow that `auto` resolves to on one chain.
+    assert report["steps"]["hide_both"]["paint"] == {str(i): base for i in range(5)}
     # ...and back, byte for byte.
-    assert report["steps"]["show_both"]["paint"] == {"0": "#111111", "1": "#222222"}
+    assert report["steps"]["show_both"]["paint"] == lit
 
 
 def test_layers_repaint_when_the_viewer_starts_late(tmp_path):
     """The bundle builds its renderer on load, after this script runs."""
     report = _run_dom_harness(_two_layer_bundle(tmp_path), {
         "chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5], "rafDelay": 5})
-    assert report["initial"] == {"0": "#111111", "1": "#222222"}
+    base = "#b9bfc7"
+    assert report["initial"] == {"0": "#111111", "1": "#222222", "2": base, "3": base, "4": base}
     assert report["frames"] >= 5
 
 
@@ -170,12 +175,15 @@ def test_color_mode_does_not_also_halo_the_layer_residues(tmp_path):
     report = _run_dom_harness(_two_layer_bundle(tmp_path), {
         "chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5],
         "steps": [{"name": "hide_a", "set": {"layer-a": False}}]})
-    assert report["initial"] == {"0": "#111111", "1": "#222222"}
+    base = "#b9bfc7"
+    assert report["initial"] == {"0": "#111111", "1": "#222222", "2": base, "3": base, "4": base}
     # Layer visibility must leave the selection overlay alone in colour mode.
     assert report["steps"]["hide_a"]["selection"] == 0
 
 
 def test_halo_mode_selects_instead_of_painting(tmp_path):
+    # Halo mode deliberately paints NO base: it exists to keep the structure's
+    # own colouring (pLDDT, chain) intact and annotate on top of it.
     html_path = _two_layer_bundle(tmp_path, highlight="halo")
     report = _run_dom_harness(html_path, {
         "chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5],
@@ -251,3 +259,60 @@ def test_every_export_is_self_contained(tmp_path):
         )
         sizes.append(len(page))
     assert min(sizes) > 400_000, f"a bundle is too small to contain the library: {sizes}"
+
+
+def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
+    """A neutral base must be painted explicitly, not left to a colour mode.
+
+    py2Dmol has no flat-grey mode and does not reject an unknown one — ui.js
+    falls back to 'auto', i.e. rainbow on a single chain. So the backdrop has
+    to come from the per-position map, and it has to be there when every layer
+    is off, which is exactly when the map used to be dropped for null.
+    """
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    digest = hashlib.sha256(cif.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": "bindos-inspection-manifest-1",
+        "annotations": [
+            {
+                "annotation_id": "a-1",
+                "kind": "custom",
+                "label": "probe",
+                "color": "#dc2626",
+                "resolved": True,
+                "residue": {
+                    "component_id": "t",
+                    "canonical_position": 2,
+                    "chain_id": "A",
+                    "author_residue_number": 2,
+                },
+                "evidence_ids": [],
+                "method": "test",
+            }
+        ],
+    }
+    result = render_inspection_bundle(
+        mmcif_path=str(cif),
+        mmcif_sha256=digest,
+        inspection_manifest=manifest,
+        output_dir=str(tmp_path / "out"),
+    )
+    state_path = next(i["path"] for i in result["artifacts"] if i["kind"] == "viewer_state")
+    state = json.loads(Path(state_path).read_text())
+
+    assert state["base_color"].startswith("#"), "no base_color published to the page"
+    base = state["base_color"]
+
+    paint = state["viewer"]["objects"][0]["color"]["value"]["position"]
+    # every residue of the 5-residue fixture is painted, not only the annotated one
+    assert len(paint) == 5, f"base not painted over the whole chain: {paint}"
+    assert paint["1"] == "#dc2626", "layer colour did not land on its residue"
+    assert {v for k, v in paint.items() if k != "1"} == {base}, "unannotated residues are not the base"
+
+    # the viewer's own mode must be one py2Dmol actually honours
+    from py2Dmol.viewer import VALID_COLOR_MODES
+    assert state["viewer"]["config"]["color"]["mode"] in VALID_COLOR_MODES
+
+    page = Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html")).read_text()
+    assert "var BASE=s.base_color" in page, "JS repaint does not seed the base colour"

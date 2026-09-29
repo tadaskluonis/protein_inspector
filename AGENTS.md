@@ -80,6 +80,21 @@ asserting their strings appear.
 - `window.bindosInspection` exposes `syncVisibleLayers`, `clearDetails`,
   `setAllLayers`, `onlyLayer` and `selectAnnotation`.
 
+## Colour (inspector 1.7)
+
+The structure is painted a neutral grey (`BASE_COLOR`) and layer colour is the
+only hue that carries meaning. **Do not try to get a flat base out of
+`display_options={"color": ...}`** — py2Dmol's modes are `auto`, `chain`,
+`rainbow`, `plddt`, `deepmind`, `entropy`, `object`, `hydrophobicity`, `ss`;
+there is no grey, and an unrecognised name is NOT rejected: `ui.js` falls back
+to `auto`, which is rainbow on a single chain. The base therefore comes from
+the per-position colour map, in `_color_annotations` and again in the page's
+`syncVisibleLayers`, and it is present when every layer is off — dropping the
+map to `null` there is what used to expose the rainbow.
+
+Halo mode is the deliberate exception and paints no base, because it exists to
+leave a pLDDT- or chain-coloured structure intact and annotate on top of it.
+
 The default render style is **`tube`**. Pass `display_options={"style": ...}`
 for `cartoon` / `richardson` / `ribbon` / `3d` when a specific figure needs it.
 
