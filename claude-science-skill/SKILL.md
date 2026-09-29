@@ -104,24 +104,32 @@ lost. Check it: a dropped epitope is a silent hole in the comparison.
 
 ## Binding partners
 
-Partner chains live in the **same mmCIF** as the target and get a
-Show-partners toggle beside the viewer:
+Partner chains live in the **same mmCIF** as the structure they are bound to,
+and each conformation may carry its own:
 
 ```python
 inspect_structure("EGFR_with_Fab.cif", layers=layers, chain="A",
-                  partner_chains=["B", "C"], partner_label="cetuximab Fab")
+                  partner_chains=["B", "C"], partner_label="cetuximab Fab",
+                  conformers=[{"path": "1NQL_A.cif", "label": "Tethered"},
+                              {"path": "design_complex.cif", "label": "Design",
+                               "partner_chains": ["D"]}])
 ```
 
 `chain=` names the target (what your layers are numbered against);
-`partner_chains` names everything else you want drawn. The toggle is a
-visibility patch through the viewer's own API — nothing is reloaded — so
-unticking it clears the epitope for a clean look at the surface.
+`partner_chains` names everything else drawn alongside it, for the reference
+structure, and each conformer takes its own `partner_chains`. One button
+toggles them, and **partners belong to the conformation they came from**:
+morph away and that state's partner goes with it, morph back and it returns.
+A conformation with no partner of its own greys the button out.
 
-Partners are **excluded from the morph residue mapping** and appended
-unchanged to every frame: a partner exists in the reference structure only, so
-interpolating it towards nothing would be fiction. Note in an `about` tab that
-a non-reference conformation shown under a partner drawn at its reference
-position is a composite, not an observation.
+That is not a convenience — a partner solved against one conformation, left
+draped over another's coordinates, is a composite passed off as an
+observation. Each partner is drawn only while its own state is on screen.
+
+Partners are excluded from the morph residue mapping and held still within
+their state (they do not interpolate). If two conformations carry the same
+chain id, the later one is renamed rather than merged —
+`report["morph"]["partner_blocks"][i]["renamed_from"]` records it.
 
 ## Delivering it
 

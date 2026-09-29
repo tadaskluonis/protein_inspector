@@ -690,18 +690,24 @@ def _partner_bundle(tmp_path, morph=False):
     return result, Path(html)
 
 
-def test_partner_chains_get_a_toggle_that_hides_exactly_them(tmp_path):
+def test_partner_chains_get_one_button_that_hides_exactly_them(tmp_path):
     _, html = _partner_bundle(tmp_path)
     text = html.read_text()
+    # ONE BUTTON, not a checkbox.
     assert 'id="bindos-partners"' in text
-    assert "Show Fab" in text
+    assert 'class="bm-btn bm-solo"' in text
+    # ...and it is not the old checkbox. (The py2Dmol library itself contains
+    # the word, so the assertion has to name this control.)
+    assert 'type="checkbox" id="bindos-partners"' not in text
     report = _run_dom_harness(html, {"chains": ["A", "A", "A", "A", "P", "P", "P", "P"],
                                      "residueNumbers": [1, 2, 3, 4, 1, 2, 3, 4]})
-    assert report["partners"]["mode"] == "patch"
-    assert report["partners"]["shown"] == [0, 1, 2, 3] == report["partners"]["expected"]
-    assert report["partners"]["chainKeys"] == ["obj:A"]
-    # Re-ticking restores everything rather than leaving a narrowed selection.
-    assert report["partners"]["afterRetick"] == "all"
+    partners = report["partners"]
+    assert partners["disabledAtStart"] is False
+    assert partners["pressedAtStart"] == "true"
+    assert partners["onAtStart"] == partners["expectedOn"] == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert partners["afterHide"] == partners["expectedOff"] == [0, 1, 2, 3]
+    assert partners["pressedAfterHide"] == "false"
+    assert partners["afterShow"] == [0, 1, 2, 3, 4, 5, 6, 7]
 
 
 def test_a_partner_is_excluded_from_the_morph_and_held_still(tmp_path):
@@ -711,8 +717,10 @@ def test_a_partner_is_excluded_from_the_morph_and_held_still(tmp_path):
     # The residue mapping is the target chain alone -- the conformer has no P.
     assert morph["n_residues"] == 4
     assert morph["mapping"] == "exact"
-    # ...but the partner is still drawn, identically in every frame.
-    assert morph["partner_positions_static"] == 4
+    # ...but the partner is still drawn, as its own block of positions.
+    assert morph["partner_blocks"] == [
+        {"conformer": 0, "label": "reference", "chains": ["P"],
+         "renamed_from": None, "n_positions": 4}]
 
 
 def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
@@ -731,3 +739,94 @@ def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
     assert "profdocpizza" in text
     assert "https://github.com/profdocpizza/bindos-structure-inspector" in text
     assert "free to reuse" in text
+
+
+def _two_partner_bundle(tmp_path):
+    """Reference carries partner P; the second conformation carries its own, Q."""
+    def complex_cif(path, partner_chain, shift, bend=0.0):
+        structure = Structure.Structure("fixture")
+        model = Model.Model(0)
+        for chain_id, offset, bendy in (("A", 0.0, bend), (partner_chain, shift, 0.0)):
+            chain = Chain.Chain(chain_id)
+            for index in range(1, 5):
+                residue = Residue.Residue((" ", index, " "), "ALA", " ")
+                residue.add(Atom.Atom("CA", (float(index * 3),
+                                             float(index % 2) + offset + bendy * index, 0.0),
+                                      0.0, 1.0, " ", "CA", index, element="C"))
+                chain.add(residue)
+            model.add(chain)
+        structure.add(model)
+        io = MMCIFIO()
+        io.set_structure(structure)
+        io.save(str(path))
+        return path
+
+    reference = complex_cif(tmp_path / "ref.cif", "P", 12.0)
+    other = complex_cif(tmp_path / "alt.cif", "Q", -12.0, bend=1.5)
+    result = render_inspection_bundle(
+        mmcif_path=str(reference),
+        mmcif_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        output_dir=str(tmp_path / "out"),
+        partner_chains=["P"], partner_label="Bound partner",
+        conformers=[{"path": str(other), "label": "Alt", "partner_chains": ["Q"]}],
+        morph_mapping="exact", morph_steps=6)
+    html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
+    return result, Path(html)
+
+
+def test_each_conformation_shows_its_own_partner(tmp_path):
+    """The tethered receptor must not keep wearing the extended form's Fab."""
+    result, html = _two_partner_bundle(tmp_path)
+    blocks = result["morph"]["partner_blocks"]
+    assert [b["conformer"] for b in blocks] == [0, 1]
+    assert [b["chains"] for b in blocks] == [["P"], ["Q"]]
+    assert [b["n_positions"] for b in blocks] == [4, 4]
+    # Target mapping is chain A alone in both files.
+    assert result["morph"]["n_residues"] == 4
+
+    report = _run_dom_harness(html, {
+        "chains": ["A"] * 4 + ["P"] * 4 + ["Q"] * 4,
+        "residueNumbers": [1, 2, 3, 4] * 3})
+    partners = report["partners"]
+    # State 0: target + P, no Q.
+    assert partners["onAtStart"] == partners["expectedOn"] == [0, 1, 2, 3, 4, 5, 6, 7]
+    # After morphing to state 1: target + Q, and P is gone.
+    assert partners["afterMorph"] == partners["expectedAfterMorph"] \
+        == [0, 1, 2, 3, 8, 9, 10, 11]
+    assert partners["disabledAfterMorph"] is False
+
+
+def test_a_colliding_partner_chain_is_renamed_not_merged(tmp_path):
+    """Two conformations both carrying chain B are two molecules, not one."""
+    def complex_cif(path, shift, bend=0.0):
+        structure = Structure.Structure("fixture")
+        model = Model.Model(0)
+        for chain_id, offset, bendy in (("A", 0.0, bend), ("B", shift, 0.0)):
+            chain = Chain.Chain(chain_id)
+            for index in range(1, 5):
+                residue = Residue.Residue((" ", index, " "), "ALA", " ")
+                residue.add(Atom.Atom("CA", (float(index * 3),
+                                             float(index % 2) + offset + bendy * index, 0.0),
+                                      0.0, 1.0, " ", "CA", index, element="C"))
+                chain.add(residue)
+            model.add(chain)
+        structure.add(model)
+        io = MMCIFIO()
+        io.set_structure(structure)
+        io.save(str(path))
+        return path
+
+    reference = complex_cif(tmp_path / "ref.cif", 12.0)
+    other = complex_cif(tmp_path / "alt.cif", -12.0, bend=1.5)
+    result = render_inspection_bundle(
+        mmcif_path=str(reference),
+        mmcif_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        output_dir=str(tmp_path / "out"),
+        partner_chains=["B"],
+        conformers=[{"path": str(other), "label": "Alt", "partner_chains": ["B"]}],
+        morph_mapping="exact")
+    blocks = result["morph"]["partner_blocks"]
+    assert [b["chains"] for b in blocks] == [["B"], ["B1"]]
+    assert blocks[1]["renamed_from"] == {"B1": "B"}

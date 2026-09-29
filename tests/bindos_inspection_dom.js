@@ -82,13 +82,13 @@ buttons['bindos-stage'] = stage;
 const morphBar = {attrs: {'data-busy': '0'}, setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; }};
 buttons['bindos-morph'] = morphBar;
-// The partners checkbox: a real checked/unchecked input whose change handler
-// the harness fires, so a dead toggle cannot pass.
-const partnerBox = {checked: true, handlers: [],
-    addEventListener(type, fn) { this.handlers.push(fn); },
-    setAttribute() {}, getAttribute() { return null; },
-    change() { this.handlers.forEach((fn) => fn()); }};
-buttons['bindos-partners'] = partnerBox;
+// The partners button. Its `disabled` state is load-bearing -- a conformation
+// with no partners of its own must not offer the toggle -- so the stub
+// honours it the way a browser does and refuses the click.
+const partnerBtn = stubButton();
+partnerBtn.disabled = false;
+partnerBtn.click = function () { if (!this.disabled) this.handlers.forEach((fn) => fn()); };
+buttons['bindos-partners'] = partnerBtn;
 
 // One button per conformation, discovered the way the page discovers them.
 const morphButtons = ((state.morph && state.morph.conformers) || []).map((c, i) => {
@@ -227,22 +227,48 @@ if (state.morph && state.morph.mode === 'browser' && morphButtons.length) {
 }
 
 // --- partners --------------------------------------------------------------
-// Unticking must hide exactly the partner chains' positions and nothing else.
-if (state.partners && state.partners.chains) {
-    partnerBox.checked = false;
-    partnerBox.change();
-    const v = renderer.visibility;
-    const hidden = new Set(state.partners.chains);
-    const expected = chains.map((c, i) => [c, i]).filter(([c]) => !hidden.has(c)).map(([, i]) => i);
-    report.partners = {
-        mode: v === 'all' ? 'all' : 'patch',
-        shown: v && v.positions ? Array.from(v.positions).sort((a, b) => a - b) : null,
-        expected,
-        chainKeys: v && v.chains ? Array.from(v.chains).sort() : null,
+// Pressing the button must hide exactly the current conformation's partner
+// positions; and a partner must follow the conformation, not linger.
+if (state.partners && state.partners.owner) {
+    const ownerOf = state.partners.owner;
+    // The morph section above left the viewer on the last conformation; come
+    // back to the first so the partner assertions start from a known state.
+    if (state.morph && morphButtons.length > 1) {
+        morphButtons[0].click();
+        drain(400);
+    }
+    const visible = () => {
+        const v = renderer.visibility;
+        return (v && v.positions) ? Array.from(v.positions).sort((a, b) => a - b) : null;
     };
-    partnerBox.checked = true;
-    partnerBox.change();
-    report.partners.afterRetick = renderer.visibility;
+    const targetOnly = chains.map((c, i) => [c, i])
+        .filter(([c]) => ownerOf[c] === undefined).map(([, i]) => i);
+    const ownedBy = (k) => chains.map((c, i) => [c, i])
+        .filter(([c]) => ownerOf[c] === k).map(([, i]) => i);
+
+    report.partners = {
+        disabledAtStart: partnerBtn.disabled,
+        pressedAtStart: partnerBtn.getAttribute('aria-pressed'),
+        onAtStart: visible(),
+        expectedOn: targetOnly.concat(ownedBy(0)).sort((a, b) => a - b),
+    };
+    partnerBtn.click();
+    report.partners.afterHide = visible();
+    report.partners.expectedOff = targetOnly;
+    report.partners.pressedAfterHide = partnerBtn.getAttribute('aria-pressed');
+    partnerBtn.click();
+    report.partners.afterShow = visible();
+
+    // Morph to the last conformation: its own partners appear, state 0's go.
+    if (state.morph && morphButtons.length > 1) {
+        const last = morphButtons.length - 1;
+        morphButtons[last].click();
+        drain(400);
+        report.partners.afterMorph = visible();
+        report.partners.expectedAfterMorph = targetOnly.concat(ownedBy(last))
+            .sort((a, b) => a - b);
+        report.partners.disabledAfterMorph = partnerBtn.disabled;
+    }
 }
 
 // --- controls collapse ----------------------------------------------------

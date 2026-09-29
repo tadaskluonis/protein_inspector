@@ -414,9 +414,10 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bm-btn:hover:not([aria-pressed='true']){background:#fff;color:#0f172a}"
         ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff}"
         ".bindos-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
-        ".bm-toggle{display:inline-flex;align-items:center;gap:6px;font:12px system-ui;"
-        "color:#475569;cursor:pointer;white-space:nowrap}"
-        ".bm-toggle:hover{color:#0f172a}"
+        ".bm-solo{border:1px solid #cbd5e1;background:#f8fafc;padding:6px 14px}"
+        ".bm-solo[aria-pressed='true']{background:#0f172a;color:#fff;border-color:#0f172a}"
+        ".bm-solo[disabled]{opacity:.45;cursor:default;background:#f8fafc;color:#94a3b8;"
+        "border-color:#e2e8f0}"
         # A CAPTURE THE READER CAN ACTUALLY KEEP. See the script: a download
         # anchor is dropped without error in a frame that lacks
         # allow-downloads, and the viewer reports success regardless.
@@ -669,27 +670,43 @@ document.addEventListener('py2dmol-color-change',function(){
       var img=document.createElement('img');img.src=url;img.alt=name;box.appendChild(img);}
     box.hidden=false;}
 })();
-// PARTNERS ARE DRAWN, NOT ANNOTATED. They live in the same file as extra
-// chains, so the viewer already has them; the toggle is a visibility patch on
-// the positions that are not the target's, through the viewer's own
-// setVisibility API rather than by reloading anything.
-var partners=s.partners&&s.partners.chains&&s.partners.chains.length?s.partners:null;
-function setPartners(on){
+// PARTNERS ARE DRAWN, NOT ANNOTATED, AND THEY BELONG TO A STATE. Every
+// conformation's partners sit in the same object as their own block of
+// positions; only the current conformation's are shown. So changing state
+// swaps the partner too -- the tethered receptor does not keep wearing the
+// Fab that was bound to the extended one, which would be a composite passed
+// off as an observation. `owner` maps each partner chain to the conformation
+// it came from; everything not in it is the target and is always visible.
+var partners=(s.partners&&s.partners.owner)?s.partners:null,partnersOn=true;
+function applyPartners(){
   var r=renderer();if(!r||!partners)return false;
-  if(on){if(typeof r.showAll!=='function')return false;r.showAll();}
-  else{
-    var hide={},pos=new Set(),chs=new Set(),list=r.chains||[];
-    for(var h=0;h<partners.chains.length;h++)hide[partners.chains[h]]=1;
-    if(!list.length)return false;
-    for(var i=0;i<list.length;i++){
-      if(hide[list[i]])continue;
-      pos.add(i);
-      if(typeof r.chainKeyAt==='function')chs.add(r.chainKeyAt(i));}
-    r.setVisibility(chs.size?{positions:pos,chains:chs}:{positions:pos});}
-  r.render('BindOS partners toggle');
-  return true;}
-var partnerBox=document.getElementById('bindos-partners');
-if(partnerBox)partnerBox.addEventListener('change',function(){setPartners(partnerBox.checked);});
+  var list=r.chains||[];if(!list.length)return false;
+  var pos=new Set(),chs=new Set(),shown=0;
+  for(var i=0;i<list.length;i++){
+    var of=partners.owner[list[i]];
+    if(of!==undefined){
+      if(!partnersOn||of!==morphAt)continue;
+      shown++;}
+    pos.add(i);
+    if(typeof r.chainKeyAt==='function')chs.add(r.chainKeyAt(i));}
+  r.setVisibility(chs.size?{positions:pos,chains:chs}:{positions:pos});
+  r.render('BindOS partners');
+  return shown;}
+function hasPartnersHere(){
+  if(!partners)return false;
+  for(var c in partners.owner)if(partners.owner[c]===morphAt)return true;
+  return false;}
+function syncPartnerButton(){
+  var btn=document.getElementById('bindos-partners');if(!btn||!partners)return;
+  var here=hasPartnersHere();
+  btn.disabled=!here;
+  btn.setAttribute('aria-pressed',String(!!(here&&partnersOn)));
+  btn.title=here?(partnersOn?'Hide ':'Show ')+(partners.label||'partners')
+    :'No partners in this conformation';}
+var partnerBtn=document.getElementById('bindos-partners');
+if(partnerBtn)partnerBtn.addEventListener('click',function(){
+  if(partnerBtn.disabled)return;
+  partnersOn=!partnersOn;applyPartners();syncPartnerButton();});
 // MORPH, INTERPOLATED ON DEMAND. The file carries one frame per conformation
 // and nothing between them: the in-between coordinates are a straight line, so
 // the page works them out as it draws. That is what makes ANY pair reachable
@@ -722,7 +739,8 @@ function expandMorph(){
     seed.pae=undefined;
     obj.frames.push(seed);
     if(typeof r.updateUIControls==='function')r.updateUIControls();}
-  morphScratch=n;morphReady=true;setMorphButtons(morphAt);}
+  morphScratch=n;morphReady=true;setMorphButtons(morphAt);
+  applyPartners();syncPartnerButton();}
 function setMorphButtons(active){
   var bs=document.querySelectorAll('.bm-btn');
   for(var i=0;i<bs.length;i++)bs[i].setAttribute('aria-pressed',
@@ -741,6 +759,10 @@ function goMorph(target){
       buf=obj.frames[morphScratch];
   if(!from||!to||!buf)return;
   morphBusy=true;setMorphButtons(morphAt);
+  // The outgoing partner goes the moment the target starts moving: leaving it
+  // on through the animation shows it bound to coordinates it was never
+  // solved against.
+  var wasAt=morphAt;morphAt=-1;applyPartners();morphAt=wasAt;syncPartnerButton();
   var a=from.coords,b=to.coords,out=buf.coords,
       t0=morphNow(),dur=Math.max(320,Math.min(900,morphSteps*36));
   (function step(){
@@ -754,7 +776,8 @@ function goMorph(target){
     // Land on the conformation's own frame, so the viewer is showing a real
     // structure and not the buffer once the animation stops.
     r.setFrame(target);
-    morphAt=target;morphBusy=false;setMorphButtons(target);})();}
+    morphAt=target;morphBusy=false;setMorphButtons(target);
+    applyPartners();syncPartnerButton();})();}
 var morphBtns=document.querySelectorAll('.bm-btn');
 for(var mb=0;mb<morphBtns.length;mb++)(function(btn){
   btn.addEventListener('click',function(){goMorph(Number(btn.getAttribute('data-conf')));});
@@ -784,6 +807,9 @@ for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',functi
   for(var j=0;j<panes.length;j++)panes[j].hidden=(panes[j].getAttribute('data-pane')!==want);
   // The canvas is sized on layout; coming back from a hidden pane needs a nudge.
   if(want==='structure'){var r=renderer();if(r)r.render('BindOS tab shown');}});})(tabs[t]);
+if(partners&&!morph){var pt=0;(function pwait(){
+  if(applyPartners()!==false||++pt>600){syncPartnerButton();return;}
+  requestAnimationFrame(pwait);})();}
 var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
   if((ok&&(!morph||morphReady))||++tries>600){autofitControls();return;}
   requestAnimationFrame(wait);})();
@@ -827,10 +853,10 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
     # part of what is drawn, not an annotation over it.
     partners = state.get("partners") or {}
     partnerbar = ""
-    if partners.get("chains"):
-        partnerbar = ('<label class="bm-toggle"><input type="checkbox" id="bindos-partners" '
-                      f'checked>Show {html.escape(partners.get("label") or "partners")}'
-                      f' <span class="bp-n">{len(partners["chains"])}</span></label>')
+    if partners.get("owner"):
+        partnerbar = ('<button type="button" class="bm-btn bm-solo" id="bindos-partners" '
+                      f'aria-pressed="true">{html.escape(partners.get("label") or "Partners")}'
+                      '</button>')
 
     morph = state.get("morph") or {}
     morphbar = ""
@@ -992,6 +1018,7 @@ def render_inspection_bundle(
     # renders twice in one process and fails if the second borrows.
     viewer._share_library = False
     morph_report = None
+    partner_state = None
     if conformers and morph_to:
         raise ValueError("pass either conformers= or morph_to=, not both")
     if conformers:
@@ -1000,30 +1027,64 @@ def render_inspection_bundle(
         # own machine can work out: N conformers cost N frames here and the
         # page expands them to N + (N-1)*steps on load. At 600 residues that
         # is the difference between 15 frames and 3 in the file.
+        # A PARTNER BELONGS TO A STATE. The reference's partner is where the
+        # reference put it; a conformer that brings its own has it somewhere
+        # else entirely. So each conformation's partners are their own block of
+        # positions, present in every frame and revealed only while that
+        # conformation is the one on screen -- which is the only honest way to
+        # show a receptor whose bound partner differs between states.
+        partner_spec = [list(partner_chains or ())]
+        for entry in conformers:
+            partner_spec.append(list(entry.get("partner_chains") or ()))
+        excluded = sorted({c for group in partner_spec for c in group})
         keys, names, stacks, labels, morph_report = _conformer_stacks(
             source, conformers, morph_mapping, morph_reference_label,
-            exclude_chains=partner_chains)
+            exclude_chains=excluded)
         chain_ids = [k[0] for k in keys]
         residue_numbers = [k[1] for k in keys]
-        if partner_chains:
-            # A PARTNER DOES NOT MOVE. It exists in the reference only, so it
-            # is appended to every frame unchanged: the target morphs and the
-            # partner stays where the reference put it. Interpolating it
-            # towards nothing, or dropping it from the morph, would both be
-            # worse than saying plainly that only the target is animated.
-            static = _ca_trace(source)
-            extra = sorted(k for k in static if k[0] in set(partner_chains))
-            if extra:
-                block = np.array([static[k][1] for k in extra], dtype=float)
-                stacks = [np.vstack([stack, block]) for stack in stacks]
-                chain_ids += [k[0] for k in extra]
-                residue_numbers += [k[1] for k in extra]
-                names += [static[k][0] for k in extra]
-                morph_report["partner_positions_static"] = len(extra)
+        paths = [source] + [Path(e["path"]).resolve() for e in conformers]
+        owner, taken, blocks = {}, set(chain_ids), []
+        for index, (path, group) in enumerate(zip(paths, partner_spec)):
+            if not group:
+                continue
+            trace = _ca_trace(path)
+            wanted = set(group)
+            extra = sorted(k for k in trace if k[0] in wanted)
+            if not extra:
+                continue
+            # Two conformations may both carry a chain "B", and one object
+            # cannot hold the same (chain, number) address twice -- the
+            # annotation lookup and the selection both key on it. Rename on
+            # collision rather than silently merging two different molecules.
+            renamed = {}
+            for chain in sorted(wanted):
+                label = chain
+                suffix = 1
+                while label in taken:
+                    label = f"{chain}{suffix}"
+                    suffix += 1
+                taken.add(label)
+                renamed[chain] = label
+                owner[label] = index
+            block = np.array([trace[k][1] for k in extra], dtype=float)
+            stacks = [np.vstack([stack, block]) for stack in stacks]
+            chain_ids += [renamed[k[0]] for k in extra]
+            residue_numbers += [k[1] for k in extra]
+            names += [trace[k][0] for k in extra]
+            blocks.append({"conformer": index, "label": labels[index],
+                           "chains": [renamed[c] for c in sorted(wanted)],
+                           "renamed_from": {renamed[c]: c for c in sorted(wanted)
+                                            if renamed[c] != c} or None,
+                           "n_positions": len(extra)})
+        if blocks:
+            morph_report["partner_blocks"] = blocks
+            partner_state = {"label": partner_label, "owner": owner,
+                             "per_conformer": True}
         for index, coords in enumerate(stacks):
             viewer.add(np.asarray(coords, dtype=float), chains=chain_ids,
                        residue_numbers=residue_numbers, position_names=names,
-                       name="prepared-target", align=(index == 0), allow_reflection=False)
+                       name="prepared-target", align=(index == 0),
+                       allow_reflection=False)
         morph_report["mode"] = "browser"
         morph_report["animation_steps"] = int(morph_steps)
         morph_report["frames_in_file"] = len(stacks)
@@ -1042,6 +1103,12 @@ def render_inspection_bundle(
                        align=(index == 0), allow_reflection=False)
     else:
         viewer.add_pdb(str(source), use_biounit=False, filter_additives=False, load_ligands=True, name="prepared-target")
+        if partner_chains:
+            # No conformations to follow, so every partner belongs to the one
+            # state there is. Same button, same visibility patch.
+            partner_state = {"label": partner_label,
+                             "owner": {chain: 0 for chain in partner_chains},
+                             "per_conformer": False}
     if not any(item.get("frames") for item in viewer.objects):
         raise ValueError("py2Dmol could not load a renderable structure")
     layers = _layers(manifest["annotations"])
@@ -1063,8 +1130,7 @@ def render_inspection_bundle(
         "overlays": manifest.get("overlays", []),
         "about": _about_tabs(manifest.get("about")),
         "morph": morph_report,
-        "partners": ({"chains": list(partner_chains), "label": partner_label}
-                     if partner_chains else None),
+        "partners": partner_state,
         "viewer": {"config": viewer.config, "objects": viewer.objects},
     }
     html_path = base.with_suffix(".html")
