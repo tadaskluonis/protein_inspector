@@ -645,3 +645,14 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important}" in text
     report = _run_dom_harness(html, {"chains": ["A"] * 5, "residueNumbers": [1, 2, 3, 4, 5]})
     assert report["controlsAfterClick"] == "0"
+
+
+def test_a_blocked_download_still_leaves_the_capture_recoverable(tmp_path):
+    """Save Image reports success without checking; an embedded frame may drop it."""
+    html = _two_layer_bundle(tmp_path)
+    text = Path(html).read_text()
+    assert 'id="bindos-capture"' in text
+    # The blob is kept and the revoke deferred, or there is nothing to offer.
+    assert "URL.createObjectURL=function(blob){lastBlob=blob" in text
+    assert "URL.revokeObjectURL=function(url){setTimeout(" in text
+    assert "blocks downloads" in text

@@ -391,6 +391,15 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bm-btn:hover:not([aria-pressed='true']){background:#fff;color:#0f172a}"
         ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff}"
         ".bindos-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
+        # A CAPTURE THE READER CAN ACTUALLY KEEP. See the script: a download
+        # anchor is dropped without error in a frame that lacks
+        # allow-downloads, and the viewer reports success regardless.
+        ".bindos-capture{margin:8px 0 0;padding:9px 11px;border:1px solid #cbd5e1;"
+        "border-radius:8px;background:#f8fafc;font:12px system-ui}"
+        ".bindos-capture[hidden]{display:none}"
+        ".bindos-capture a{color:#1d4ed8}"
+        ".bindos-capture img{display:block;margin:8px 0 0;max-width:100%;max-height:260px;"
+        "border:1px solid #e2e8f0;border-radius:6px;background:#fff}"
         ".bindos-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:880px;overflow:auto;"
         "display:flex;flex-direction:column;background:#fff}"
         ".bp-head{position:sticky;top:0;z-index:2;background:#fff;display:flex;justify-content:space-between;"
@@ -584,6 +593,53 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
 document.addEventListener('py2dmol-color-change',function(){
   var r=renderer();if(!r||!r.colorMode||baseMode===r.colorMode)return;
   baseMode=r.colorMode;syncVisibleLayers();});
+// A CAPTURE THE READER CAN KEEP, WHEREVER THE PAGE IS EMBEDDED.
+//
+// Save Image builds a Blob, clicks a <a download>, revokes the URL and then
+// writes "Saved PNG: ...x..., N dpi" to its status line -- it never checks
+// whether anything was saved. In an iframe without allow-downloads (a chat
+// artifact tile, a docs embed, a notebook output cell) the click is dropped in
+// silence, so the reader is told the file is on disk when no file exists
+// anywhere. That is the worst possible failure for a figure someone is about
+// to put in a talk.
+//
+// So: keep the blob the capture made, and offer it as something that survives
+// a blocked download -- a right-click-saveable link, plus the image itself,
+// which is right-clickable in every browser. Revoking is deferred rather than
+// skipped, so the URL stays valid long enough to use and is still collected.
+(function(){
+  if(!window.URL||!URL.createObjectURL)return;
+  var makeUrl=URL.createObjectURL.bind(URL),dropUrl=URL.revokeObjectURL.bind(URL),lastBlob=null;
+  URL.createObjectURL=function(blob){lastBlob=blob;return makeUrl(blob);};
+  URL.revokeObjectURL=function(url){setTimeout(function(){try{dropUrl(url);}catch(e){}},600000);};
+  var made=document.createElement.bind(document);
+  document.createElement=function(tag){
+    var el=made(tag);
+    if(String(tag).toLowerCase()!=='a')return el;
+    var realClick=el.click.bind(el);
+    el.click=function(){
+      var name=el.getAttribute&&el.getAttribute('download');
+      if(name&&lastBlob)showCapture(name,lastBlob);
+      try{realClick();}catch(e){}};
+    return el;};
+  function showCapture(name,blob){
+    var box=document.getElementById('bindos-capture');if(!box)return;
+    var url=makeUrl(blob),kb=(blob.size/1048576).toFixed(2);
+    box.textContent='';
+    var line=document.createElement('span');
+    line.textContent='Capture ready \u2014 '+kb+' MB. ';
+    var link=document.createElement('a');
+    link.href=url;link.setAttribute('download',name);link.textContent=name;
+    var hint=document.createElement('span');
+    hint.className='bp-muted';
+    hint.textContent=' \u2014 if clicking does nothing, this page is embedded in a frame that '
+      +'blocks downloads: right-click the link (or the image below) and save it, or open this '
+      +'file directly in a browser tab.';
+    box.appendChild(line);box.appendChild(link);box.appendChild(hint);
+    if(/^image\//.test(blob.type||'')){
+      var img=document.createElement('img');img.src=url;img.alt=name;box.appendChild(img);}
+    box.hidden=false;}
+})();
 // MORPH, INTERPOLATED ON DEMAND. The file carries one frame per conformation
 // and nothing between them: the in-between coordinates are a straight line, so
 // the page works them out as it draws. That is what makes ANY pair reachable
@@ -754,7 +810,9 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         f'data-morph="{"1" if morphbar else "0"}">'
         '<button type="button" class="bp-btn" id="bindos-controls" '
         'aria-pressed="true">Hide controls</button>'
-        f'{morphbar}{viewer_html}</section>'
+        f'{morphbar}{viewer_html}'
+        '<div class="bindos-capture" id="bindos-capture" hidden></div>'
+        '</section>'
         '<aside class="bindos-panel">'
         '<div class="bp-head"><h2>Layers</h2><div class="bp-btns">'
         '<button type="button" class="bp-btn" id="bindos-layers-all">All</button>'
