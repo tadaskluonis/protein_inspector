@@ -638,10 +638,14 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     html = _two_layer_bundle(tmp_path)
     text = Path(html).read_text()
     assert ".bindos-stage{position:relative;min-width:0;overflow-x:auto" in text
-    # Orient/Focus/Rotate/Style/Clip/Capture float over the top-right of the
+    # Orient/Focus/Rotate/Style/Clip/Capture float over the top-LEFT of the
     # canvas instead of sitting in a 340px column beside it.
-    assert ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;right:10px;" in text
-    assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important}" in text
+    assert ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;" in text
+    assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}" in text
+    # #canvasContainer is `resize: both` with an explicit pixel width, so it
+    # needs a ceiling or it can be dragged out from under the Layers panel.
+    assert ".bindos-stage #canvasContainer{max-width:100%}" in text
+    assert ".bindos-stage #canvasContainer canvas{max-width:100%}" in text
     # The Layers panel keeps its own column beside the structure, and there is
     # no collapse button to hide the viewer's controls with.
     assert "grid-template-columns:minmax(0,1fr) 340px" in text
@@ -885,3 +889,22 @@ def test_a_conformers_partner_travels_with_its_receptor(tmp_path):
     # The turned copy's partner lands on the reference's partner, not 70
     # degrees away from it.
     assert np.abs(p_block - q_block).max() < 1e-6
+
+
+def test_the_partner_button_does_not_move_the_conformation(tmp_path):
+    """Showing or hiding a partner is not a request to change state.
+
+    py2Dmol's own setVisibility drops the viewer back to the first frame, so
+    the toggle became an unasked-for jump to the reference. The page has to
+    put the frame back; the harness reproduces the drop so it is exercised.
+    """
+    _, html = _two_partner_bundle(tmp_path)
+    report = _run_dom_harness(html, {
+        "chains": ["A"] * 4 + ["P"] * 4 + ["Q"] * 4,
+        "residueNumbers": [1, 2, 3, 4] * 3})
+    partners = report["partners"]
+    expected = partners["expectedFrameOnState"]
+    assert partners["frameAfterHideOnState"] == expected
+    assert partners["frameAfterShowOnState"] == expected
+    # ...and on the first state too, where the bug is invisible.
+    assert partners["frameAfterToggle"] == 0

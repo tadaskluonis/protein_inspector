@@ -158,7 +158,10 @@ const renderer = {
     visibility: null,
     showAll() { this.visibility = 'all'; },
     chainKeyAt(i) { return 'obj:' + this.chains[i]; },
-    setVisibility(patch) { this.visibility = patch; },
+    // py2Dmol's own setVisibility sends the viewer back to the first frame.
+    // The stub reproduces that so the page's restore is actually exercised;
+    // without it the regression is invisible here and visible to the reader.
+    setVisibility(patch) { this.visibility = patch; this.currentFrame = 0; },
     setFrame(i) { this.currentFrame = i; this.framesVisited.push(i);
         if (this.onFrame) this.onFrame(i); renders++; },
     updateUIControls() { uiUpdates++; },
@@ -252,12 +255,34 @@ if (state.partners && state.partners.owner) {
         onAtStart: visible(),
         expectedOn: targetOnly.concat(ownedBy(0)).sort((a, b) => a - b),
     };
+    renderer.framesVisited.length = 0;
     partnerBtn.click();
+    report.partners.framesTouchedByToggle = renderer.framesVisited.slice();
+    report.partners.frameAfterToggle = renderer.currentFrame;
     report.partners.afterHide = visible();
     report.partners.expectedOff = targetOnly;
     report.partners.pressedAfterHide = partnerBtn.getAttribute('aria-pressed');
     partnerBtn.click();
     report.partners.afterShow = visible();
+
+    // ...and on a state that is not the first: toggling there must not send
+    // the viewer home. This is the regression the reader actually hit. The
+    // expected frame is the conformation's OWN index -- reading currentFrame
+    // back after the morph would capture whatever the bug left behind and
+    // compare it against itself.
+    if (state.morph && morphButtons.length > 1) {
+        const last = morphButtons.length - 1;
+        morphButtons[last].click();
+        drain(400);
+        partnerBtn.disabled = false;
+        partnerBtn.click();
+        report.partners.frameAfterHideOnState = renderer.currentFrame;
+        partnerBtn.click();
+        report.partners.frameAfterShowOnState = renderer.currentFrame;
+        report.partners.expectedFrameOnState = last;
+        morphButtons[0].click();
+        drain(400);
+    }
 
     // Morph to the last conformation: its own partners appear, state 0's go.
     if (state.morph && morphButtons.length > 1) {

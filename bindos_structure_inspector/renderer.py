@@ -382,10 +382,17 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # frees the width, puts the controls on the thing they act on, and
         # leaves the grid's second column for the Layers panel.
         ".bindos-stage{position:relative;min-width:0;overflow-x:auto}"
-        ".bindos-stage .py2dmol-viewer-instance{width:auto!important}"
-        ".bindos-stage #mainContainer{display:block!important}"
-        ".bindos-stage #viewerWrapper{position:relative}"
-        ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;right:10px;"
+        ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}"
+        ".bindos-stage #mainContainer{display:block!important;max-width:100%}"
+        ".bindos-stage #viewerWrapper{position:relative;max-width:100%}"
+        # THE DISPLAY AREA STOPS AT ITS OWN COLUMN. #canvasContainer carries
+        # `resize: both` and an explicit pixel width, so without a ceiling the
+        # reader can drag the picture out from under the Layers panel -- or
+        # simply be handed a bundle whose canvas is wider than the frame it
+        # opens in. The cap is the column, so the two never overlap.
+        ".bindos-stage #canvasContainer{max-width:100%}"
+        ".bindos-stage #canvasContainer canvas{max-width:100%}"
+        ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;"
         "z-index:5;width:336px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
         "overflow-y:auto;background:rgba(255,255,255,.94);border:1px solid #e2e8f0;"
         "border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.14)}"
@@ -684,8 +691,14 @@ function applyPartners(){
       shown++;}
     pos.add(i);
     if(typeof r.chainKeyAt==='function')chs.add(r.chainKeyAt(i));}
+  // THE BUTTON IS INDEPENDENT OF THE CONFORMATION. Applying a visibility
+  // patch sends the renderer back to the first frame on its own, which turned
+  // showing or hiding a partner into an unasked-for jump back to the
+  // reference state. Remember where we were and go back to it.
+  var keep=(typeof r.currentFrame==='number'&&r.currentFrame>=0)?r.currentFrame:0;
   r.setVisibility(chs.size?{positions:pos,chains:chs}:{positions:pos});
-  r.render('BindOS partners');
+  if(typeof r.setFrame==='function'&&r.currentFrame!==keep)r.setFrame(keep);
+  else r.render('BindOS partners');
   return shown;}
 function hasPartnersHere(){
   if(!partners)return false;
