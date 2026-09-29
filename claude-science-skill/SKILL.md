@@ -15,6 +15,11 @@ look at on the structure: a predicted epitope, hotspot residues, a glycan
 shadow, conserved-vs-divergent positions between orthologues, contacts in a
 docked pose, liabilities in a design.
 
+Built on **py2Dmol** by Sergey Ovchinnikov
+(<https://github.com/sokrypton/py2Dmol>, BEER-WARE licence), which is inlined
+into every bundle and credited in the exported file itself. The annotation
+layers, manifest schema and morph are the BindOS inspector's additions.
+
 ## Setup
 
 The engine is a separate package. Once per environment:

@@ -713,3 +713,16 @@ def test_a_partner_is_excluded_from_the_morph_and_held_still(tmp_path):
     assert morph["mapping"] == "exact"
     # ...but the partner is still drawn, identically in every frame.
     assert morph["partner_positions_static"] == 4
+
+
+def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
+    """BEER-WARE asks one thing: retain the notice. Minification removes it."""
+    html = _two_layer_bundle(tmp_path)
+    text = Path(html).read_text()
+    assert "THE BEER-WARE LICENSE" in text
+    assert "Sergey Ovchinnikov" in text
+    assert "https://github.com/sokrypton/py2Dmol" in text
+    assert "78c2d489d0b5c5d19accd9eeeef878c2868f5271" in text
+    # Not only in a comment: a reader of the page can see who wrote the viewer.
+    assert 'class="bindos-credit"' in text
+    assert "py2Dmol</a> by Sergey Ovchinnikov" in text

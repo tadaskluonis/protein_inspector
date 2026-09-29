@@ -12,10 +12,38 @@ HTML/JSON/SVG/PNG export.  Arbitrary PDB/AFDB fetching is not part of the new
 public interface; the legacy py2Dmol module remains included for attribution
 and renderer reuse.
 
-Runtime dependencies inherited from the pinned upstream revision:
+Attribution in exported bundles
+-------------------------------
+
+Every rendered HTML bundle inlines the py2Dmol viewer (~1 MB of minified
+JavaScript), and minification strips the BEER-WARE notice from the source.
+Since inspector 1.13 the renderer therefore writes the notice back into each
+export -- as an HTML comment at the top of the file and as a visible credit
+line at the foot of the page -- naming Sergey Ovchinnikov, the upstream
+repository and the pinned revision.  The bundle is the artefact that travels,
+so a notice kept only in this repository would not reach the person holding
+the file.
+
+Runtime dependencies:
 
 - NumPy: BSD-3-Clause.
-- Biopython 1.88: Biopython License Agreement (permissive BSD-style).
+- Biopython: Biopython License Agreement (permissive BSD-style).
 - IPython: BSD-3-Clause.
+- gemmi (optional; used by the Claude Science skill to convert PDB input to
+  mmCIF): MPL-2.0.  Not required by the renderer itself.
 
-The reusable package must be distributed with LICENSE and this NOTICE.
+Code written in this repository rather than vendored:
+
+- src/core/svg.js is a minimal 2D-context-to-SVG recorder described in its
+  own header as a canvas2svg port.  It exports `window.C2S` for compatibility
+  with the canvas2svg API.  If any of it is in fact derived from Gliffy's
+  canvas2svg (MIT) rather than written against its interface, that project is
+  owed an MIT notice here; the header should be made unambiguous either way.
+- src/io/gif.js is a GIF89a encoder written here, deliberately in place of a
+  CDN library, so the notebook viewer loads nothing but py2Dmol's own
+  resources.
+
+The reusable package must be distributed with LICENSE and this NOTICE.  Note
+that setup.py currently declares no `license_files` and the repository has no
+MANIFEST.in or pyproject.toml, so a built wheel ships neither file -- this
+NOTICE's own requirement is not yet met by the packaging.

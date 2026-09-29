@@ -27,6 +27,18 @@ import py2Dmol
 INSPECTOR_VERSION = "bindos-inspector-1.13"
 MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
+UPSTREAM_REPOSITORY = "https://github.com/sokrypton/py2Dmol"
+# RETAINED IN EVERY EXPORT, because that is the whole of what the licence asks
+# and minification removes it. Each bundle carries ~1 MB of py2Dmol, and the
+# bundle is the thing that travels -- emailed, dropped in Slack, opened on a
+# machine that has none of this checked out. A notice that lives only in the
+# repository is a notice that does not reach the person holding the file.
+UPSTREAM_LICENSE = (
+    '"THE BEER-WARE LICENSE" (Revision 42): <so3@mit.edu> wrote this file. '
+    "As long as you retain this notice you can do whatever you want with this "
+    "stuff. If we meet some day, and you think this stuff is worth it, you can "
+    "buy me a beer in return. Sergey Ovchinnikov"
+)
 
 _ALLOWED_LAYER_KINDS = {
     "prediction_confidence",
@@ -460,6 +472,9 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bindos-about code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:13px}"
         ".bindos-about .sw{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #cbd5e1;vertical-align:-2px}"
         "#bindos-residue-details{display:none}"
+        ".bindos-credit{margin:14px 0 0;padding-top:10px;border-top:1px solid #e2e8f0;"
+        "font:11.5px system-ui;color:#64748b}"
+        ".bindos-credit a{color:#64748b}"
         "</style>"
     )
     script = r"""<script>(function(){
@@ -838,9 +853,21 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
             f'<div data-pane="about-{i}" hidden><article class="bindos-about">{t["body_html"]}</article></div>'
             for i, t in enumerate(about))
 
+    credit = (
+        f'<!--\n  Rendered by BindOS structure inspector {INSPECTOR_VERSION}.\n'
+        f'  Viewer: py2Dmol by Sergey Ovchinnikov -- {UPSTREAM_REPOSITORY}\n'
+        f'  at revision {UPSTREAM_REVISION}, inlined in this file.\n\n'
+        f'  {UPSTREAM_LICENSE}\n-->'
+    )
+    credit_line = (
+        '<footer class="bindos-credit">Structure viewer: '
+        f'<a href="{UPSTREAM_REPOSITORY}">py2Dmol</a> by Sergey Ovchinnikov '
+        f'(BEER-WARE licence, rev&nbsp;{UPSTREAM_REVISION[:7]}), inlined in this file. '
+        f'Annotation layers by BindOS structure inspector {INSPECTOR_VERSION}.</footer>'
+    )
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
-        '<title>BindOS structure inspection</title></head><body>'
+        f'<title>BindOS structure inspection</title></head><body>{credit}'
         f'{tabstrip}{panes_open}'
         '<main class="bindos-inspector">'
         '<section class="bindos-stage" id="bindos-stage" data-controls="1" '
@@ -865,7 +892,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         f'<div class="bp-rows">{rows}</div>'
         '</aside></main>'
         f'{panes_close}'
-        f'{panel}</body></html>'
+        f'{credit_line}{panel}</body></html>'
     )
 
 def render_inspection_bundle(
