@@ -50,8 +50,8 @@ host.skills.publish("protein-inspector")
 ## Tests
 
 ```bash
-python -m pytest claude-science-skill/tests -q
+python -m pytest tests/test_skill_kernel.py -q
 ```
 
-They run against the sibling engine checkout, so they also catch a sidecar that
+They run against the engine checkout they live in, so they also catch a sidecar that
 has drifted from the renderer's signature.

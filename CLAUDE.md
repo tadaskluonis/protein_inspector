@@ -2,8 +2,8 @@
 
 - **Using the tool** (layers, morph, partners, the About tab, reading a bundle
   back): `AGENTS.md`. That is the one to read first, whichever agent you are.
-- **The Claude Science skill**: `claude-science-skill/SKILL.md` is the source of
-  the published skill; `claude-science-skill/README.md` explains why the skill
+- **The Claude Science skill**: `skills/protein-inspector/SKILL.md` is the source of
+  the published skill; `docs/claude_science_skill.md` explains why the skill
   and the engine ship separately.
 - **The renderer's own public surface**: docstrings on
   `protein_inspector.inspect_structure` and

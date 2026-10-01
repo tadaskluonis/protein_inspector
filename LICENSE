@@ -14,7 +14,7 @@ reproduced verbatim and unchanged; it is the whole of what that licence asks.
 
 The Protein Inspector additions -- the inspection-manifest interface,
 the annotation layers, the conformation morph, the partner toggle, the export
-bundle and the Claude Science skill in claude-science-skill/ -- are released on
+bundle and the Claude Science skill in skills/protein-inspector/ -- are released on
 the same terms, so that the whole thing stays as free to reuse as the viewer it
 is built on.
 

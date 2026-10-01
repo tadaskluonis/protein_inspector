@@ -1,0 +1,10 @@
+{
+  "name": "protein-inspector",
+  "description": "Turn a structure and a set of residues into one self-contained interactive HTML page: named colour layers the reader can toggle, optional partner chains, and optional morphing between conformations.",
+  "version": "1.13.0",
+  "author": {
+    "name": "Tadas Kluonis",
+    "url": "https://github.com/tadaskluonis"
+  },
+  "homepage": "https://github.com/tadaskluonis/protein_inspector"
+}

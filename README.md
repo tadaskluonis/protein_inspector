@@ -41,7 +41,7 @@ honest check that an annotation landed where you meant.
 | surface | how |
 | --- | --- |
 | CLI | `protein-inspector render spec.json` / `protein-inspector read bundle.html residues` |
-| Claude Science / Claude Code skill | `claude-science-skill/` |
+| Claude Science / Claude Code skill | `skills/protein-inspector/` |
 | MCP server | `uvx --from "protein-inspector[mcp]" protein-inspector-mcp` |
 | Agent guide | `AGENTS.md` |
 

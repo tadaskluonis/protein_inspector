@@ -197,7 +197,7 @@ Nothing in the package knows which agent is calling it.
 
 | host | entry |
 | --- | --- |
-| Claude Science / Claude Code | the `protein-inspector` skill; `claude-science-skill/SKILL.md` is its source |
+| Claude Science / Claude Code | the `protein-inspector` skill; `skills/protein-inspector/SKILL.md` is its source |
 | any shell | `protein-inspector render spec.json` — same keys as `inspect_structure`, prints the bundle path |
 | | `protein-inspector read bundle.html residues` — the table above, as JSON |
 | MCP clients | `uvx --from "protein-inspector[mcp]" protein-inspector-mcp` → `render_bundle`, `read_bundle` |

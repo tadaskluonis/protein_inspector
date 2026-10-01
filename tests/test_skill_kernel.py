@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 
-SKILL_DIR = Path(__file__).resolve().parents[1]
-REPO = SKILL_DIR.parent
+REPO = Path(__file__).resolve().parents[1]
+SKILL_DIR = REPO / "skills" / "protein-inspector"
 
 
 def _load():

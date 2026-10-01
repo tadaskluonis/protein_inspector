@@ -43,3 +43,6 @@ _*.html
 .benchmarks/
 .claude/
 *.whl
+
+# the plugin manifest is source, not output -- *.json above would hide it
+!.claude-plugin/plugin.json
