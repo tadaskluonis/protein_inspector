@@ -18,7 +18,8 @@ first use is worse than no extraction.
 After it runs, four things still need doing, and tools/bundle.py names all of
 them: add the module to MODULES, add the tag to index.html, add the
 inline read to viewer.py (AFTER core/mol.js's, because those reads prepend),
-and add the file to setup.py. Then add the path to tests/lift.js SOURCES so the
+and add the file to setup.py. (Upstream also lists the path in
+tests/lift.js SOURCES, which this fork does not ship, so the
 node tests follow the methods.
 """
 import argparse
@@ -154,4 +155,4 @@ open(SRC, 'w').write('\n'.join(lines[:a - 1] + lines[b:]))
 print(f'{path}: {len(block)} lines, {n_methods} methods, {n_statics} statics'
       f' ({n_free} free, {n_unres} unresolved)')
 print('now: tools/bundle.py MODULES, the two HTML tags, viewer.py, setup.py,'
-      ' tests/lift.js SOURCES')
+      ' setup.py package_data')
