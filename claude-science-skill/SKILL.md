@@ -29,6 +29,11 @@ legend with a structure behind it. Pick the few that carry the argument; the
 reader can always be sent a second bundle. Six layers visible at once is
 plenty, and two is often the whole point.
 
+A layer can also be built and listed but start switched **off**, with
+`"visible": False` on the layer dict. Use it for the supporting set that would
+crowd the opening view: the reader still has it, one click away, and the first
+thing they see is the thing you brought them for.
+
 ## Setup
 
 ```bash
@@ -56,7 +61,8 @@ save_artifacts(files=[report["path"]], language="python")
 ```
 
 `residues` takes a range, a list, or a `{number: note}` mapping when each
-residue deserves its own caption. Numbers are **author residue numbers** in
+residue deserves its own caption. `"visible": False` keeps a layer in the
+legend but unchecked at open. Numbers are **author residue numbers** in
 the file, so renumber before rendering if your analysis speaks a different
 numbering. Later layers paint over earlier ones — order background first.
 
@@ -121,6 +127,29 @@ problem — they can click.
 
 Your tabs are yours and start empty; nothing is added to them.
 
+## Putting a still image in a report
+
+The bundle is for a reader, but a report wants a figure. Take one without
+opening the page:
+
+```python
+shot = capture_bundle("inspection.html", "figure.png", dpi=300)
+save_artifacts(files=[shot["path"]], language="python")
+```
+
+The background is transparent and the view is rendered at the requested dpi
+rather than scaled up from the screen, so 300 dpi gives roughly 3800 px across.
+It drives the bundle's own export, so the image is the one a reader would have
+saved — and it captures the view as the page has it, so a layer marked
+`visible: False` is off in the figure too. Orient the structure in the page
+first if the default view is not the one that makes the point.
+
+Needs a browser, which is an optional extra:
+`pip install "protein-inspector[capture]"` then `playwright install chromium`,
+or pass `chrome=` to use one already on the machine. Send the reader the HTML
+as well as the figure — the still cannot be rotated, and the rotating is the
+reason to use this tool at all.
+
 ## Checking it
 
 `inspection_table(path)` reads the rendered file back and returns one row per
@@ -144,9 +173,7 @@ inside a frame that blocks downloads.
 `extras=True` is **not** a way to get that figure. It writes a `.viewer.json`,
 an `.svg` and a `.png`, but that PNG is a 900x900 single-colour C-alpha wire
 trace with no alpha channel — a provenance thumbnail, not the rendered view. Use
-it to prove what was loaded, never as the picture you hand someone. Save Image writes a capture bar under the viewer with a
-right-click-saveable PNG, because the browser download is silently dropped in
-some embedded frames.
+it to prove what was loaded, never as the picture you hand someone.
 
 Built on **py2Dmol** by Sergey Ovchinnikov
 (<https://github.com/sokrypton/py2Dmol>), inlined into every bundle. Layers,
