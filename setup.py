@@ -18,7 +18,7 @@ setup(
     # credited where credit is due -- LICENSE, NOTICE, and every exported
     # bundle -- and the upstream URL is below as a project URL rather than as
     # this package's home.
-    author='profdocpizza',
+    author='Tadas Kluonis',
     description='Manifest-driven structural inspection bundles, built on py2Dmol.',
     long_description=(
         'Single-file interactive structure inspection bundles: annotation '

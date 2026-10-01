@@ -150,6 +150,6 @@ some embedded frames.
 
 Built on **py2Dmol** by Sergey Ovchinnikov
 (<https://github.com/sokrypton/py2Dmol>), inlined into every bundle. Layers,
-morph, partners and export are by profdocpizza. Both BEER-WARE (Revision 42) —
+morph, partners and export are by Tadas Kluonis. Both BEER-WARE (Revision 42) —
 free to reuse, keep the notice. Every bundle carries both; don't strip the
 credit footer from one you pass on.

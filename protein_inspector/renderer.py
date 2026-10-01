@@ -44,11 +44,11 @@ INSPECTOR_REPOSITORY = "https://github.com/tadaskluonis/protein_inspector"
 # to reuse py2Dmol is allowed to reuse the whole bundle rather than having to
 # work out where one ends and the other begins.
 INSPECTOR_LICENSE = (
-    '"THE BEER-WARE LICENSE" (Revision 42): profdocpizza '
+    '"THE BEER-WARE LICENSE" (Revision 42): Tadas Kluonis '
     "<https://github.com/tadaskluonis> wrote the Protein Inspector "
     "additions. As long as you retain this notice you can do whatever you want "
     "with this stuff. If we meet some day, and you think this stuff is worth "
-    "it, you can buy me a beer in return. profdocpizza"
+    "it, you can buy me a beer in return. Tadas Kluonis"
 )
 
 _ALLOWED_LAYER_KINDS = {
@@ -1132,7 +1132,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         f'rev&nbsp;{UPSTREAM_REVISION[:7]}, inlined in this file. '
         'Annotation layers, morph and export: '
         f'<a href="{INSPECTOR_REPOSITORY}">Protein Inspector</a> '
-        f'{INSPECTOR_VERSION} by profdocpizza. '
+        f'{INSPECTOR_VERSION} by Tadas Kluonis. '
         'Both BEER-WARE (Revision&nbsp;42) — free to reuse, keep the notice. '
         'See the comment at the top of this file.</footer>'
     )

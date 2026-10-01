@@ -6,7 +6,7 @@ This repository is derived from sokrypton/py2Dmol at revision
 Source: https://github.com/sokrypton/py2Dmol
 
 The original BEER-WARE notice is retained verbatim in LICENSE, alongside a
-second BEER-WARE notice covering the Protein Inspector additions (profdocpizza).  The
+second BEER-WARE notice covering the Protein Inspector additions (Tadas Kluonis).  The
 additions are deliberately on the SAME terms as the viewer they are built on,
 so anyone allowed to reuse py2Dmol can reuse the whole thing without having to
 work out where one ends and the other begins.  The Protein Inspector
@@ -56,5 +56,5 @@ Package authorship: setup.py previously declared author 'sokrypton' with
 so3@mit.edu and the py2Dmol URL as this package's home.  That credited
 generously but falsely -- it implied the upstream author wrote and endorsed
 this derivative, and would have routed its bug reports to him.  The package is
-now authored as profdocpizza, with py2Dmol listed as a project URL and
+now authored as Tadas Kluonis, with py2Dmol listed as a project URL and
 credited in LICENSE, here, and in every export.

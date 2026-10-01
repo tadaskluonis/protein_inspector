@@ -1,8 +1,8 @@
 "THE BEER-WARE LICENSE" (Revision 42):
-profdocpizza <https://github.com/tadaskluonis> wrote this skill.  As long as
+Tadas Kluonis <https://github.com/tadaskluonis> wrote this skill.  As long as
 you retain this notice you can do whatever you want with this stuff.  If we
 meet some day, and you think this stuff is worth it, you can buy me a beer in
-return.  profdocpizza
+return.  Tadas Kluonis
 
 The renderer this skill drives is py2Dmol by Sergey Ovchinnikov
 (https://github.com/sokrypton/py2Dmol), under the same licence.  Its notice is
