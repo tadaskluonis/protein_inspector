@@ -9,7 +9,7 @@ _init = Path(__file__).parent.joinpath('py2Dmol', '__init__.py').read_text()
 VERSION = re.search(r'^__version__ = "([^"]+)"', _init, re.M).group(1)
 
 setup(
-    name='bindos-structure-inspector',
+    name='protein-inspector',
     version='1.13.0',
     # AUTHORSHIP OF THIS PACKAGE, not of the viewer it is built on. These
     # fields said 'sokrypton' / so3@mit.edu / the py2Dmol URL, which credited
@@ -27,7 +27,7 @@ setup(
         'credited there. Both parts are BEER-WARE (Revision 42). See NOTICE.'
     ),
     long_description_content_type='text/markdown',
-    url='https://github.com/profdocpizza/bindos-structure-inspector',
+    url='https://github.com/profdocpizza/protein-inspector',
     project_urls={'Upstream viewer (py2Dmol)': 'https://github.com/sokrypton/py2Dmol'},
     # NOTICE requires both files to travel with the package, and without this
     # a built wheel shipped neither.
@@ -72,10 +72,33 @@ setup(
         'Programming Language :: Python :: 3',
         'Operating System :: OS Independent',
     ],
-    python_requires='>=3.6',
+    # LOWER BOUNDS, NOT PINS. `==` in a library's install_requires is a
+    # declaration that it will not co-exist with anything, and pip resolves it
+    # against every other package in the user's environment. The pins here were
+    # whatever happened to be installed the day the file was written; numpy
+    # 2.4.6 alone already implies Python >= 3.11, which `>=3.6` denied.
+    python_requires='>=3.10',
     install_requires=[
-        'numpy==2.4.6',
-        'ipython==9.17.1',
-        'biopython==1.88',
+        'numpy>=1.24',
+        'ipython>=8.0',
+        'biopython>=1.81',
+        # NOT OPTIONAL, whatever the docs used to say. py2Dmol/viewer.py does
+        # `import gemmi` at module scope (line ~213), so it is needed to import
+        # this package at all, not merely to read a .pdb. Listing it as an
+        # extra made `pip install protein-inspector` produce an installation
+        # that raises ModuleNotFoundError on the first import -- reproducible
+        # only from a built wheel in a clean environment, which is exactly
+        # where no test in this repo used to look.
+        'gemmi>=0.6',
     ],
+    extras_require={
+        # The MCP server, for agent hosts that speak the protocol.
+        'mcp': ['mcp>=1.2'],
+    },
+    entry_points={
+        'console_scripts': [
+            'protein-inspector = protein_inspector.__main__:cli',
+            'protein-inspector-mcp = protein_inspector.mcp_server:main',
+        ],
+    },
 )

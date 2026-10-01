@@ -12,7 +12,7 @@ reproduced verbatim and unchanged; it is the whole of what that licence asks.
  * ----------------------------------------------------------------------------
  */
 
-The BindOS Structure Inspector additions -- the inspection-manifest interface,
+The Protein Inspector additions -- the inspection-manifest interface,
 the annotation layers, the conformation morph, the partner toggle, the export
 bundle and the Claude Science skill in claude-science-skill/ -- are released on
 the same terms, so that the whole thing stays as free to reuse as the viewer it
@@ -21,7 +21,7 @@ is built on.
 /*
  * ----------------------------------------------------------------------------
  * "THE BEER-WARE LICENSE" (Revision 42):
- * profdocpizza <https://github.com/profdocpizza> wrote the BindOS Structure
+ * profdocpizza <https://github.com/profdocpizza> wrote the Protein Inspector
  * Inspector additions.  As long as you retain this notice you can do whatever
  * you want with this stuff.  If we meet some day, and you think this stuff is
  * worth it, you can buy me a beer in return.  profdocpizza

@@ -1,214 +1,229 @@
-# BindOS Agent Guide
+# Protein Inspector — agent guide
 
-Use `bindos_structure_inspector.render_inspection_bundle` to create a local,
-self-contained inspection bundle from a prepared single-model mmCIF file. Do
-not fetch structures, edit JavaScript, or modify generated HTML for ordinary
-figures.
+Turn a structure and a set of residues into **one self-contained interactive
+HTML page**: named colour layers the reader can toggle, optional partner
+chains, and optional morphing between any number of conformations. It opens
+with no server, no network and no install — from an email attachment, on a
+machine that has none of your environment.
 
-## Workflow
+Reach for it whenever the result of some work is *which residues*, and a list
+of numbers would make the reader open a viewer themselves: epitopes, hotspots,
+pockets, conserved or divergent positions, mutations, contacts, confidence,
+anything per-residue. It is not only for design work — showing a collaborator
+what your script found, checking your own annotation landed where you meant,
+or handing someone a structure they can interrogate all qualify.
 
-1. Verify the mmCIF SHA-256 before rendering.
-2. Build an inspection manifest with one annotation per residue-level claim.
-3. Group arbitrary categories with `layer_id`; categories are user-defined.
-4. Give each layer one `#RRGGBB` color and render the bundle.
-5. Check the returned artifact hashes and inspect the generated HTML.
+```bash
+pip install protein-inspector
+```
 
-Every resolved annotation must identify the residue with `component_id`,
-`canonical_position`, `chain_id`, and `author_residue_number`. Do not guess an
-address: an unresolved claim should use `"resolved": false` instead.
-
-## Layer Example
+## The call
 
 ```python
-from bindos_structure_inspector import render_inspection_bundle
+from protein_inspector import inspect_structure, inspection_table
 
-manifest = {
-    "schema_version": "bindos-inspection-manifest-1",
-    "annotations": [
-        {
-            "annotation_id": "pocket-42",
-            "kind": "candidate_hotspot",
-            "label": "Predicted binding hotspot",
-            "layer_id": "binding-hotspots",
-            "layer_label": "Binding hotspots",
-            "color": "#dc2626",
-            "resolved": True,
-            "residue": {
-                "component_id": "target",
-                "canonical_position": 42,
-                "chain_id": "A",
-                "author_residue_number": 42,
-            },
-            "evidence_ids": ["model-run-17"],
-            "method": "classifier",
-        },
+report = inspect_structure(
+    "target.cif",
+    layers=[
+        {"id": "iface", "label": "Interface, <4.5 A", "color": "#9aa7b4",
+         "residues": [31, 34, 35, 38, 42, 45]},
+        {"id": "hot", "label": "Hotspots from the scan", "color": "#dc2626",
+         "residues": {56: "largest effect", 60: "second", 91: "third"}},
     ],
-}
+    partner_chains=["B"],
+    about={"What this is": "Contacts at 4.5 A from the deposited coordinates."},
+    out="inspection.html",
+)
+print(report["path"], report["unmapped_residues"])
+```
 
-result = render_inspection_bundle(
-    mmcif_path="prepared.cif",
-    mmcif_sha256="...",
-    inspection_manifest=manifest,
-    output_dir="inspection-output",
+`.cif` or `.mmcif` in; `.pdb` is converted for you. `residues` takes a range,
+a list, or a `{number: note}` mapping when each residue deserves its own
+caption. Numbers are **author residue numbers** in the file — renumber before
+rendering if your analysis speaks a different numbering. Later layers paint
+over earlier ones, so order background first.
+
+## Show the morph
+
+**If you have two or more conformations, show them.** This is the feature that
+does the most for a reader and the one most often left on the table.
+
+A reader looking at a single conformation sees a shape. A reader who can watch
+it move sees the mechanism — which domain swings, what closes over what, where
+the hinge is. That is the big picture, and it is precisely what a list of
+residue numbers can never carry. If your work involves an apo and a bound
+form, an open and a closed state, a wild type and a mutant, a predicted model
+and its experimental counterpart, or a design before and after relaxation, the
+comparison *is* the result. Put both in.
+
+```python
+report = inspect_structure(
+    "closed.cif",
+    layers=[...],
+    conformers=[
+        {"path": "open.cif",  "label": "open (4AKE)"},
+        {"path": "bound.cif", "label": "bound to AP5A (1AKE)", "partner_chains": ["B"]},
+    ],
+    reference_label="closed (1ANK)",
+    morph_mapping="intersection",
+    out="inspection.html",
 )
 ```
 
-`kind` must be a supported scientific annotation kind; use `custom` when none
-applies. `layer_id` controls the visualization category and may be any non-empty
-string. Annotations in the same layer must use the same optional `layer_label`
-and `color`.
+What the reader gets: one named button per state, any state morphing straight
+to any other — not a fixed tour — and the **Cα RMSD to the reference printed
+beside each button**, so the size of the change is on screen rather than
+inferred from an animation. Only the endpoints are stored and the page
+interpolates, so states are cheap: three conformations of a 148-residue
+protein is about 0.64 MB.
 
-## One file, with tabs (inspector 1.8)
+Two things to know yourself rather than write a tab about:
 
-`render_inspection_bundle` writes **one self-contained HTML file** and nothing
-else. A bundle gets emailed, dropped in a channel and opened on a machine that
-has none of this checked out, so anything sitting beside it arrives detached or
-not at all.
+- The morph is **Cartesian interpolation between endpoints, not a pathway**.
+  Intermediates are not physical and bond geometry is not preserved. If that
+  matters to the argument, say it in one clause of your context paragraph.
+- `morph_mapping="intersection"` drops residues not shared by every file;
+  `"exact"` requires them to match. Check
+  `report["morph"]["conformers"][i]["residues_dropped"]` — a silently dropped
+  region is a hole in the comparison, and if something went it belongs in that
+  same paragraph.
 
-**Extra context goes in a tab, never in a second file.** The manifest's
-optional top-level `about` takes a string, a `{title: body}` mapping, or a list
-of `{"title", "body"}`; each entry becomes a tab beside "Structure". Bodies are
-freeform HTML — headings, tables, lists, links, code all pass through — so an
-overview, a legend and a provenance note are three tabs, not three documents.
-Bodies are sanitised (script/style/iframe/object/embed and their contents, all
-`on*` handlers, and `javascript:`/`data:` URLs are stripped), because the text
-is usually agent-authored and often quotes fetched sources. A body with no tags
-at all is treated as plain text and blank-line blocks become paragraphs.
+## Partner chains
 
-Keep a bundle under `SIZE_TARGET_BYTES` (20 MB) so it stays sendable; above it
-the render still succeeds and the returned manifest carries a `size_warning`.
+Anything in the same file that is not the target — `partner_chains=["B", "C"]`
+— gets one toggle button: a bound antibody, a ligand-bearing chain, the other
+half of a dimer, a docked design.
 
-Pass `extras=True` only when you need the audit set — `.viewer.json`, `.svg`,
-`.png`, `.manifest.json`. The viewer state is where a wrong
-`canonical_position` shows up, so use it while checking your own annotations,
-then re-render without it for the copy you hand over.
+Each conformer may bring its own `partner_chains`, and a partner is shown only
+while its own state is on screen. This is enforced, not merely documented: a
+partner solved against one conformation and left draped over another's
+coordinates is a composite passed off as an observation.
 
-## Reading a bundle back (inspector 1.10)
+## Show less than you have
 
-A bundle is one file, which is right for a reader and useless to a program
-unless the machine-readable part is a supported surface rather than something
-to scrape. It is one: `read_inspection_bundle(path)` is the inverse of
-`render_inspection_bundle` and needs no browser, no HTML parser and no
-third-party package.
+A bundle with every layer you could compute is a legend with a structure
+behind it. Pick the few that carry the argument; you can always send a second
+bundle. Six visible layers is plenty, and two is often the whole point.
 
-```python
-from bindos_structure_inspector import read_inspection_bundle
-state = read_inspection_bundle("inspection.html")
-[r for r in state["residues"] if "ph_anchor" in r["layers"]]
-```
+**Write one About tab, not five.** `about=` takes a string, a `{title: body}`
+mapping, or a list of `{"title", "body"}`; each becomes a tab beside the
+structure, HTML is allowed, and images can be inlined as data URIs. But every
+tab is somewhere the reader has to go and something they have to carry back.
+Most bundles want one: the paragraph a colleague needs in order to read the
+picture — what this is, where the numbers came from, what to look at. Fold
+everything else into it. A second tab has to earn itself: a long table that
+would drown the paragraph, a derivation, a methods block someone will check.
 
-It returns `inspector_version`, `schema_version`, `source` (path + sha256 of
-the mmCIF it was built from), `highlight`, `base_mode`, `base_color`, the
-`layers` (with `n_annotations`), the `about` bodies, the `annotations`
-verbatim, and **`residues`** — one flat row per modelled residue carrying
-`chain_id`, `author_residue_number`, `canonical_position`, `residue_name`,
-`x/y/z`, `plddt`, `color`, `layers[]` and `labels[]`. That table is what most
-callers want and is CSV-ready as it stands.
+Four things that look like tabs and are not. Whole-figure caveats belong in
+that paragraph. The legend is the Layers panel. The residue list is the
+Residues panel. How the controls work is not your reader's problem.
 
-There is a CLI for callers that would rather not import:
+Your tabs are yours and open empty; nothing is added to them.
 
-```
-python -m bindos_structure_inspector inspection.html            # whole state
-python -m bindos_structure_inspector inspection.html residues   # just the table
-```
+## Check it before you hand it over
 
-Prefer this to `extras=True` when the goal is to consume the data. Reach for
-`extras=True` only while auditing your own annotations, where the point is to
-eyeball the viewer state as it was written.
+**Always read `report["unmapped_residues"]`.** Residues absent from the model
+are skipped, and silently if you do not look.
 
-## The inspection panel (inspector 1.4)
+`inspection_table(path)` reads the rendered file back and returns one row per
+modelled residue — chain, author number, canonical position, residue name,
+coordinates, pLDDT, colour, layers, labels. It reports what the reader will
+actually *see*, which makes it the honest check that an annotation landed on
+the residue you named, and it is CSV-ready as it stands.
 
-The panel is emitted by `render_inspection_bundle`. Do not re-implement or
-hand-edit any of it in generated HTML; it is covered by
-`tests/bindos_inspection_dom.js`, which clicks the controls rather than merely
-asserting their strings appear.
+Keep bundles under ~20 MB so they stay emailable; `report["size_warning"]`
+appears above that.
 
-- **Layers** section, at the top: `All` / `None` buttons, then one row per layer
-  with a colour swatch, the label, its annotation count, and a hover-revealed
-  `only` button that isolates that layer.
-- **Residues** section: a live count, a filter box (matches residue label, layer
-  label and annotation id), and the residue list grouped into one collapsible
-  `<details>` per layer rather than one flat list of every annotation.
-- **Residue card**: clicking a row opens a formatted card — residue identity,
-  chain / author number / model index, and one line per annotation on that
-  residue with its layer swatch. It is dismissed by the card's `×`, by clicking
-  the same row again, or by Escape; all three also drop the 3D selection.
-  `#bindos-residue-details` still exists as a hidden plain-text mirror for
-  programmatic checks.
-- `window.bindosInspection` exposes `syncVisibleLayers`, `clearDetails`,
+## What the reader gets
+
+Emitted by the renderer — do not re-implement or hand-edit it in generated
+HTML; `tests/inspection_dom.js` clicks these controls rather than asserting
+their strings appear.
+
+- **Layers**: `All` / `None`, then one row per layer with a colour swatch, the
+  label, its annotation count, and a hover-revealed `only` button that
+  isolates it.
+- **Residues**: a live count, a filter box matching residue label, layer label
+  and annotation id, and the list grouped into one collapsible section per
+  layer.
+- **Residue card**: clicking a row opens a card with the residue identity,
+  chain / author number, and one line per annotation on it. Dismissed by `×`,
+  by clicking the row again, or by Escape; all three drop the 3D selection.
+- **Save**: Capture opens the panel; Save writes a **transparent** PNG at the
+  chosen dpi, with Copy image beside it — the route that still works inside a
+  frame that blocks downloads.
+- `window.proteinInspector` exposes `syncVisibleLayers`, `clearDetails`,
   `setAllLayers`, `onlyLayer` and `selectAnnotation`.
 
-## Colour (inspector 1.9)
+## Colour
 
 The panel's **Base colour** control chooses how the un-annotated structure is
-coloured: `Custom colour` (the default, a flat `BASE_COLOR` grey with a native
-colour picker beside it) or any mode the page reports from
-`window.py2dmol_colorModes()` — `auto`, `chain`, `rainbow`, `plddt`, `ss`,
-`hydrophobicity`, `entropy`, `deepmind`, `object`. The option list is built at
-runtime from that function, not hardcoded, because `geom.js` registers `ss` at
-load. Set the starting point with the manifest's `base_mode` / `base_color`.
+coloured: `Custom colour` (the default — a flat grey with a picker beside it)
+or any mode the page reports from `window.py2dmol_colorModes()`: `auto`,
+`chain`, `rainbow`, `plddt`, `ss`, `hydrophobicity`, `entropy`, `deepmind`,
+`object`. Set the starting point with `base_mode` / `base_color`.
 
-**A flat base is one CHOICE among the modes, not a floor under them.** py2Dmol's
-rule is that an explicit per-position colour beats the mode and "the mode only
-decides the ones nobody spoke for" (`src/parts/embed.js`), so painting every
-position — which 1.7 did unconditionally — speaks for all of them and silently
-disables rainbow/plddt/chain/ss. The base is therefore seeded **only** when the
-mode is `custom`, in `_color_annotations` and again in `syncVisibleLayers`.
+**A flat base is one choice among the modes, not a floor under them.** An
+explicit per-position colour beats the mode, and the mode only decides the
+positions nobody spoke for — so painting every position speaks for all of them
+and silently disables rainbow/plddt/chain/ss. The base is therefore seeded only
+when the mode is `custom`. Two consequences: under `custom`, unticking every
+layer leaves a clean flat structure rather than the rainbow `auto` resolves to
+on a single chain; and changing the viewer's own colour dropdown drops the
+panel out of `custom`, because otherwise the base would override what the user
+just picked.
 
-Two consequences worth knowing. Under `custom`, unticking every layer leaves a
-clean flat structure rather than the rainbow that `auto` resolves to on a single
-chain. And changing the viewer's own colour dropdown drops the panel out of
-`custom`, because otherwise the base would silently override it.
-
-Changing a mode needs all three steps the viewer's dropdown performs —
-`colorMode`, `colorsNeedUpdate`, `plddtColorsNeedUpdate`, then `render()`.
-Setting `colorMode` alone is inert; the colours sit behind two caches.
-
-Halo mode paints no base at all, because it exists to leave a pLDDT- or
-chain-coloured structure intact and annotate on top of it.
-
-The default render style is **`tube`**. Pass `display_options={"style": ...}`
-for `cartoon` / `richardson` / `ribbon` / `3d` when a specific figure needs it.
+The default style is **`tube`**. Pass `display={"style": ...}` for `cartoon` /
+`richardson` / `ribbon` / `3d` when a figure needs it.
 
 ## One visual channel, not two
 
-The manifest's optional top-level `"highlight"` picks how layers mark residues:
+`highlight` picks how layers mark residues, bundle-wide:
 
-- `"color"` (default) paints the residues in their layer color. **Prefer this.**
-- `"halo"` leaves the structure its default color and rings the layer's residues
-  with the selection highlight instead.
+- `"color"` (default) paints the residues in their layer colour. **Prefer this.**
+- `"halo"` leaves the structure its own colour and rings the residues with the
+  selection highlight instead.
 
-Do not try to get both. Painting residues and haloing the same residues encodes
-one fact twice, and the halo is the weaker signal of the two -- it is thin, it
-reads poorly against a cartoon, and it competes with the color underneath.
-`highlight` is bundle-wide for exactly this reason: there is no per-layer form,
-because mixing the two channels across layers has the same problem. Reach for
-`"halo"` only when the structure's own coloring is the subject -- a pLDDT or
-chain-colored view you need to keep intact -- and annotate on top of it.
+Do not try to get both. Painting and haloing the same residues encodes one
+fact twice, and the halo is the weaker signal — thin, poor against a cartoon,
+and competing with the colour underneath. There is no per-layer form for the
+same reason. Reach for `"halo"` only when the structure's own colouring is the
+subject (a pLDDT- or chain-coloured view you need to keep intact) and annotate
+on top of it.
 
-Clicking a residue row always halos that one residue, in either mode. That is a
-transient "you are here" marker for a single residue, not a layer channel, and
-it does not count as the second encoding this section warns about.
+## Other hosts
 
-Layer colors are applied to the 3D residues. Unchecking a generated layer
-checkbox removes that layer's color from the structure, hides its panel rows,
-and drops it from the selection highlight; re-checking restores it. With every
-layer unchecked the structure returns to its default coloring. If layers
-overlap, the later annotation layer in the manifest is the visible residue
-color -- and that is re-resolved on every toggle, so hiding the layer on top
-reveals the one underneath rather than leaving a gap.
+Nothing in the package knows which agent is calling it.
 
-`residue.canonical_position` is the 1-based index of the residue within the
-modeled chain, which is NOT the author numbering: for a chain whose first
-residue is `21`, `author_residue_number: 98` is `canonical_position: 78`. Both
-fields are required and a wrong `canonical_position` colors the wrong residue
-without raising. The exported `inspection.viewer.json` is the place to check
-your work -- `viewer.objects[0].color.value.position` maps 0-based object index
-(`canonical_position - 1`) to color.
+| host | entry |
+| --- | --- |
+| Claude Science / Claude Code | the `protein-inspector` skill; `claude-science-skill/SKILL.md` is its source |
+| any shell | `protein-inspector render spec.json` — same keys as `inspect_structure`, prints the bundle path |
+| | `protein-inspector read bundle.html residues` — the table above, as JSON |
+| MCP clients | `uvx --from "protein-inspector[mcp]" protein-inspector-mcp` → `render_bundle`, `read_bundle` |
 
-The exported `inspection.svg` and `inspection.png` are geometry-only projections
-and carry no layer color. Use `inspection.html` for anything a reader will look
-at.
+## The strict surface underneath
 
-`render_inspection_bundle` needs `gemmi` and `IPython` installed alongside
-`biopython` and `numpy`.
+`render_inspection_bundle` takes a validated manifest in which every annotation
+carries a `canonical_position` that is **not** the author residue number:
+
+```python
+{"schema_version": "protein-inspector-manifest-1",
+ "highlight": "color", "base_mode": "chain",
+ "annotations": [
+   {"annotation_id": "pocket-42", "kind": "candidate_hotspot",
+    "label": "Y42 — rim of the cleft", "layer_id": "pocket",
+    "layer_label": "Binding pocket", "color": "#dc2626", "resolved": True,
+    "method": "structure-derived annotation", "evidence_ids": [],
+    "residue": {"component_id": "target", "canonical_position": 18,
+                "chain_id": "A", "author_residue_number": 42}}]}
+```
+
+Getting `canonical_position` wrong colours the wrong residue and raises
+nothing, which is why `inspect_structure` derives it from the file instead of
+asking. Use the manifest form only when you need a field the simple form does
+not expose, and verify the mmCIF SHA-256 before rendering. An unresolved claim
+should carry `"resolved": false` rather than a guessed address.
+
+Internals of the vendored viewer — file map, paint order, GPU lifecycle — are
+in `docs/viewer_internals.md`, not here.

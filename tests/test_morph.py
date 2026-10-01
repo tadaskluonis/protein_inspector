@@ -20,8 +20,8 @@ import pytest
 from Bio.PDB import Atom, Chain, Model, Residue, Structure
 from Bio.PDB.mmcifio import MMCIFIO
 
-from bindos_structure_inspector import render_inspection_bundle
-from bindos_structure_inspector.renderer import _ca_trace, _morph_frames, _superpose
+from protein_inspector import render_inspection_bundle
+from protein_inspector.renderer import _ca_trace, _morph_frames, _superpose
 
 
 def _write(path, coords, chain_id="A", numbers=None, resname="ALA", extra_atom=False):
@@ -192,7 +192,7 @@ def test_morph_does_not_disturb_the_colouring(tmp_path):
     ref = _write(tmp_path / "a.cif", a)
     other = _write(tmp_path / "b.cif", b)
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "annotations": [
             {"annotation_id": "p", "kind": "custom", "label": "probe",
              "color": "#dc2626",

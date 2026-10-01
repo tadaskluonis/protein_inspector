@@ -37,3 +37,9 @@ dist/
 # _pypage.html, _ligweb.html and so on. One survived a crash and was committed
 # (_panelpic2.html, 1,022 lines of nothing).
 _*.html
+
+# tooling caches
+.pytest_cache/
+.benchmarks/
+.claude/
+*.whl

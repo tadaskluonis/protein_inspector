@@ -1,7 +1,7 @@
 // Execute the inspection bundle's behaviour script the way a browser would,
 // against a stub DOM and a stub renderer, and report what it did.
 //
-//   node tests/bindos_inspection_dom.js <inspection.html> '<spec json>'
+//   node tests/inspection_dom.js <inspection.html> '<spec json>'
 //
 // spec: {"chains": ["A", ...], "residueNumbers": [1, ...], "rafDelay": 0}
 //
@@ -24,8 +24,8 @@ const rafDelay = spec.rafDelay || 0;
 
 // --- pull the two scripts out of the page --------------------------------
 const stateMatch = html.match(
-    /<script id="bindos-inspection-state" type="application\/json">([\s\S]*?)<\/script>/);
-if (!stateMatch) throw new Error('no bindos-inspection-state in page');
+    /<script id="pinsp-inspection-state" type="application\/json">([\s\S]*?)<\/script>/);
+if (!stateMatch) throw new Error('no pinsp-inspection-state in page');
 const state = JSON.parse(stateMatch[1].replace(/<\\\//g, '</'));
 
 // py2Dmol's own loader shim also opens with `<script>(function(){`, so match
@@ -66,11 +66,11 @@ function stubButton() {
             click() { this.handlers.forEach((fn) => fn()); }};
 }
 const buttons = {
-    'bindos-layers-all': stubButton(),
-    'bindos-layers-none': stubButton(),
-    'bindos-clear-residue': stubButton(),
-    'bindos-controls': stubButton(),
-    'bindos-morph-note': {textContent: ''},
+    'pinsp-layers-all': stubButton(),
+    'pinsp-layers-none': stubButton(),
+    'pinsp-clear-residue': stubButton(),
+    'pinsp-controls': stubButton(),
+    'pinsp-morph-note': {textContent: ''},
 };
 // The stage carries the controls-collapsed state as an attribute; without it
 // the toggle silently does nothing and the harness would not notice.
@@ -78,17 +78,17 @@ const stage = {attrs: {'data-controls': '1'}, clientWidth: spec.stageWidth || 12
     setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; },
     querySelector() { return null; }};
-buttons['bindos-stage'] = stage;
+buttons['pinsp-stage'] = stage;
 const morphBar = {attrs: {'data-busy': '0'}, setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; }};
-buttons['bindos-morph'] = morphBar;
+buttons['pinsp-morph'] = morphBar;
 // The partners button. Its `disabled` state is load-bearing -- a conformation
 // with no partners of its own must not offer the toggle -- so the stub
 // honours it the way a browser does and refuses the click.
 const partnerBtn = stubButton();
 partnerBtn.disabled = false;
 partnerBtn.click = function () { if (!this.disabled) this.handlers.forEach((fn) => fn()); };
-buttons['bindos-partners'] = partnerBtn;
+buttons['pinsp-partners'] = partnerBtn;
 
 // One button per conformation, discovered the way the page discovers them.
 const morphButtons = ((state.morph && state.morph.conformers) || []).map((c, i) => {
@@ -101,7 +101,7 @@ const morphButtons = ((state.morph && state.morph.conformers) || []).map((c, i) 
 // 1000px wide starting at x=0, so a pointer at clientX=x asks for a panel of
 // (1000 - x) px, which the page must clamp to [240, 1000-320].
 const grid = {
-    props: {'--bindos-panel': '340px'},
+    props: {'--pinsp-panel': '340px'},
     style: {setProperty(k, v) { grid.props[k] = v; }},
     getBoundingClientRect: () => ({left: 0, right: 1000, width: 1000, top: 0, bottom: 800, height: 800}),
 };
@@ -114,11 +114,11 @@ const splitter = {
     fire(type, ev) { (this.handlers[type] || []).forEach((fn) => fn(Object.assign(
         {preventDefault() {}, clientX: 0, shiftKey: false}, ev))); },
 };
-buttons['bindos-split'] = splitter;
+buttons['pinsp-split'] = splitter;
 global.getComputedStyle = (el) => ({getPropertyValue: (k) => (el.props || {})[k] || ''});
 
 function bySelector(sel) {
-    if (sel === '.bindos-inspector') return grid;
+    if (sel === '.protein-inspector') return grid;
     let m = sel.match(/data-layer="([^"]+)"/);
     if (m) return layerBoxes[m[1]] || null;
     m = sel.match(/data-annotation="([^"]+)"/);
@@ -141,9 +141,9 @@ global.requestAnimationFrame = global.requestAnimationFrame || (fn => setTimeout
 global.CSS = {escape: (s) => s};
 global.requestAnimationFrame = (fn) => rafQueue.push(fn);
 global.document = {
-    getElementById: (id) => (id === 'bindos-inspection-state'
+    getElementById: (id) => (id === 'pinsp-inspection-state'
         ? {textContent: stateMatch[1]}
-        : (id === 'bindos-residue-details' ? detailsNode : (buttons[id] || null))),
+        : (id === 'pinsp-residue-details' ? detailsNode : (buttons[id] || null))),
     querySelector: bySelector,
     querySelectorAll: (sel) => (sel === '[data-annotation]'
         ? Object.values(annotationRows)
@@ -254,7 +254,7 @@ if (state.morph && state.morph.mode === 'browser' && morphButtons.length) {
     report.morph.bufferMaxY = Math.max(...trail.map((t) => t.y));
     report.morph.bufferEndY = trail[trail.length - 1].y;
     report.morph.pressedAfter = morphButtons.map((b) => b.getAttribute('aria-pressed'));
-    report.morph.note = buttons['bindos-morph-note'].textContent;
+    report.morph.note = buttons['pinsp-morph-note'].textContent;
 }
 
 // --- partners --------------------------------------------------------------
@@ -330,7 +330,7 @@ if (state.partners && state.partners.owner) {
 // Dragging the seam must move the panel and clamp at both ends, so the two
 // panes can neither overlap nor leave the stage unusably narrow.
 if (splitter.handlers.pointerdown) {
-    const panel = () => parseFloat(grid.props['--bindos-panel']);
+    const panel = () => parseFloat(grid.props['--pinsp-panel']);
     splitter.fire('pointerdown', {pointerId: 1});
     report.split = {dragAttr: splitter.getAttribute('data-drag')};
     splitter.fire('pointermove', {clientX: 600});
@@ -352,7 +352,7 @@ if (splitter.handlers.pointerdown) {
 }
 
 // --- controls collapse ----------------------------------------------------
-buttons['bindos-controls'].click();
+buttons['pinsp-controls'].click();
 report.controlsAfterClick = stage.getAttribute('data-controls');
 
 for (const step of (spec.steps || [])) {
@@ -371,22 +371,22 @@ for (const step of (spec.steps || [])) {
 // "Untick all" must clear every checkbox and repaint to no colour; "Tick all"
 // must restore it. "Clear" must empty the detail pane and drop the selection.
 if (spec.buttons !== false) {
-    buttons['bindos-layers-none'].click();
+    buttons['pinsp-layers-none'].click();
     report.untickAll = {
         paint: paint(),
         checked: Object.values(layerBoxes).filter((b) => b.checked).length,
         hiddenRows: Object.entries(annotationRows).filter(([, r]) => r.hidden).length,
     };
-    buttons['bindos-layers-all'].click();
+    buttons['pinsp-layers-all'].click();
     report.tickAll = {
         paint: paint(),
         checked: Object.values(layerBoxes).filter((b) => b.checked).length,
     };
     const someAnnotation = state.annotations.find((a) => a.resolved);
-    if (someAnnotation) window.bindosInspection.selectAnnotation(someAnnotation.annotation_id);
+    if (someAnnotation) window.proteinInspector.selectAnnotation(someAnnotation.annotation_id);
     report.afterSelect = {details: detailsNode.textContent.length,
                           selection: renderer.residueSelection.size};
-    buttons['bindos-clear-residue'].click();
+    buttons['pinsp-clear-residue'].click();
     report.afterClear = {details: detailsNode.textContent,
                          selection: renderer.residueSelection.size};
 }

@@ -1,4 +1,4 @@
-BindOS Structure Inspector
+Protein Inspector
 ==========================
 
 This repository is derived from sokrypton/py2Dmol at revision
@@ -6,10 +6,10 @@ This repository is derived from sokrypton/py2Dmol at revision
 Source: https://github.com/sokrypton/py2Dmol
 
 The original BEER-WARE notice is retained verbatim in LICENSE, alongside a
-second BEER-WARE notice covering the BindOS additions (profdocpizza).  The
+second BEER-WARE notice covering the Protein Inspector additions (profdocpizza).  The
 additions are deliberately on the SAME terms as the viewer they are built on,
 so anyone allowed to reuse py2Dmol can reuse the whole thing without having to
-work out where one ends and the other begins.  The BindOS
+work out where one ends and the other begins.  The Protein Inspector
 changes add a local-only immutable-mmCIF/inspection-manifest interface, typed
 validation at the package boundary, semantic inspection layers, and hashed
 HTML/JSON/SVG/PNG export.  Arbitrary PDB/AFDB fetching is not part of the new
@@ -24,7 +24,7 @@ JavaScript), and minification strips the BEER-WARE notice from the source.
 Since inspector 1.13 the renderer therefore writes the notice back into each
 export -- as an HTML comment at the top of the file and as a visible credit
 line at the foot of the page.  Both notices travel: py2Dmol's, naming Sergey
-Ovchinnikov with the upstream repository and pinned revision, and the BindOS
+Ovchinnikov with the upstream repository and pinned revision, and the Protein Inspector
 one.  A bundle is therefore as free to reuse as the code that produced it.  The bundle is the artefact that travels,
 so a notice kept only in this repository would not reach the person holding
 the file.

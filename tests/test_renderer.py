@@ -6,7 +6,7 @@ from pathlib import Path
 
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 
-from bindos_structure_inspector import read_inspection_bundle, render_inspection_bundle
+from protein_inspector import read_inspection_bundle, render_inspection_bundle
 
 
 def _fixture(path: Path, n: int = 5, bend: float = 0.0) -> None:
@@ -29,7 +29,7 @@ def test_local_bundle_has_partner_specific_layers_and_hashed_exports(tmp_path):
     _fixture(cif)
     digest = hashlib.sha256(cif.read_bytes()).hexdigest()
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "annotations": [
             {"annotation_id": "x", "kind": "partner_contact", "label": "Partner X contact", "partner_id": "Partner X", "residue": {"component_id": "target", "canonical_position": 2, "chain_id": "A", "author_residue_number": 2}, "resolved": True, "evidence_ids": ["e1"], "method": "distance"},
             {"annotation_id": "y", "kind": "partner_contact", "label": "Partner Y contact", "partner_id": "Partner Y", "residue": {"component_id": "target", "canonical_position": 4, "chain_id": "A", "author_residue_number": 4}, "resolved": True, "evidence_ids": ["e2"], "method": "distance"},
@@ -42,10 +42,10 @@ def test_local_bundle_has_partner_specific_layers_and_hashed_exports(tmp_path):
     assert all(Path(item["path"]).is_file() and len(item["sha256"]) == 64 for item in result["artifacts"])
     html = Path(next(item["path"] for item in result["artifacts"] if item["kind"] == "html")).read_text()
     assert "setResidueSelection" in html
-    assert "bindos-residue-details" in html
+    assert "pinsp-residue-details" in html
     assert "syncVisibleLayers" in html
     assert "py2dmol-residue-selection-change" in html
-    assert "window.bindosInspection" in html
+    assert "window.proteinInspector" in html
     # Partner layers remain independently addressable in both the annotation
     # list and the 3D selection overlay rather than collapsing by kind.
     assert 'data-layer="partner_contact:Partner X"' in html
@@ -56,7 +56,7 @@ def test_custom_layer_colors_resolved_residues(tmp_path):
     cif = tmp_path / "fixture.cif"
     _fixture(cif)
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "annotations": [
             {"annotation_id": "hotspot", "kind": "custom", "label": "Pocket hotspot", "layer_id": "binding-hotspots", "layer_label": "Binding hotspots", "color": "#ef4444", "residue": {"component_id": "target", "canonical_position": 3, "chain_id": "A", "author_residue_number": 3}, "resolved": True, "evidence_ids": [], "method": "model"},
         ],
@@ -74,7 +74,7 @@ def test_resolved_annotation_requires_a_matching_residue_address(tmp_path):
     cif = tmp_path / "fixture.cif"
     _fixture(cif)
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "annotations": [
             {"annotation_id": "bad", "kind": "mutation", "label": "Bad address", "residue": {"component_id": "target", "canonical_position": 9, "chain_id": "A", "author_residue_number": 9}, "resolved": True, "evidence_ids": [], "method": "model"},
         ],
@@ -91,7 +91,7 @@ def _run_dom_harness(html_path, spec):
     """Execute the emitted behaviour script in Node against a stub DOM."""
     import subprocess
     out = subprocess.run(
-        ["node", str(Path(__file__).parent / "bindos_inspection_dom.js"), str(html_path), json.dumps(spec)],
+        ["node", str(Path(__file__).parent / "inspection_dom.js"), str(html_path), json.dumps(spec)],
         capture_output=True, text=True)
     if out.returncode != 0:
         raise AssertionError(f"harness failed ({out.returncode}):\n{out.stderr}")
@@ -102,7 +102,7 @@ def _two_layer_bundle(tmp_path, highlight=None):
     cif = tmp_path / "fixture.cif"
     _fixture(cif)
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "annotations": [
             {"annotation_id": "a1", "kind": "custom", "label": "Layer A res 1", "layer_id": "layer-a",
              "layer_label": "Layer A", "color": "#111111", "resolved": True, "evidence_ids": [], "method": "rule",
@@ -204,7 +204,7 @@ def test_unknown_highlight_style_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="highlight must be one of"):
         render_inspection_bundle(
             mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
-            inspection_manifest={"schema_version": "bindos-inspection-manifest-1",
+            inspection_manifest={"schema_version": "protein-inspector-manifest-1",
                                  "annotations": [], "highlight": "both"},
             output_dir=str(tmp_path / "out2"))
 
@@ -221,7 +221,7 @@ def test_every_export_is_self_contained(tmp_path):
     _fixture(cif)
     digest = hashlib.sha256(cif.read_bytes()).hexdigest()
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "annotations": [
             {
                 "annotation_id": "a-1",
@@ -273,7 +273,7 @@ def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
     _fixture(cif)
     digest = hashlib.sha256(cif.read_bytes()).hexdigest()
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "base_mode": "custom",
         "annotations": [
             {
@@ -321,7 +321,7 @@ def test_base_color_is_painted_and_survives_unticking_every_layer(tmp_path):
     # There is deliberately NO base-colour control in this panel: colouring the
     # un-annotated structure is the viewer's Style panel's job, and a second
     # control for it is a second source of truth.
-    assert 'id="bindos-base-mode"' not in page and 'id="bindos-base-color"' not in page
+    assert 'id="pinsp-base-mode"' not in page and 'id="pinsp-base-color"' not in page
 
 
 def test_default_render_is_one_file_with_about_tabs(tmp_path):
@@ -334,7 +334,7 @@ def test_default_render_is_one_file_with_about_tabs(tmp_path):
     _fixture(cif)
     digest = hashlib.sha256(cif.read_bytes()).hexdigest()
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "about": [
             {"title": "Read me", "body": "<h2>Heading</h2><p>Body <code>x</code></p>"},
             {"title": "Methods", "body": "plain one\n\nplain two"},
@@ -377,7 +377,7 @@ def test_about_body_cannot_smuggle_script(tmp_path):
     cif = tmp_path / "fixture.cif"
     _fixture(cif)
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "about": "<p>ok</p><script>steal()</script><a href=\'javascript:go()\' onclick=\'go()\'>z</a>",
         "annotations": [],
     }
@@ -408,7 +408,7 @@ def test_base_mode_other_than_custom_leaves_the_colour_mode_alone(tmp_path):
 
     def render(base_mode):
         manifest = {
-            "schema_version": "bindos-inspection-manifest-1",
+            "schema_version": "protein-inspector-manifest-1",
             "base_mode": base_mode,
             "annotations": [
                 {
@@ -447,7 +447,7 @@ def test_base_color_must_be_a_hex_value(tmp_path):
     with pytest.raises(ValueError, match="base_color must be"):
         render_inspection_bundle(
             mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
-            inspection_manifest={"schema_version": "bindos-inspection-manifest-1",
+            inspection_manifest={"schema_version": "protein-inspector-manifest-1",
                                  "annotations": [], "base_color": "grey"},
             output_dir=str(tmp_path / "out"),
         )
@@ -464,7 +464,7 @@ def test_bundle_reads_back_cleanly_without_a_browser(tmp_path):
     cif = tmp_path / "fixture.cif"
     _fixture(cif)
     manifest = {
-        "schema_version": "bindos-inspection-manifest-1",
+        "schema_version": "protein-inspector-manifest-1",
         "about": "context that must survive the round trip",
         "annotations": [
             {"annotation_id": "a-1", "kind": "custom", "label": "probe two",
@@ -481,7 +481,7 @@ def test_bundle_reads_back_cleanly_without_a_browser(tmp_path):
     )
     state = read_inspection_bundle(str(out / "inspection.html"))
 
-    assert state["inspector_version"].startswith("bindos-inspector-")
+    assert state["inspector_version"].startswith("protein-inspector-")
     assert state["source"]["sha256"] == hashlib.sha256(cif.read_bytes()).hexdigest()
     assert state["base_mode"] == "chain"   # defaults defer to the viewer Style panel
     assert [l["layer_id"] for l in state["layers"]] == ["L"]
@@ -504,7 +504,7 @@ def test_reader_rejects_a_page_that_is_not_a_bundle(tmp_path):
     import pytest
     stray = tmp_path / "other.html"
     stray.write_text("<html><body>not a bundle</body></html>")
-    with pytest.raises(ValueError, match="no bindos inspection state"):
+    with pytest.raises(ValueError, match="no protein_inspector inspection state"):
         read_inspection_bundle(str(stray))
 
 
@@ -524,7 +524,7 @@ def test_bundle_chain_palette_survives_the_viewers_own_config_normalizer(tmp_pat
     render_inspection_bundle(
         mmcif_path=str(cif),
         mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
-        inspection_manifest={"schema_version": "bindos-inspection-manifest-1",
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
                              "annotations": []},
         output_dir=str(tmp_path / "out"),
         extras=True,
@@ -558,7 +558,7 @@ def _morph_bundle(tmp_path, n_conformers=3, mapping="exact", steps=6, ragged=Fal
         others.append({"path": str(other), "label": f"State {index}"})
     result = render_inspection_bundle(
         mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
-        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1", "annotations": []},
         output_dir=str(tmp_path / "out"), conformers=others,
         morph_mapping=mapping, morph_steps=steps, morph_reference_label="Start")
     html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
@@ -571,7 +571,7 @@ def test_conformers_ship_endpoints_only_and_the_page_interpolates(tmp_path):
     assert result["morph"]["mode"] == "browser"
     assert result["morph"]["frames_in_file"] == 3
     assert result["morph"]["stored_intermediates"] == 0
-    state = json.loads(html.read_text().split('id="bindos-inspection-state" type="application/json">')[1]
+    state = json.loads(html.read_text().split('id="pinsp-inspection-state" type="application/json">')[1]
                        .split("</script>")[0].replace("<\\/", "</"))
     assert len(state["viewer"]["objects"][0]["frames"]) == 3
 
@@ -605,7 +605,7 @@ def test_reference_label_and_button_per_conformation(tmp_path):
     # frame transport (Play included) is gone with it.
     assert 'class="bm-btn"' in text
     assert "data-morph=\"1\"" in text
-    assert ".bindos-stage[data-morph='1'] #controlsContainer{display:none!important}" in text
+    assert ".pinsp-stage[data-morph='1'] #controlsContainer{display:none!important}" in text
 
 
 def test_exact_mapping_refuses_a_ragged_conformer(tmp_path):
@@ -628,39 +628,55 @@ def test_conformers_and_morph_to_are_mutually_exclusive(tmp_path):
     with pytest.raises(ValueError, match="not both"):
         render_inspection_bundle(
             mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
-            inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+            inspection_manifest={"schema_version": "protein-inspector-manifest-1", "annotations": []},
             output_dir=str(tmp_path / "out"),
             conformers=[{"path": str(cif)}], morph_to=[{"path": str(cif)}])
 
 
 def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
-    """py2Dmol fixes .py2dmol-viewer-instance at 948px; the stage must clamp it."""
+    """py2Dmol fixes .py2dmol-viewer-instance at 948px; layout, not JS, must beat it."""
     html = _two_layer_bundle(tmp_path)
     text = Path(html).read_text()
-    assert ".bindos-stage{position:relative;min-width:0;overflow:hidden}" in text
+    assert ".pinsp-stage{position:relative;min-width:0;overflow:hidden}" in text
     # Orient/Focus/Rotate/Style/Clip/Capture float over the top-LEFT of the
     # canvas instead of sitting in a 340px column beside it.
-    assert ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;" in text
-    assert ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}" in text
+    assert ".pinsp-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;" in text
+    # WIDTH FLOWS ONE WAY: grid column -> #mainContainer -> #canvasContainer.
+    # py2Dmol's ResizeObserver answers a container resize by writing the
+    # observed width back onto #viewerWrapper as an INLINE style, which beats
+    # a stylesheet rule however important it is. Overriding that write was the
+    # old approach and it lost: container and wrapper sized from each other,
+    # each pass shedding the container's border, and the picture walked itself
+    # narrower a couple of pixels per animation frame until it hit the floor.
+    # The write is now inert by construction rather than by cascade -- the
+    # element it lands on does not generate a box at all.
+    assert (".pinsp-stage .py2dmol-viewer-instance,.pinsp-stage #viewerWrapper"
+            "{display:contents!important}") in text
+    # #mainContainer stays a real box: the floating Orient/Focus/Style cluster
+    # is its child and a SIBLING of #canvasContainer, so it is the positioning
+    # context those tools resolve against. Collapse it too and they detach and
+    # land on whatever sits above the picture.
+    assert (".pinsp-stage #mainContainer{display:block!important;position:relative;"
+            "width:auto!important;max-width:none!important;padding:0!important}") in text
     # setupViewport writes an INLINE pixel width on #canvasContainer, so the
     # override has to be !important or the picture stays a fixed box.
-    assert '.bindos-stage #canvasContainer{display:block!important;max-width:100%;' in text
-    assert "resize:none!important}" in text
-    # The viewer root has an id and no class in an export, so the width is
-    # driven from JS by walking up from #mainContainer.
-    assert "var instance=main.parentElement" in text
-    assert "box.style.setProperty('width',want+'px','important')" in text
-    # ...and the observer's write-back to #viewerWrapper must be inert, or
-    # container and wrapper size from each other and the picture walks itself
-    # narrower by one border per resize. Only reproducible in a real layout
-    # engine, so this guards the rule rather than the behaviour.
-    assert ".bindos-stage #viewerWrapper{position:relative;width:auto!important;max-width:100%}" in text
-    assert ".bindos-stage #canvasContainer canvas{max-width:100%}" in text
+    assert ".pinsp-stage #canvasContainer{display:block!important;width:auto!important;" in text
+    assert "resize:none!important" in text
+    # NOTHING MEASURES ANYTHING. The JS width controller is gone; if it ever
+    # comes back, so does the feedback loop.
+    assert "fitViewer" not in text
+    assert "box.style.setProperty('width'" not in text
+    assert "new ResizeObserver(fitViewer)" not in text
+    # The one write CSS cannot do: the viewer root carries an id and no class
+    # in an export, so it is reached by walking up from #mainContainer -- once,
+    # at startup, with no measurement.
+    assert "instance.style.setProperty('display','contents','important')" in text
+    assert ".pinsp-stage #canvasContainer canvas{max-width:100%}" in text
     # The Layers panel keeps its own column beside the structure, and there is
     # no collapse button to hide the viewer's controls with.
-    assert "grid-template-columns:minmax(240px,1fr) 11px var(--bindos-panel,340px)" in text
+    assert "grid-template-columns:minmax(240px,1fr) 11px var(--pinsp-panel,340px)" in text
     assert "@media (max-width:820px)" in text
-    assert 'id="bindos-controls"' not in text
+    assert 'id="pinsp-controls"' not in text
     assert "Hide controls" not in text
 
 
@@ -668,7 +684,7 @@ def test_a_blocked_download_still_leaves_the_capture_recoverable(tmp_path):
     """Save Image reports success without checking; an embedded frame may drop it."""
     html = _two_layer_bundle(tmp_path)
     text = Path(html).read_text()
-    assert 'id="bindos-capture"' in text
+    assert 'id="pinsp-capture"' in text
     # The blob is kept and the revoke deferred, or there is nothing to offer.
     assert "URL.createObjectURL=function(blob){lastBlob=blob" in text
     assert "URL.revokeObjectURL=function(url){setTimeout(" in text
@@ -700,7 +716,7 @@ def _partner_bundle(tmp_path, morph=False):
         conformers = [{"path": str(other), "label": "Bent"}]
     result = render_inspection_bundle(
         mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
-        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1", "annotations": []},
         output_dir=str(tmp_path / "out"), partner_chains=["P"], partner_label="Fab",
         conformers=conformers, morph_mapping="exact", morph_steps=6)
     html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
@@ -711,11 +727,11 @@ def test_partner_chains_get_one_button_that_hides_exactly_them(tmp_path):
     _, html = _partner_bundle(tmp_path)
     text = html.read_text()
     # ONE BUTTON, not a checkbox.
-    assert 'id="bindos-partners"' in text
+    assert 'id="pinsp-partners"' in text
     assert 'class="bm-btn bm-solo"' in text
     # ...and it is not the old checkbox. (The py2Dmol library itself contains
     # the word, so the assertion has to name this control.)
-    assert 'type="checkbox" id="bindos-partners"' not in text
+    assert 'type="checkbox" id="pinsp-partners"' not in text
     report = _run_dom_harness(html, {"chains": ["A", "A", "A", "A", "P", "P", "P", "P"],
                                      "residueNumbers": [1, 2, 3, 4, 1, 2, 3, 4]})
     partners = report["partners"]
@@ -749,12 +765,12 @@ def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
     assert "https://github.com/sokrypton/py2Dmol" in text
     assert "78c2d489d0b5c5d19accd9eeeef878c2868f5271" in text
     # Not only in a comment: a reader of the page can see who wrote the viewer.
-    assert 'class="bindos-credit"' in text
+    assert 'class="pinsp-credit"' in text
     assert "py2Dmol</a> by Sergey Ovchinnikov" in text
     # BOTH notices, because the additions are on the same terms -- a reader
     # allowed to reuse py2Dmol should not have to work out where it ends.
     assert "profdocpizza" in text
-    assert "https://github.com/profdocpizza/bindos-structure-inspector" in text
+    assert "https://github.com/profdocpizza/protein-inspector" in text
     assert "free to reuse" in text
 
 
@@ -783,7 +799,7 @@ def _two_partner_bundle(tmp_path):
     result = render_inspection_bundle(
         mmcif_path=str(reference),
         mmcif_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
-        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1", "annotations": []},
         output_dir=str(tmp_path / "out"),
         partner_chains=["P"], partner_label="Bound partner",
         conformers=[{"path": str(other), "label": "Alt", "partner_chains": ["Q"]}],
@@ -839,7 +855,7 @@ def test_a_colliding_partner_chain_is_renamed_not_merged(tmp_path):
     result = render_inspection_bundle(
         mmcif_path=str(reference),
         mmcif_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
-        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1", "annotations": []},
         output_dir=str(tmp_path / "out"),
         partner_chains=["B"],
         conformers=[{"path": str(other), "label": "Alt", "partner_chains": ["B"]}],
@@ -883,7 +899,7 @@ def test_a_conformers_partner_travels_with_its_receptor(tmp_path):
     result = render_inspection_bundle(
         mmcif_path=str(reference),
         mmcif_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
-        inspection_manifest={"schema_version": "bindos-inspection-manifest-1", "annotations": []},
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1", "annotations": []},
         output_dir=str(tmp_path / "out"), partner_chains=["P"],
         conformers=[{"path": str(turned), "label": "Turned", "partner_chains": ["Q"]}],
         morph_mapping="exact", extras=True)
@@ -925,13 +941,13 @@ def test_the_two_panes_share_one_draggable_boundary(tmp_path):
     a gap. One seam, owned by the grid, removes both states."""
     html = _two_layer_bundle(tmp_path)
     text = Path(html).read_text()
-    assert 'id="bindos-split"' in text
+    assert 'id="pinsp-split"' in text
     assert 'role="separator"' in text
     # gap:0 -- the panes touch; the seam IS the gutter.
-    assert "var(--bindos-panel,340px);gap:0;" in text
+    assert "var(--pinsp-panel,340px);gap:0;" in text
     # The picture is no longer independently resizable.
     assert "resize:none!important" in text
-    assert ".bindos-stage #canvasContainer .resize-handle{display:none!important}" in text
+    assert ".pinsp-stage #canvasContainer .resize-handle{display:none!important}" in text
 
     report = _run_dom_harness(html, {"chains": ["A"] * 5,
                                      "residueNumbers": [1, 2, 3, 4, 5]})
@@ -973,5 +989,5 @@ def test_the_partners_button_is_not_swept_into_the_conformation_ring(tmp_path):
     assert "document.querySelectorAll('.bm-btn')" not in text
     assert text.count("document.querySelectorAll('.bm-btn[data-conf]')") == 2
     # The partners button carries no data-conf, which is what excludes it.
-    partners_tag = text.split('id="bindos-partners"')[0].rsplit("<button", 1)[1]
+    partners_tag = text.split('id="pinsp-partners"')[0].rsplit("<button", 1)[1]
     assert "data-conf" not in partners_tag

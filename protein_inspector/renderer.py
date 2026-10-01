@@ -1,4 +1,4 @@
-"""Render immutable local mmCIF plus a BindOS inspection manifest.
+"""Render immutable local mmCIF plus a Protein Inspector inspection manifest.
 
 The renderer deliberately has no remote-fetch API.  It accepts bytes already on
 disk, verifies the caller-provided digest, and emits a self-contained inspection
@@ -24,8 +24,8 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "bindos-inspector-1.13"
-MANIFEST_SCHEMA = "bindos-inspection-manifest-1"
+INSPECTOR_VERSION = "protein-inspector-1.13"
+MANIFEST_SCHEMA = "protein-inspector-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 UPSTREAM_REPOSITORY = "https://github.com/sokrypton/py2Dmol"
 # RETAINED IN EVERY EXPORT, because that is the whole of what the licence asks
@@ -39,13 +39,13 @@ UPSTREAM_LICENSE = (
     "stuff. If we meet some day, and you think this stuff is worth it, you can "
     "buy me a beer in return. Sergey Ovchinnikov"
 )
-INSPECTOR_REPOSITORY = "https://github.com/profdocpizza/bindos-structure-inspector"
+INSPECTOR_REPOSITORY = "https://github.com/profdocpizza/protein-inspector"
 # The additions are on the SAME terms as the viewer, so a reader who is allowed
 # to reuse py2Dmol is allowed to reuse the whole bundle rather than having to
 # work out where one ends and the other begins.
 INSPECTOR_LICENSE = (
     '"THE BEER-WARE LICENSE" (Revision 42): profdocpizza '
-    "<https://github.com/profdocpizza> wrote the BindOS Structure Inspector "
+    "<https://github.com/profdocpizza> wrote the Protein Inspector "
     "additions. As long as you retain this notice you can do whatever you want "
     "with this stuff. If we meet some day, and you think this stuff is worth "
     "it, you can buy me a beer in return. profdocpizza"
@@ -373,33 +373,35 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
     css = (
         "<style>"
         "html,body{margin:0;background:#fff}body{padding:14px;box-sizing:border-box}"
-        ".bindos-inspector{font:14px/1.45 system-ui,sans-serif;display:grid;"
-        "grid-template-columns:minmax(240px,1fr) 11px var(--bindos-panel,340px);gap:0;"
+        ".protein-inspector{font:14px/1.45 system-ui,sans-serif;display:grid;"
+        "grid-template-columns:minmax(240px,1fr) 11px var(--pinsp-panel,340px);gap:0;"
         "color:#0f172a;align-items:stretch}"
         # THE TWO PANES TOUCH, AND THE SEAM IS THE CONTROL. A picture that can
         # be sized independently of the panel beside it can always be sized
         # into overlapping it, or into leaving a band of nothing between them.
         # One draggable boundary removes both states: the grid owns the split,
         # the stage takes whatever is left of it, and the canvas follows.
-        ".bindos-split{cursor:col-resize;position:relative;touch-action:none;"
+        ".pinsp-split{cursor:col-resize;position:relative;touch-action:none;"
         "align-self:stretch;min-height:120px}"
-        ".bindos-split::before{content:'';position:absolute;top:2px;bottom:2px;left:4px;"
+        ".pinsp-split::before{content:'';position:absolute;top:2px;bottom:2px;left:4px;"
         "width:3px;border-radius:2px;background:#e2e8f0}"
-        ".bindos-split:hover::before,.bindos-split[data-drag='1']::before{background:#94a3b8}"
-        ".bindos-split:focus-visible{outline:2px solid #2563eb;outline-offset:-2px}"
+        ".pinsp-split:hover::before,.pinsp-split[data-drag='1']::before{background:#94a3b8}"
+        ".pinsp-split:focus-visible{outline:2px solid #2563eb;outline-offset:-2px}"
         # THE TOOLS BELONG INSIDE THE PICTURE. py2Dmol lays the viewer out as
         # a flex row -- canvas, then a 340px column of Orient/Focus/Rotate/
         # Style/Clip/Capture -- and pins .py2dmol-viewer-instance to 948px to
         # fit both. Floating that column over the top-right of the canvas
         # frees the width, puts the controls on the thing they act on, and
         # leaves the grid's second column for the Layers panel.
-        ".bindos-stage{position:relative;min-width:0;overflow:hidden}"
+        ".pinsp-stage{position:relative;min-width:0;overflow:hidden}"
         # The viewer's own root div carries an id and NO class in an export,
         # so a `.py2dmol-viewer-instance` selector silently matches nothing --
         # it is reached from JS below instead, by walking up from
         # #mainContainer. Left here for the builds that do carry the class.
-        ".bindos-stage .py2dmol-viewer-instance{width:auto!important;max-width:100%}"
-        ".bindos-stage #mainContainer{display:block!important;max-width:100%}"
+        ".pinsp-stage .py2dmol-viewer-instance,.pinsp-stage #viewerWrapper"
+        "{display:contents!important}"
+        ".pinsp-stage #mainContainer{display:block!important;position:relative;"
+        "width:auto!important;max-width:none!important;padding:0!important}"
         # WIDTH FLOWS ONE WAY ONLY. py2Dmol's ResizeObserver answers a
         # container resize by writing the observed width back onto
         # #viewerWrapper as an inline style. Once #canvasContainer is fluid,
@@ -408,7 +410,6 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # picture starts at the right size and then walks itself narrow. The
         # !important here makes the observer's write inert: the wrapper takes
         # its width from the grid column and nothing else.
-        ".bindos-stage #viewerWrapper{position:relative;width:auto!important;max-width:100%}"
         # THE DISPLAY AREA STOPS AT ITS OWN COLUMN. #canvasContainer carries
         # `resize: both` and an explicit pixel width, so without a ceiling the
         # reader can drag the picture out from under the Layers panel -- or
@@ -422,11 +423,12 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # grid, so the right edge lands just short of the panel at any frame
         # size. A ResizeObserver on this element re-renders, so the canvas
         # follows. Height stays the caller's, and stays draggable.
-        ".bindos-stage #canvasContainer{display:block!important;max-width:100%;"
-        "resize:none!important}"
-        ".bindos-stage #canvasContainer .resize-handle{display:none!important}"
-        ".bindos-stage #canvasContainer canvas{max-width:100%}"
-        ".bindos-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;"
+        ".pinsp-stage #canvasContainer{display:block!important;width:auto!important;"
+        "max-width:none!important;margin:0!important;resize:none!important;"
+        "position:relative}"
+        ".pinsp-stage #canvasContainer .resize-handle{display:none!important}"
+        ".pinsp-stage #canvasContainer canvas{max-width:100%}"
+        ".pinsp-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;"
         "z-index:5;width:336px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
         "overflow-y:auto;background:rgba(255,255,255,.94);border:1px solid #e2e8f0;"
         "border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.14)}"
@@ -434,9 +436,9 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # watching the structure change is the whole interaction, and it does
         # not survive the panel being pushed below the fold. It only stacks
         # where a side-by-side would leave the canvas unusably narrow.
-        ".bindos-stage[data-morph='1'] #controlsContainer{display:none!important}"
-        "@media (max-width:820px){.bindos-inspector{grid-template-columns:minmax(0,1fr)}"
-        ".bindos-split{display:none}.bindos-panel{max-height:60vh;margin-top:12px}}"
+        ".pinsp-stage[data-morph='1'] #controlsContainer{display:none!important}"
+        "@media (max-width:820px){.protein-inspector{grid-template-columns:minmax(0,1fr)}"
+        ".pinsp-split{display:none}.pinsp-panel{max-height:60vh;margin-top:12px}}"
         # THE RING. One segment per conformation in a single pill, so the set
         # of states is visible at a glance and the current one is obvious
         # without reading a label.
@@ -446,7 +448,7 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # stage's overflow, and their clicks landed on the Layers header
         # behind them. A control you can see the label of but cannot press is
         # worse than one that has wrapped onto a second line.
-        ".bindos-morph{display:flex;flex-wrap:wrap;align-items:center;gap:8px;"
+        ".pinsp-morph{display:flex;flex-wrap:wrap;align-items:center;gap:8px;"
         "padding:0 0 8px;max-width:100%}"
         ".bm-ring{display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px;padding:3px;"
         "border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc;max-width:100%}"
@@ -455,7 +457,7 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         "max-width:100%;overflow:hidden;text-overflow:ellipsis}"
         ".bm-btn:hover:not([aria-pressed='true']){background:#fff;color:#0f172a}"
         ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff}"
-        ".bindos-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
+        ".pinsp-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
         ".bm-solo{border:1px solid #cbd5e1;background:#f8fafc;padding:6px 14px}"
         ".bm-solo[aria-pressed='true']{background:#0f172a;color:#fff;border-color:#0f172a}"
         ".bm-solo[disabled]{opacity:.45;cursor:default;background:#f8fafc;color:#94a3b8;"
@@ -463,13 +465,23 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # A CAPTURE THE READER CAN ACTUALLY KEEP. See the script: a download
         # anchor is dropped without error in a frame that lacks
         # allow-downloads, and the viewer reports success regardless.
-        ".bindos-capture{margin:8px 0 0;padding:9px 11px;border:1px solid #cbd5e1;"
+        ".pinsp-capture{margin:8px 0 0;padding:9px 11px;border:1px solid #cbd5e1;"
         "border-radius:8px;background:#f8fafc;font:12px system-ui}"
-        ".bindos-capture[hidden]{display:none}"
-        ".bindos-capture a{color:#1d4ed8}"
-        ".bindos-capture img{display:block;margin:8px 0 0;max-width:100%;max-height:260px;"
-        "border:1px solid #e2e8f0;border-radius:6px;background:#fff}"
-        ".bindos-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:88vh;overflow:auto;"
+        ".pinsp-capture[hidden]{display:none}"
+        ".pinsp-capture a{color:#1d4ed8}"
+        ".pinsp-capture .bp-btn{margin:0 6px 0 0}"
+        ".pinsp-capture a.bp-btn{text-decoration:none;display:inline-block}"
+        # THE PREVIEW SITS ON A CHECKERBOARD. saveImage forces
+        # isTransparent for the export, so the PNG has no background at
+        # all -- and on white it looked exactly like a white background
+        # baked in, which is the one thing the reader needs to know it
+        # is not.
+        ".pinsp-capture img{display:block;margin:8px 0 0;max-width:100%;max-height:260px;"
+        "border:1px solid #e2e8f0;border-radius:6px;"
+        "background-image:linear-gradient(45deg,#eef2f7 25%,transparent 25%,transparent 75%,#eef2f7 75%),"
+        "linear-gradient(45deg,#eef2f7 25%,transparent 25%,transparent 75%,#eef2f7 75%);"
+        "background-size:18px 18px;background-position:0 0,9px 9px}"
+        ".pinsp-panel{border:1px solid #e2e8f0;border-radius:10px;max-height:88vh;overflow:auto;"
         "display:flex;flex-direction:column;background:#fff;position:sticky;top:14px;"
         "box-shadow:0 8px 24px rgba(15,23,42,.06)}"
         ".bp-head{position:sticky;top:0;z-index:2;background:#fff;display:flex;justify-content:space-between;"
@@ -488,7 +500,7 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bp-only{font:10px system-ui;padding:1px 6px;border:1px solid #e2e8f0;background:#fff;"
         "border-radius:5px;cursor:pointer;color:#64748b;flex:none;visibility:hidden}"
         ".bp-layer:hover .bp-only{visibility:visible}.bp-only:hover{border-color:#94a3b8;color:#0f172a}"
-        "#bindos-filter{margin:0 12px 8px;padding:5px 8px;font:12px system-ui;border:1px solid #cbd5e1;"
+        "#pinsp-filter{margin:0 12px 8px;padding:5px 8px;font:12px system-ui;border:1px solid #cbd5e1;"
         "border-radius:6px}"
         ".bp-card{margin:0 12px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;"
         "padding:9px 11px}"
@@ -509,31 +521,31 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bp-group>summary::-webkit-details-marker{display:none}"
         ".bp-group>summary::before{content:'▸';font-size:9px;color:#94a3b8}"
         ".bp-group[open]>summary::before{content:'▾'}"
-        ".bindos-residue{cursor:pointer;padding:2px 6px;border-radius:5px;font-size:12px;"
+        ".pinsp-residue{cursor:pointer;padding:2px 6px;border-radius:5px;font-size:12px;"
         "border-left:3px solid transparent}"
-        ".bindos-residue:hover{background:#f1f5f9}"
-        ".bindos-residue[data-on='1']{background:#fef9c3;border-left-color:#eab308}"
-        ".bindos-warning{color:#9a3412}"
+        ".pinsp-residue:hover{background:#f1f5f9}"
+        ".pinsp-residue[data-on='1']{background:#fef9c3;border-left-color:#eab308}"
+        ".pinsp-warning{color:#9a3412}"
         ".bp-muted{font-size:11px;color:#64748b}"
-        ".bindos-tabs{display:flex;gap:2px;border-bottom:1px solid #e2e8f0;margin:0 0 14px;font:14px system-ui,sans-serif}"
-        ".bindos-tab{font:13px system-ui;padding:8px 16px;border:0;background:none;cursor:pointer;color:#64748b;border-bottom:2px solid transparent;margin-bottom:-1px}"
-        ".bindos-tab:hover{color:#0f172a}"
-        '.bindos-tab[aria-selected="true"]{color:#0f172a;font-weight:600;border-bottom-color:#2563eb}'
-        ".bindos-about{max-width:52em;font:15px/1.6 system-ui,sans-serif;color:#0f172a;padding:0 4px 28px}"
-        ".bindos-about h2{font-size:17px;margin:26px 0 6px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}"
-        ".bindos-about h3{font-size:15px;margin:20px 0 4px}"
-        ".bindos-about table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}"
-        ".bindos-about td,.bindos-about th{border-bottom:1px solid #e2e8f0;padding:6px 8px;text-align:left;vertical-align:top}"
-        ".bindos-about code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:13px}"
-        ".bindos-about .sw{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #cbd5e1;vertical-align:-2px}"
-        "#bindos-residue-details{display:none}"
-        ".bindos-credit{margin:14px 0 0;padding-top:10px;border-top:1px solid #e2e8f0;"
+        ".pinsp-tabs{display:flex;gap:2px;border-bottom:1px solid #e2e8f0;margin:0 0 14px;font:14px system-ui,sans-serif}"
+        ".pinsp-tab{font:13px system-ui;padding:8px 16px;border:0;background:none;cursor:pointer;color:#64748b;border-bottom:2px solid transparent;margin-bottom:-1px}"
+        ".pinsp-tab:hover{color:#0f172a}"
+        '.pinsp-tab[aria-selected="true"]{color:#0f172a;font-weight:600;border-bottom-color:#2563eb}'
+        ".pinsp-about{max-width:52em;font:15px/1.6 system-ui,sans-serif;color:#0f172a;padding:0 4px 28px}"
+        ".pinsp-about h2{font-size:17px;margin:26px 0 6px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}"
+        ".pinsp-about h3{font-size:15px;margin:20px 0 4px}"
+        ".pinsp-about table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}"
+        ".pinsp-about td,.pinsp-about th{border-bottom:1px solid #e2e8f0;padding:6px 8px;text-align:left;vertical-align:top}"
+        ".pinsp-about code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:13px}"
+        ".pinsp-about .sw{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #cbd5e1;vertical-align:-2px}"
+        "#pinsp-residue-details{display:none}"
+        ".pinsp-credit{margin:14px 0 0;padding-top:10px;border-top:1px solid #e2e8f0;"
         "font:11.5px system-ui;color:#64748b}"
-        ".bindos-credit a{color:#64748b}"
+        ".pinsp-credit a{color:#64748b}"
         "</style>"
     )
     script = r"""<script>(function(){
-var root=document.getElementById('bindos-inspection-state');if(!root)return;
+var root=document.getElementById('pinsp-inspection-state');if(!root)return;
 var s=JSON.parse(root.textContent);
 var byId={};s.annotations.forEach(function(a){byId[a.annotation_id]=a;});
 var layerOf={};s.layers.forEach(function(l){layerOf[l.layer_id]=l;});
@@ -566,7 +578,7 @@ function syncVisibleLayers(){
       if(on)shown++;
       if(vis&&a&&a.resolved){var ix=indicesFor(a.residue);for(var k=0;k<ix.length;k++)selected[ix[k]]=1;}}
     var g=document.querySelector('[data-group="'+CSS.escape(l.layer_id)+'"]');if(g)g.hidden=!vis;}
-  var c=document.getElementById('bindos-count');
+  var c=document.getElementById('pinsp-count');
   if(c)c.textContent=shown+' of '+s.annotations.length;
   if(!r)return false;
   if(s.highlight!=='halo'){
@@ -587,7 +599,7 @@ function syncVisibleLayers(){
       r.colorsNeedUpdate=true;r.plddtColorsNeedUpdate=true;}}
   var set=new Set();for(var key in selected)set.add(Number(key));
   applying=true;try{if(s.highlight==='halo')r.setResidueSelection(set);
-    r.render('BindOS inspection layer visibility');}finally{applying=false;}
+    r.render('Protein Inspector inspection layer visibility');}finally{applying=false;}
   return true;}
 function showDetails(a){
   var rows=document.querySelectorAll('[data-annotation]');
@@ -597,9 +609,9 @@ function showDetails(a){
   for(var j=0;j<related.length;j++){
     var el=document.querySelector('[data-annotation="'+CSS.escape(related[j].annotation_id)+'"]');
     if(el&&!el.hidden)el.setAttribute('data-on','1');}
-  var d=document.getElementById('bindos-residue-details');
+  var d=document.getElementById('pinsp-residue-details');
   if(d)d.textContent=a.label;
-  var card=document.getElementById('bindos-card');if(!card)return;
+  var card=document.getElementById('pinsp-card');if(!card)return;
   var res=a.residue||{};
   var title=(a.label||'').split(' ')[0]||res.author_residue_number;
   var items='';
@@ -607,24 +619,24 @@ function showDetails(a){
     items+='<li><span class="bp-sw" style="background:'+esc(x.color||'#94a3b8')+'"></span><span>'+
       esc(lay.label||x.layer_id||x.kind)+'<span class="bp-meta">'+esc(x.label)+'</span></span></li>';}
   card.innerHTML='<div class="bp-card-head"><b>'+esc(title)+'</b>'+
-    '<button class="bp-x" id="bindos-card-close" title="clear (Esc)">&times;</button></div>'+
+    '<button class="bp-x" id="pinsp-card-close" title="clear (Esc)">&times;</button></div>'+
     '<div class="bp-addr">chain '+esc(res.chain_id)+' &middot; author '+esc(res.author_residue_number)+
     ' &middot; model index '+esc(res.canonical_position)+'</div><ul>'+items+'</ul>';
   card.hidden=false;
-  var xb=document.getElementById('bindos-card-close');
+  var xb=document.getElementById('pinsp-card-close');
   if(xb)xb.addEventListener('click',function(ev){ev.stopPropagation();clearDetails();});}
 function clearDetails(){
   var rows=document.querySelectorAll('[data-annotation]');
   for(var i=0;i<rows.length;i++)rows[i].removeAttribute('data-on');
-  var d=document.getElementById('bindos-residue-details');if(d)d.textContent=PLACEHOLDER;
-  var card=document.getElementById('bindos-card');if(card){card.hidden=true;card.innerHTML='';}
+  var d=document.getElementById('pinsp-residue-details');if(d)d.textContent=PLACEHOLDER;
+  var card=document.getElementById('pinsp-card');if(card){card.hidden=true;card.innerHTML='';}
   selectedId=null;
   var r=renderer();
   if(r){applying=true;try{r.setResidueSelection(new Set());
-    r.render('BindOS clear residue selection');}finally{applying=false;}}}
+    r.render('Protein Inspector clear residue selection');}finally{applying=false;}}}
 function selectInStructure(res){var r=renderer();if(!r)return;
   applying=true;try{r.setResidueSelection(new Set(indicesFor(res)));
-    r.render('BindOS manifest residue selection');}finally{applying=false;}}
+    r.render('Protein Inspector manifest residue selection');}finally{applying=false;}}
 function setAllLayers(on){for(var i=0;i<s.layers.length;i++){var b=box(s.layers[i].layer_id);
     if(b)b.checked=on;}syncVisibleLayers();}
 function onlyLayer(id){for(var i=0;i<s.layers.length;i++){var b=box(s.layers[i].layer_id);
@@ -639,13 +651,13 @@ for(var w=0;w<rws.length;w++)(function(row){row.addEventListener('click',functio
   var id=row.dataset?row.dataset.annotation:row.getAttribute('data-annotation');
   if(selectedId===id){clearDetails();return;}
   selectedId=id;var a=byId[id];if(!a)return;showDetails(a);selectInStructure(a.residue);});})(rws[w]);
-var bAll=document.getElementById('bindos-layers-all');
+var bAll=document.getElementById('pinsp-layers-all');
 if(bAll)bAll.addEventListener('click',function(){setAllLayers(true);});
-var bNone=document.getElementById('bindos-layers-none');
+var bNone=document.getElementById('pinsp-layers-none');
 if(bNone)bNone.addEventListener('click',function(){setAllLayers(false);});
-var bClear=document.getElementById('bindos-clear-residue');
+var bClear=document.getElementById('pinsp-clear-residue');
 if(bClear)bClear.addEventListener('click',clearDetails);
-var filt=document.getElementById('bindos-filter');
+var filt=document.getElementById('pinsp-filter');
 if(filt)filt.addEventListener('input',function(){query=(filt.value||'').toLowerCase().trim();
   syncVisibleLayers();});
 document.addEventListener('keydown',function(e){if(e.key==='Escape')clearDetails();});
@@ -654,7 +666,7 @@ document.addEventListener('py2dmol-residue-selection-change',function(){
   var hit=s.annotations.find(function(a){return indicesFor(a.residue).some(function(i){
     return r.residueSelection.has(i);});});
   if(hit){selectedId=hit.annotation_id;showDetails(hit);}});
-window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearDetails,
+window.proteinInspector={syncVisibleLayers:syncVisibleLayers,clearDetails:clearDetails,
   setAllLayers:setAllLayers,onlyLayer:onlyLayer,
   selectAnnotation:function(id){var a=byId[id];if(a){selectedId=id;showDetails(a);
     selectInStructure(a.residue);}}};
@@ -666,67 +678,37 @@ window.bindosInspection={syncVisibleLayers:syncVisibleLayers,clearDetails:clearD
 document.addEventListener('py2dmol-color-change',function(){
   var r=renderer();if(!r||!r.colorMode||baseMode===r.colorMode)return;
   baseMode=r.colorMode;syncVisibleLayers();});
-// THE PICTURE FILLS ITS PANE, AND KEEPS FILLING IT. Width is set here, in
-// pixels, from the stage -- not left to `width:auto` and the cascade. Two
-// reasons it has to be JS. The viewer's root element carries an id and no
-// class in an export, so there is nothing stable to select it by; and it is
-// an inline-block, so every box inside it shrink-wraps its content. Together
-// those meant the canvas opened at its authored width inside a much wider
-// pane, and then LATCHED: narrowing the window shrank it and widening again
-// never brought it back, because shrink-to-fit had no reason to grow.
-//
-// Writing an explicit width on #canvasContainer each time the stage changes
-// removes the guesswork in both directions. py2Dmol's own ResizeObserver
-// watches that element and redraws the canvas to match.
+// THE PICTURE FILLS ITS PANE, BY LAYOUT. The grid column owns the width;
+// #canvasContainer is a flow child of the stage and takes all of it. The
+// only thing JS still has to do is the one element CSS cannot reach: the
+// viewer's root div carries an id and no class in an export, and it is an
+// inline-block, so it would shrink-wrap its content and latch narrow. One
+// write, once, at startup -- nothing here measures anything, so there is no
+// path by which a width can feed back into itself.
 (function(){
-  var stage=document.getElementById('bindos-stage');
-  if(!stage)return;
-  var lastFit=-1;
-  function fitViewer(){
-    var main=stage.querySelector('#mainContainer'),
-        box=stage.querySelector('#canvasContainer');
-    if(!main||!box)return false;
-    var instance=main.parentElement;
-    if(instance&&instance!==stage){
-      instance.style.setProperty('display','block','important');
-      instance.style.setProperty('width','auto','important');
-      instance.style.setProperty('max-width','100%','important');
-      instance.style.setProperty('margin','0','important');}
-    // #mainContainer carries 8px of padding, which is 16px of pane the
-    // picture would otherwise never reach.
-    main.style.setProperty('padding','0','important');
-    var wrapper=stage.querySelector('#viewerWrapper');
-    if(wrapper)wrapper.style.setProperty('width','auto','important');
-    var want=Math.max(240,Math.floor(stage.clientWidth));
-    if(Math.abs(want-lastFit)<1)return true;
-    lastFit=want;
-    box.style.setProperty('width',want+'px','important');
-    return true;}
-  var tries=0;(function wait(){if(fitViewer()||++tries>600)return;
-    requestAnimationFrame(wait);})();
-  if(window.ResizeObserver)new ResizeObserver(fitViewer).observe(stage);
-  window.addEventListener('resize',fitViewer);
-  // The seam moves the stage without resizing the window.
-  var seam=document.getElementById('bindos-split');
-  if(seam){seam.addEventListener('pointermove',fitViewer);
-    seam.addEventListener('keydown',function(){requestAnimationFrame(fitViewer);});}
+  var main=document.querySelector('#pinsp-stage #mainContainer');
+  if(!main)return;
+  var instance=main.closest('#pinsp-stage')===main.parentElement?null:main.parentElement;
+  while(instance&&instance.id!=='pinsp-stage'){
+    instance.style.setProperty('display','contents','important');
+    instance=instance.parentElement;}
 })();
 // ONE BOUNDARY, DRAGGED. The panel width is a custom property on the grid,
 // so moving the seam re-lays out both panes at once and they cannot come
 // apart or overlap. The canvas takes its width from the column it is in and
 // py2Dmol's own ResizeObserver redraws it.
 (function(){
-  var grid=document.querySelector('.bindos-inspector'),
-      split=document.getElementById('bindos-split');
+  var grid=document.querySelector('.protein-inspector'),
+      split=document.getElementById('pinsp-split');
   if(!grid||!split)return;
   var MIN_PANEL=240,MIN_STAGE=320,dragging=false;
   function panelWidth(){
-    var v=parseFloat(getComputedStyle(grid).getPropertyValue('--bindos-panel'));
+    var v=parseFloat(getComputedStyle(grid).getPropertyValue('--pinsp-panel'));
     return isFinite(v)&&v>0?v:340;}
   function setPanel(px){
     var box=grid.getBoundingClientRect(),
         most=Math.max(MIN_PANEL,box.width-MIN_STAGE);
-    grid.style.setProperty('--bindos-panel',
+    grid.style.setProperty('--pinsp-panel',
       Math.round(Math.min(Math.max(px,MIN_PANEL),most))+'px');
     split.setAttribute('aria-valuenow',String(Math.round(panelWidth())));}
   function fromPointer(e){setPanel(grid.getBoundingClientRect().right-e.clientX);}
@@ -757,10 +739,26 @@ document.addEventListener('py2dmol-color-change',function(){
 // anywhere. That is the worst possible failure for a figure someone is about
 // to put in a talk.
 //
-// So: keep the blob the capture made, and offer it as something that survives
-// a blocked download -- a right-click-saveable link, plus the image itself,
-// which is right-clickable in every browser. Revoking is deferred rather than
-// skipped, so the URL stays valid long enough to use and is still collected.
+// Measured, on this bundle, clicking Save in the capture panel:
+//
+//   top-level file:// tab                      downloads (344,768 B)
+//   plain <iframe>                             downloads
+//   sandboxed <iframe>, no allow-downloads     BLOCKED, nothing written
+//   sandboxed <iframe> + allow-downloads       downloads
+//
+// So the block is real but narrow, and the first version of this bar warned
+// about it unconditionally -- telling three readers out of four that a save
+// which had just succeeded might not have. Worse, the escape hatch it offered
+// was "right-click the link", which an Electron/WebView2 shell does not have a
+// context menu for, on a blob: URL from a file:// page (opaque origin) that is
+// the least reliable thing to Save-link-as even where it does.
+//
+// So: COPY comes first. The clipboard needs neither a download permission nor
+// a context menu, which is precisely what an embedded app shell withholds, and
+// PNG carries the alpha channel through. The link stays, upgraded to a data:
+// URL that survives right-click and drag-out. The warning appears only when
+// the page is actually embedded. Revoking is deferred rather than skipped, so
+// the URL stays valid long enough to use and is still collected.
 (function(){
   if(!window.URL||!URL.createObjectURL)return;
   var makeUrl=URL.createObjectURL.bind(URL),dropUrl=URL.revokeObjectURL.bind(URL),lastBlob=null;
@@ -773,25 +771,104 @@ document.addEventListener('py2dmol-color-change',function(){
     var realClick=el.click.bind(el);
     el.click=function(){
       var name=el.getAttribute&&el.getAttribute('download');
-      if(name&&lastBlob)showCapture(name,lastBlob);
+      if(name&&lastBlob){
+        // Rename BEFORE the click, or the file the reader actually receives
+        // keeps the upstream project's prefix and the bar's copy is a second,
+        // differently-named download of the same picture.
+        var nice=exportName(name);
+        try{el.setAttribute('download',nice);}catch(e){}
+        showCapture(nice,lastBlob);}
       try{realClick();}catch(e){}};
     return el;};
+  function exportName(name){
+    // py2Dmol names its own exports; after the rename that prefix is somebody
+    // else's project on the file that lands in the reader's Downloads folder.
+    try{
+      var el=document.getElementById('pinsp-inspection-state');
+      var st=JSON.parse(el.textContent.split('<\/').join('</'));
+      var src=(st.source&&st.source.path)||'';
+      var base=src.split('/').pop().split('\\').pop().replace(/\.(cif|mmcif)$/i,'');
+      if(base)return base+name.replace(/^.*?(_\d{4}-\d\d-\d\dT[\d-]+)?(\.[a-z0-9]+)$/i,'$1$2');
+    }catch(e){}
+    return String(name).replace(/^py2dmol_/,'');}
+  function asDataUrl(blob,cb){
+    try{var r=new FileReader();
+      r.onload=function(){cb(String(r.result));};
+      r.onerror=function(){cb(null);};
+      r.readAsDataURL(blob);}catch(e){cb(null);}}
   function showCapture(name,blob){
-    var box=document.getElementById('bindos-capture');if(!box)return;
-    var url=makeUrl(blob),kb=(blob.size/1048576).toFixed(2);
+    var box=document.getElementById('pinsp-capture');if(!box)return;
+    var url=makeUrl(blob),mb=(blob.size/1048576).toFixed(2),nice=name;
     box.textContent='';
     var line=document.createElement('span');
-    line.textContent='Capture ready \u2014 '+kb+' MB. ';
+    line.textContent='Capture ready \u2014 '+mb+' MB, transparent background. ';
+    box.appendChild(line);
+    var note=document.createElement('div');
+    note.className='bp-muted';note.style.marginTop='6px';
+    function say(t){note.textContent=t;}
+    // COPY FIRST: the only route that needs neither a download permission nor
+    // a context menu. PNG on the clipboard keeps the alpha channel.
+    var copy=document.createElement('button');
+    copy.type='button';copy.className='bp-btn';copy.textContent='Copy image';
+    // LEGACY PATH FIRST WHEN THE MODERN ONE IS ABSENT OR REFUSED. Selecting an
+    // <img> in a contenteditable and running execCommand('copy') happens
+    // synchronously inside the click, so it needs no permission grant and no
+    // promise -- which is exactly the ground the async API loses on inside an
+    // embedded frame.
+    function copyViaSelection(){
+      try{
+        var holder=document.createElement('div');
+        holder.contentEditable='true';
+        holder.style.cssText='position:fixed;left:-9999px;top:0;opacity:0';
+        var im=document.createElement('img');im.src=url;
+        holder.appendChild(im);document.body.appendChild(holder);
+        var rng=document.createRange();rng.selectNode(im);
+        var sel=window.getSelection();sel.removeAllRanges();sel.addRange(rng);
+        var ok=document.execCommand('copy');
+        sel.removeAllRanges();document.body.removeChild(holder);
+        return ok;
+      }catch(e){return false;}}
+    copy.addEventListener('click',function(){
+      var settle=function(text,msg){
+        copy.textContent=text;copy.disabled=false;say(msg||'');
+        if(text==='Copied')setTimeout(function(){copy.textContent='Copy image';},4000);};
+      copy.disabled=true;copy.textContent='Copying\u2026';
+      var viaApi=window.ClipboardItem&&navigator.clipboard&&navigator.clipboard.write;
+      if(!viaApi){
+        settle(copyViaSelection()?'Copied':'Copy image',
+          copyViaSelection?'':'This browser has no clipboard image support \u2014 '
+            +'use Download, or right-click the picture below.');
+        return;}
+      try{
+        navigator.clipboard.write([new ClipboardItem({'image/png':blob})]).then(
+          function(){settle('Copied');},
+          function(err){
+            if(copyViaSelection()){settle('Copied');return;}
+            settle('Copy image','Clipboard refused ('+((err&&err.name)||'unknown')
+              +'). This usually means the frame is not allowed to write to the '
+              +'clipboard \u2014 open the file in a browser tab, or drag the picture '
+              +'below onto your desktop.');});
+      }catch(e){
+        if(copyViaSelection()){settle('Copied');return;}
+        settle('Copy image','Clipboard refused ('+((e&&e.name)||'unknown')+').');}});
+    box.appendChild(copy);
     var link=document.createElement('a');
-    link.href=url;link.setAttribute('download',name);link.textContent=name;
-    var hint=document.createElement('span');
-    hint.className='bp-muted';
-    hint.textContent=' \u2014 if clicking does nothing, this page is embedded in a frame that '
-      +'blocks downloads: right-click the link (or the image below) and save it, or open this '
-      +'file directly in a browser tab.';
-    box.appendChild(line);box.appendChild(link);box.appendChild(hint);
+    link.className='bp-btn';link.href=url;link.textContent='Download';
+    link.setAttribute('download',nice);
+    box.appendChild(link);
+    // A data: URL right-clicks and drags out where a blob: from an opaque
+    // origin does not. Swapped in once it is ready; the blob URL works until.
+    asDataUrl(blob,function(d){if(d)link.href=d;});
+    var nm=document.createElement('span');
+    nm.className='bp-muted';nm.textContent=nice;
+    box.appendChild(nm);
+    box.appendChild(note);
+    // ONLY WARN WHERE IT CAN BE TRUE. A top-level page can always download.
+    if(window.top!==window.self)
+      say('This page is embedded in a frame. If Download does nothing the frame '
+        +'blocks downloads \u2014 use Copy image, or open the file in a browser tab.');
     if(/^image\//.test(blob.type||'')){
-      var img=document.createElement('img');img.src=url;img.alt=name;box.appendChild(img);}
+      var img=document.createElement('img');img.src=url;img.alt=nice;box.appendChild(img);}
     box.hidden=false;}
 })();
 // PARTNERS ARE DRAWN, NOT ANNOTATED, AND THEY BELONG TO A STATE. Every
@@ -828,7 +905,7 @@ function applyPartners(showFor){
   function holdFrame(){
     var live=renderer();if(!live)return;
     if(typeof live.setFrame==='function'&&live.currentFrame!==keep)live.setFrame(keep);
-    else live.render('BindOS partners');}
+    else live.render('Protein Inspector partners');}
   holdFrame();
   requestAnimationFrame(holdFrame);
   return shown;}
@@ -837,13 +914,13 @@ function hasPartnersHere(){
   for(var c in partners.owner)if(partners.owner[c]===morphAt)return true;
   return false;}
 function syncPartnerButton(){
-  var btn=document.getElementById('bindos-partners');if(!btn||!partners)return;
+  var btn=document.getElementById('pinsp-partners');if(!btn||!partners)return;
   var here=hasPartnersHere();
   btn.disabled=!here;
   btn.setAttribute('aria-pressed',String(!!(here&&partnersOn)));
   btn.title=here?(partnersOn?'Hide ':'Show ')+(partners.label||'partners')
     :'No partners in this conformation';}
-var partnerBtn=document.getElementById('bindos-partners');
+var partnerBtn=document.getElementById('pinsp-partners');
 if(partnerBtn)partnerBtn.addEventListener('click',function(){
   if(partnerBtn.disabled)return;
   partnersOn=!partnersOn;applyPartners();syncPartnerButton();});
@@ -889,9 +966,9 @@ function setMorphButtons(active){
   var bs=document.querySelectorAll('.bm-btn[data-conf]');
   for(var i=0;i<bs.length;i++)bs[i].setAttribute('aria-pressed',
     String(Number(bs[i].getAttribute('data-conf'))===active));
-  var bar=document.getElementById('bindos-morph');
+  var bar=document.getElementById('pinsp-morph');
   if(bar)bar.setAttribute('data-busy',morphBusy?'1':'0');
-  var note=document.getElementById('bindos-morph-note');
+  var note=document.getElementById('pinsp-morph-note');
   if(note&&morph){var c=morph.conformers[active];
     note.textContent=(c&&c.rmsd_to_reference_A)
       ?c.rmsd_to_reference_A+' \u00c5 C\u03b1 RMSD from '+morph.conformers[0].label
@@ -946,7 +1023,7 @@ for(var t=0;t<tabs.length;t++)(function(btn){btn.addEventListener('click',functi
   var panes=document.querySelectorAll('[data-pane]');
   for(var j=0;j<panes.length;j++)panes[j].hidden=(panes[j].getAttribute('data-pane')!==want);
   // The canvas is sized on layout; coming back from a hidden pane needs a nudge.
-  if(want==='structure'){var r=renderer();if(r)r.render('BindOS tab shown');}});})(tabs[t]);
+  if(want==='structure'){var r=renderer();if(r)r.render('Protein Inspector tab shown');}});})(tabs[t]);
 if(partners&&!morph){var pt=0;(function pwait(){
   if(applyPartners()!==false||++pt>600){syncPartnerButton();return;}
   requestAnimationFrame(pwait);})();}
@@ -955,7 +1032,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
   requestAnimationFrame(wait);})();
 })();</script>"""
     panel = (css
-             + '<script id="bindos-inspection-state" type="application/json">__STATE__</script>'
+             + '<script id="pinsp-inspection-state" type="application/json">__STATE__</script>'
              + script).replace("__STATE__", payload)
 
     counts = {item["layer_id"]: len(item["annotation_ids"]) for item in state["layers"]}
@@ -975,7 +1052,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
     groups = []
     for item in state["layers"]:
         inner = "".join(
-            f'<div class="bindos-residue{"" if by_id[aid]["resolved"] else " bindos-warning"}" '
+            f'<div class="pinsp-residue{"" if by_id[aid]["resolved"] else " pinsp-warning"}" '
             f'data-annotation="{html.escape(aid, quote=True)}">{html.escape(by_id[aid]["label"])}</div>'
             for aid in item["annotation_ids"] if aid in by_id
         )
@@ -994,7 +1071,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
     partners = state.get("partners") or {}
     partnerbar = ""
     if partners.get("owner"):
-        partnerbar = ('<button type="button" class="bm-btn bm-solo" id="bindos-partners" '
+        partnerbar = ('<button type="button" class="bm-btn bm-solo" id="pinsp-partners" '
                       f'aria-pressed="true">{html.escape(partners.get("label") or "Partners")}'
                       '</button>')
 
@@ -1007,27 +1084,27 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
             f'{html.escape(item["label"])}</button>'
             for index, item in enumerate(morph.get("conformers", []))
         )
-        morphbar = ('<div class="bindos-morph" id="bindos-morph" data-busy="0">'
+        morphbar = ('<div class="pinsp-morph" id="pinsp-morph" data-busy="0">'
                     f'<div class="bm-ring" role="group" aria-label="Conformation">{buttons}</div>'
                     f'{partnerbar}'
-                    '<span class="bp-muted" id="bindos-morph-note"></span></div>')
+                    '<span class="bp-muted" id="pinsp-morph-note"></span></div>')
     elif partnerbar:
-        morphbar = f'<div class="bindos-morph" id="bindos-morph">{partnerbar}</div>'
+        morphbar = f'<div class="pinsp-morph" id="pinsp-morph">{partnerbar}</div>'
     stage_has_ring = morph.get("mode") == "browser"
 
     about = state.get("about") or []
     tabstrip = ""
     panes_open, panes_close = "", ""
     if about:
-        buttons = ['<button type="button" class="bindos-tab" data-tab="structure" '
+        buttons = ['<button type="button" class="pinsp-tab" data-tab="structure" '
                    'aria-selected="true">Structure</button>']
-        buttons += [f'<button type="button" class="bindos-tab" data-tab="about-{i}" '
+        buttons += [f'<button type="button" class="pinsp-tab" data-tab="about-{i}" '
                     f'aria-selected="false">{html.escape(t["title"])}</button>'
                     for i, t in enumerate(about)]
-        tabstrip = f'<nav class="bindos-tabs">{"".join(buttons)}</nav>'
+        tabstrip = f'<nav class="pinsp-tabs">{"".join(buttons)}</nav>'
         panes_open = '<div data-pane="structure">'
         panes_close = "</div>" + "".join(
-            f'<div data-pane="about-{i}" hidden><article class="bindos-about">{t["body_html"]}</article></div>'
+            f'<div data-pane="about-{i}" hidden><article class="pinsp-about">{t["body_html"]}</article></div>'
             for i, t in enumerate(about))
 
     credit = (
@@ -1036,49 +1113,60 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         f'  Viewer: py2Dmol by Sergey Ovchinnikov -- {UPSTREAM_REPOSITORY}\n'
         f'  at revision {UPSTREAM_REVISION}, inlined in this file.\n'
         f'  {UPSTREAM_LICENSE}\n\n'
-        f'  Annotation layers, morph and export: BindOS structure inspector\n'
+        f'  Annotation layers, morph and export: Protein Inspector\n'
         f'  {INSPECTOR_VERSION} -- {INSPECTOR_REPOSITORY}\n'
         f'  {INSPECTOR_LICENSE}\n-->'
     )
     credit_line = (
-        '<footer class="bindos-credit">Structure viewer: '
+        '<footer class="pinsp-credit">Structure viewer: '
         f'<a href="{UPSTREAM_REPOSITORY}">py2Dmol</a> by Sergey Ovchinnikov, '
         f'rev&nbsp;{UPSTREAM_REVISION[:7]}, inlined in this file. '
         'Annotation layers, morph and export: '
-        f'<a href="{INSPECTOR_REPOSITORY}">BindOS structure inspector</a> '
+        f'<a href="{INSPECTOR_REPOSITORY}">Protein Inspector</a> '
         f'{INSPECTOR_VERSION} by profdocpizza. '
         'Both BEER-WARE (Revision&nbsp;42) — free to reuse, keep the notice. '
         'See the comment at the top of this file.</footer>'
     )
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
-        f'<title>BindOS structure inspection</title></head><body>{credit}'
+        f'<title>Protein Inspector</title></head><body>{credit}'
         f'{tabstrip}{panes_open}'
-        '<main class="bindos-inspector">'
-        '<section class="bindos-stage" id="bindos-stage" data-controls="1" '
+        '<main class="protein-inspector">'
+        '<section class="pinsp-stage" id="pinsp-stage" data-controls="1" '
         f'data-morph="{"1" if stage_has_ring else "0"}">'
         f'{morphbar}{viewer_html}'
-        '<div class="bindos-capture" id="bindos-capture" hidden></div>'
+        '<div class="pinsp-capture" id="pinsp-capture" hidden></div>'
         '</section>'
-        '<div class="bindos-split" id="bindos-split" role="separator" '
+        '<div class="pinsp-split" id="pinsp-split" role="separator" '
         'aria-orientation="vertical" tabindex="0" '
         'aria-label="Resize the panel"></div>'
-        '<aside class="bindos-panel">'
+        '<aside class="pinsp-panel">'
         '<div class="bp-head"><h2>Layers</h2><div class="bp-btns">'
-        '<button type="button" class="bp-btn" id="bindos-layers-all">All</button>'
-        '<button type="button" class="bp-btn" id="bindos-layers-none">None</button>'
+        '<button type="button" class="bp-btn" id="pinsp-layers-all">All</button>'
+        '<button type="button" class="bp-btn" id="pinsp-layers-none">None</button>'
         '</div></div>'
         f'<div class="bp-layers">{layers}</div>'
         '<div class="bp-head"><h2>Residues</h2>'
-        '<span class="bp-muted" id="bindos-count"></span></div>'
-        '<input id="bindos-filter" type="search" placeholder="Filter residues \u2014 try 433, His, glycan">'
-        '<div class="bp-card" id="bindos-card" hidden></div>'
-        '<pre id="bindos-residue-details">Click a residue to see every annotation on it.</pre>'
-        '<button type="button" class="bp-btn" id="bindos-clear-residue" style="display:none">Clear</button>'
+        '<span class="bp-muted" id="pinsp-count"></span></div>'
+        '<input id="pinsp-filter" type="search" placeholder="Filter residues \u2014 try 433, His, glycan">'
+        '<div class="bp-card" id="pinsp-card" hidden></div>'
+        '<pre id="pinsp-residue-details">Click a residue to see every annotation on it.</pre>'
+        '<button type="button" class="bp-btn" id="pinsp-clear-residue" style="display:none">Clear</button>'
         f'<div class="bp-rows">{rows}</div>'
         '</aside></main>'
+        # THE CREDIT SITS UNDER THE PICTURE, INSIDE THE STRUCTURE PANE. Emitted
+        # after `panes_close` it lived outside every pane, so it reappeared
+        # under each custom About tab -- a footer about a viewer, stamped under
+        # prose that has nothing to do with the viewer. The author's tabs are
+        # theirs and start empty. With no About tabs at all `panes_close` is
+        # empty and this lands at the end of the body exactly as before.
+        #
+        # The notice is not weakened: the BEER-WARE comment at the top of the
+        # file is the copy that travels, this one is the visible courtesy, and
+        # it is still on the view the bundle opens to.
+        f'{credit_line}'
         f'{panes_close}'
-        f'{credit_line}{panel}</body></html>'
+        f'{panel}</body></html>'
     )
 
 def render_inspection_bundle(
@@ -1155,7 +1243,7 @@ def render_inspection_bundle(
     #
     # The failure is silent at render time and depends on how many bundles the
     # process rendered before this one, so only the FIRST export of a session
-    # worked. tests/test_bindos_renderer.py::test_every_export_is_self_contained
+    # worked. tests/test_renderer.py::test_every_export_is_self_contained
     # renders twice in one process and fails if the second borrows.
     viewer._share_library = False
     morph_report = None
@@ -1265,7 +1353,7 @@ def render_inspection_bundle(
         "highlight": highlight,
         "base_color": manifest.get("base_color", BASE_COLOR),
         "base_mode": manifest.get("base_mode", "chain"),
-        "schema_version": "bindos-viewer-state-1",
+        "schema_version": "protein-inspector-state-1",
         "inspector_version": INSPECTOR_VERSION,
         "upstream_revision": UPSTREAM_REVISION,
         "source": {"path": str(source), "sha256": actual_hash},
@@ -1299,7 +1387,7 @@ def render_inspection_bundle(
     for kind, path, media_type in wanted:
         artifacts.append({"kind": kind, "path": str(path), "sha256": _sha256(path), "size_bytes": path.stat().st_size, "media_type": media_type})
     compact = {
-        "schema_version": "bindos-inspection-artifact-manifest-1",
+        "schema_version": "protein-inspector-artifact-manifest-1",
         "inspector_version": INSPECTOR_VERSION,
         "upstream": {"repository": "https://github.com/sokrypton/py2Dmol", "revision": UPSTREAM_REVISION, "license": "BEER-WARE Revision 42"},
         "source_sha256": actual_hash,
@@ -1330,7 +1418,7 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
     unhelpful for a program unless the machine-readable part is a supported
     surface rather than something to scrape. It is: the whole state -- layers,
     annotations, residue coordinates, About bodies, the source digest -- is one
-    JSON object in `<script id="bindos-inspection-state">`, and this reads it
+    JSON object in `<script id="pinsp-inspection-state">`, and this reads it
     back without a browser, an HTML parser, or any third-party package.
 
     Returns a dict with:
@@ -1348,11 +1436,14 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
     >>> [r for r in state["residues"] if "ph_anchor" in r["layers"]]
     """
     text = Path(html_path).read_text(encoding="utf-8")
+    # Bundles rendered before the rename carry the old element id. A reader
+    # that cannot open the files its own tool already shipped is not a reader,
+    # and those files are out in the world on other people's disks.
     match = re.search(
-        r'<script id="bindos-inspection-state" type="application/json">(.*?)</script>',
+        r'<script id="(?:pinsp|bindos)-inspection-state" type="application/json">(.*?)</script>',
         text, re.S)
     if not match:
-        raise ValueError(f"{html_path} carries no bindos inspection state")
+        raise ValueError(f"{html_path} carries no protein_inspector inspection state")
     # `_html` escapes "</" as "<\/" so the payload cannot close its own tag.
     state = json.loads(match.group(1).replace("<\\/", "</"))
 

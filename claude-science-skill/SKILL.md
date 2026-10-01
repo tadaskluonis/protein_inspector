@@ -1,5 +1,5 @@
 ---
-name: bindos-inspector
+name: protein-inspector
 description: "Turn a structure and a set of residues into one self-contained interactive HTML page: named colour layers the reader can toggle, optional partner chains, and optional button-driven morphing between any number of conformations. Reach for it whenever an analysis has picked out residues that someone needs to see ON the structure rather than read as a list — epitopes, hotspots, pockets, conserved or divergent positions, mutations, contacts, confidence, anything per-residue. Renders inline in chat as an artifact and opens anywhere with no install."
 ---
 
@@ -32,11 +32,11 @@ plenty, and two is often the whole point.
 ## Setup
 
 ```bash
-pip install git+https://github.com/profdocpizza/bindos-structure-inspector@v1.13
+pip install protein-inspector
 ```
 
-Or set `BINDOS_INSPECTOR_HOME` to a local checkout (`~/code/bindos-structure-inspector`
-is probed by default). `gemmi` is needed only for `.pdb` input.
+Or set `PROTEIN_INSPECTOR_HOME` to a local checkout (`~/code/protein-inspector`
+is probed by default). `gemmi` is installed with it.
 
 ## Making one
 
@@ -69,27 +69,57 @@ skipped, and silently if you don't look.
 `partner_chains=["B", "C"]` — gets one toggle button. Any chain: a bound
 antibody, a ligand-bearing chain, the other half of a dimer, a docked design.
 
-**Conformations.** `conformers=[{"path": ..., "label": ...}]`, any number, one
-button each, and any state morphs straight to any other. Only the endpoints
-are stored; the page interpolates. Each conformer may bring its own
+**Conformations — show them when you have them.** This is the feature that does
+the most for a reader and the one most often left unused. One conformation
+shows a shape; two show a mechanism — which domain swings, what closes over
+what, where the hinge is. That is the big picture, and it is exactly what a
+list of residue numbers cannot carry. Apo and bound, open and closed, wild type
+and mutant, prediction and experiment, design before and after relaxation: when
+the comparison is the result, put both states in.
+
+`conformers=[{"path": ..., "label": ...}]`, any number, one named button each,
+and any state morphs straight to any other — not a fixed tour. Each button
+carries the **Cα RMSD to the reference**, so the size of the change is on
+screen rather than guessed from the animation. Only the endpoints
+are stored; the page interpolates, so states are cheap — three conformations of
+a 148-residue protein is about 0.64 MB. Each conformer may bring its own
 `partner_chains`, and a partner is shown only while its own state is on
 screen — a partner solved against one conformation, left draped over
 another's coordinates, is a composite passed off as an observation.
 
-Two warnings worth repeating to your reader in an `about` tab:
+Two things for you to know, not to write a tab about:
 
 - The morph is **Cartesian interpolation between endpoints, not a pathway**.
-  Intermediates are not physical and bond geometry is not preserved.
+  Intermediates are not physical and bond geometry is not preserved. If that
+  matters to the argument, say it in one clause of your context paragraph. It
+  does not need a tab of its own, and a reader who has to open a tab to learn
+  it will have formed the wrong impression before they get there.
 - `morph_mapping="intersection"` (as against `"exact"`) drops residues not
   shared by every file. Check
-  `report["morph"]["conformers"][i]["residues_dropped"]` — a silently dropped
-  region is a hole in the comparison.
+  `report["morph"]["conformers"][i]["residues_dropped"]`. A silently dropped
+  region is a hole in the comparison — and if something was dropped, that
+  belongs in the same paragraph, not in a caveats tab.
 
-**About tabs.** `about=` takes a string, a `{title: body}` mapping, or a list
-of `{"title", "body"}`; each becomes a tab beside the structure. HTML is
-allowed and images can be inlined as data URIs. Context belongs here rather
-than in a second file — a bundle is one file precisely so that nothing arrives
-detached from it.
+**About tabs, and how few to write.** `about=` takes a string, a
+`{title: body}` mapping, or a list of `{"title", "body"}`; each becomes a tab
+beside the structure. HTML is allowed and images can be inlined as data URIs.
+Context belongs here rather than in a second file — a bundle is one file
+precisely so that nothing arrives detached from it.
+
+**Then compress it.** Tabs are where a bundle goes wrong. The reader came to
+look at a structure; every tab is somewhere else they have to go and something
+they have to carry back. Most bundles want **one** tab: the paragraph a
+colleague needs in order to read the picture — what this is, where the numbers
+came from, what to look at. Write that, and fold everything else into it. A
+second tab has to earn itself: a long table that would drown the paragraph, a
+derivation, a methods block someone will actually check.
+
+Four things that look like tabs and are not. Caveats about the whole figure
+belong in the one paragraph. The legend is the Layers panel. The list of
+residues is the Residues panel. How the controls work is not your reader's
+problem — they can click.
+
+Your tabs are yours and start empty; nothing is added to them.
 
 ## Checking it
 
@@ -98,7 +128,7 @@ modelled residue — chain, author number, canonical position, residue name,
 coordinates, pLDDT, colour, layers, labels. It reports what the reader will
 actually see, so it is the honest check that an annotation landed on the
 residue you named. There is also a CLI:
-`python -m bindos_structure_inspector bundle.html residues`.
+`python -m protein_inspector bundle.html residues`.
 
 ## Notes
 
@@ -107,7 +137,14 @@ whatever width the page opens in, so `display={"height": ...}` is the size
 worth setting and width is ignored in practice.
 
 Keep bundles under ~20 MB so they stay emailable; `report["size_warning"]`
-appears above that. Save Image writes a capture bar under the viewer with a
+appears above that. Save exports a **transparent** PNG at the
+chosen dpi and offers Copy image beside it, which is the route that still works
+inside a frame that blocks downloads.
+
+`extras=True` is **not** a way to get that figure. It writes a `.viewer.json`,
+an `.svg` and a `.png`, but that PNG is a 900x900 single-colour C-alpha wire
+trace with no alpha channel — a provenance thumbnail, not the rendered view. Use
+it to prove what was loaded, never as the picture you hand someone. Save Image writes a capture bar under the viewer with a
 right-click-saveable PNG, because the browser download is silently dropped in
 some embedded frames.
 

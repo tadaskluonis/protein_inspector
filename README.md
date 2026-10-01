@@ -1,18 +1,65 @@
-# BindOS Structure Inspector
+# Protein Inspector
 
-This repository is a pinned derivative of py2Dmol that adds a reusable,
-local-only inspection interface for immutable mmCIF artifacts and BindOS
-inspection manifests.  The original `py2Dmol` package remains present and its
-BEER-WARE notice is retained in `LICENSE`.
+One structure in, one self-contained interactive HTML page out: named colour
+layers the reader can toggle, optional partner chains, and optional morphing
+between any number of conformations. No server, no network, no install to
+open it — it works from an email attachment.
 
-The supported product interface is
-`bindos_structure_inspector.render_inspection_bundle`.  It does not fetch
-arbitrary PDB IDs, accessions, URLs, or browser resources.  It verifies the
-source mmCIF SHA-256 digest and exports self-contained HTML, JSON viewer state,
-SVG/PNG snapshots, and a compact artifact manifest.  See `NOTICE` for the
-pinned upstream revision, modifications, and dependency licences.
+Built for the step after the analysis. When a script, a pipeline or an agent
+has worked out *which residues* matter, a list of numbers is not a result
+anyone can check. A page they can turn is.
+
+```bash
+pip install protein-inspector
+```
+
+```python
+from protein_inspector import inspect_structure
+
+report = inspect_structure(
+    "target.cif",
+    layers=[
+        {"id": "iface", "label": "Interface, <4.5 A", "color": "#9aa7b4",
+         "residues": [31, 34, 35, 38, 42, 45]},
+        {"id": "hot", "label": "Hotspots from the scan", "color": "#dc2626",
+         "residues": {56: "largest effect", 60: "second", 91: "third"}},
+    ],
+    partner_chains=["B"],
+    about={"What this is": "Contacts at 4.5 A from the deposited coordinates."},
+    out="inspection.html",
+)
+print(report["path"])
+```
+
+`inspection_table(path)` reads the rendered file back and returns one row per
+modelled residue — chain, author number, residue name, coordinates, colour,
+layers, labels. It reports what the reader will actually see, so it is the
+honest check that an annotation landed where you meant.
+
+## Also available as
+
+| surface | how |
+| --- | --- |
+| CLI | `protein-inspector render spec.json` / `protein-inspector read bundle.html residues` |
+| Claude Science / Claude Code skill | `claude-science-skill/` |
+| MCP server | `uvx --from "protein-inspector[mcp]" protein-inspector-mcp` |
+| Agent guide | `AGENTS.md` |
+
+## Credit
+
+The viewer is **py2Dmol** by Sergey Ovchinnikov
+(<https://github.com/sokrypton/py2Dmol>), pinned at revision `78c2d48` and
+inlined into every exported bundle. The annotation layers, conformation
+morphing, partner chains and export are additions on top of it. Both parts are
+BEER-WARE (Revision 42) — free to reuse, keep the notice. Every bundle carries
+both notices; please do not strip the credit footer from one you pass on. See
+`NOTICE` for the pinned revision, the modifications, and dependency licences.
 
 ## Upstream py2Dmol documentation
+
+Everything below documents the vendored viewer itself, which remains usable on
+its own.
+
 
 A Python library for visualizing protein, DNA, and RNA structures in 2D, designed for Google Colab and Jupyter.
 
@@ -104,7 +151,8 @@ py2Dmol.view(style='richardson', pencil=0, sheet_flat=0).from_pdb('1TIM')
 
 An explicit argument always wins over the style's own defaults. Both styles work on C-alpha-only models — the backbone, its secondary structure, and where nucleic
 bases point are all rebuilt from the trace, with nothing per-residue stored or
-shipped. `tests/README.md` has the accuracy numbers.
+shipped. The viewer's own accuracy measurements were in `tests/README.md`,
+which this repository no longer carries; see upstream py2Dmol for them.
 
 #### Cartoon options
 All are `view()` arguments and all have a slider in the panel:

@@ -1,11 +1,11 @@
-# bindos-inspector — Claude Science skill
+# protein-inspector — Claude Science skill
 
-The Claude Science packaging of `bindos_structure_inspector`. Two files do the
+The Claude Science packaging of `protein_inspector`. Two files do the
 work:
 
 | file | role |
 | --- | --- |
-| `SKILL.md` | what the agent reads — workflow, layer conventions, morph caveats |
+| `SKILL.md` | what the agent reads — layers, the morph, partners, the About tab |
 | `kernel.py` | sidecar helpers auto-loaded into the agent's kernel |
 
 ## Why it is split from the engine
@@ -16,14 +16,15 @@ file in the bundle, and publish is refused for binary or oversized files. So
 the skill stays small and text-only, and installs the engine:
 
 ```bash
-pip install git+https://github.com/profdocpizza/bindos-structure-inspector@v1.13
+pip install protein-inspector
 ```
 
-For a local checkout, `BINDOS_INSPECTOR_HOME=/path/to/repo` or leave it at
-`~/code/bindos-structure-inspector`, which `inspector_engine()` probes.
+For a local checkout, `PROTEIN_INSPECTOR_HOME=/path/to/repo` or leave it at
+`~/code/protein-inspector`, which `inspector_engine()` probes.
 
-Pin a **tag**, not `main`: a published skill outlives the working copy, and an
-unpinned install lets a later push change what an old conversation runs.
+Pin the **version**, not a branch or a tag: a published skill outlives the
+working copy, so `pip install protein-inspector==1.13.0` is what keeps an old
+conversation running the code it was written against.
 
 ## What the sidecar adds over the raw engine
 
@@ -41,9 +42,9 @@ unpinned install lets a later push change what an old conversation runs.
 ## Publishing
 
 ```python
-host.skills.edit("bindos-inspector", "SKILL.md", open("SKILL.md").read())
-host.skills.edit("bindos-inspector", "kernel.py", open("kernel.py").read())
-host.skills.publish("bindos-inspector")
+host.skills.edit("protein-inspector", "SKILL.md", open("SKILL.md").read())
+host.skills.edit("protein-inspector", "kernel.py", open("kernel.py").read())
+host.skills.publish("protein-inspector")
 ```
 
 ## Tests

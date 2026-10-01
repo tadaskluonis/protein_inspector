@@ -13,7 +13,7 @@ REPO = SKILL_DIR.parent
 
 def _load():
     sys.path.insert(0, str(REPO))
-    spec = importlib.util.spec_from_file_location("bindos_skill_kernel", SKILL_DIR / "kernel.py")
+    spec = importlib.util.spec_from_file_location("protein_inspector_skill_kernel", SKILL_DIR / "kernel.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
