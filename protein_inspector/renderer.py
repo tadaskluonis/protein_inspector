@@ -1445,11 +1445,8 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
     >>> [r for r in state["residues"] if "ph_anchor" in r["layers"]]
     """
     text = Path(html_path).read_text(encoding="utf-8")
-    # Bundles rendered before the rename carry the old element id. A reader
-    # that cannot open the files its own tool already shipped is not a reader,
-    # and those files are out in the world on other people's disks.
     match = re.search(
-        r'<script id="(?:pinsp|bindos)-inspection-state" type="application/json">(.*?)</script>',
+        r'<script id="pinsp-inspection-state" type="application/json">(.*?)</script>',
         text, re.S)
     if not match:
         raise ValueError(f"{html_path} carries no protein_inspector inspection state")

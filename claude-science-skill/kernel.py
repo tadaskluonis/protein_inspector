@@ -20,11 +20,8 @@ def inspector_engine(path=None):
     candidates = []
     if path:
         candidates.append(path)
-    # PROTEIN_INSPECTOR_HOME is the name; the old one still works so a machine
-    # with it exported does not silently start resolving somewhere else.
-    for var in ("PROTEIN_INSPECTOR_HOME", "BINDOS_INSPECTOR_HOME"):
-        if os.environ.get(var):
-            candidates.append(os.environ[var])
+    if os.environ.get("PROTEIN_INSPECTOR_HOME"):
+        candidates.append(os.environ["PROTEIN_INSPECTOR_HOME"])
     candidates.extend(os.path.expanduser(p) for p in SEARCH_PATHS)
     # FIRST MATCH WINS, and it has to actually contain the package. Inserting
     # every hit at sys.path[0] in turn reversed the order, so the hard-coded
