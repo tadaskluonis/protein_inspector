@@ -770,7 +770,7 @@ def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
     # BOTH notices, because the additions are on the same terms -- a reader
     # allowed to reuse py2Dmol should not have to work out where it ends.
     assert "profdocpizza" in text
-    assert "https://github.com/profdocpizza/protein_inspector" in text
+    assert "https://github.com/tadaskluonis/protein_inspector" in text
     assert "free to reuse" in text
 
 

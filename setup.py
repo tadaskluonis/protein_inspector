@@ -27,7 +27,7 @@ setup(
         'credited there. Both parts are BEER-WARE (Revision 42). See NOTICE.'
     ),
     long_description_content_type='text/markdown',
-    url='https://github.com/profdocpizza/protein_inspector',
+    url='https://github.com/tadaskluonis/protein_inspector',
     project_urls={'Upstream viewer (py2Dmol)': 'https://github.com/sokrypton/py2Dmol'},
     # NOTICE requires both files to travel with the package, and without this
     # a built wheel shipped neither.
