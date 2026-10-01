@@ -3,11 +3,20 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  # ...and by hand, so a failed publish can be retried without deleting and
+  # recreating the release.
+  workflow_dispatch:
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
+      # DECLARING permissions REPLACES THE DEFAULT SET, it does not add to it.
+      # With `id-token: write` alone the job's token loses `contents: read`,
+      # and actions/checkout then fails with "Repository not found" - a 404
+      # rather than a 403, so it reads like the repository is missing instead
+      # of unreadable. Both lines are needed.
+      contents: read
       # Trusted publishing. PyPI verifies this workflow's short-lived identity
       # token against the publisher configured on the project, so there is no
       # long-lived API token in the repository's secrets to leak or rotate.
