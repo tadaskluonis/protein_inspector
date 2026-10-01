@@ -3,6 +3,11 @@
     protein-inspector render spec.json                 # spec -> bundle
     protein-inspector read inspection.html             # whole state as JSON
     protein-inspector read inspection.html residues    # just the residue table
+    protein-inspector capture inspection.html fig.png  # the picture, as a PNG
+
+`capture` needs a browser and is an optional extra:
+`pip install "protein-inspector[capture]"` then `playwright install chromium`.
+It writes a transparent PNG at 300 dpi by default; --dpi and --chrome override.
 
 A render spec is JSON with the same keys `inspect_structure` takes:
 
@@ -40,6 +45,23 @@ def main(argv: list[str]) -> int:
         if report.get("unmapped_residues"):
             print("unmapped residues (not in the model, so not painted): %r"
                   % (report["unmapped_residues"],), file=sys.stderr)
+        return 0
+
+    if verb == "capture":
+        if len(rest) < 2:
+            print("capture needs a bundle and an output .png", file=sys.stderr)
+            return 2
+        from .capture import capture_bundle
+        bundle, out = rest[0], rest[1]
+        opts = {}
+        for flag, key, cast in (("--dpi", "dpi", int), ("--chrome", "chrome", str),
+                                ("--settle-ms", "settle_ms", int)):
+            if flag in rest:
+                opts[key] = cast(rest[rest.index(flag) + 1])
+        report = capture_bundle(bundle, out, **opts)
+        print(report["path"])
+        print("%(width)sx%(height)s, alpha=%(has_alpha)s, %(bytes)s bytes"
+              % report, file=sys.stderr)
         return 0
 
     if verb == "read":

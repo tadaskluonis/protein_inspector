@@ -74,6 +74,15 @@ def to_mmcif(*args, **kwargs):
     return inspector_engine().to_mmcif(*args, **kwargs)
 
 
+def capture_bundle(*args, **kwargs):
+    """Write a bundle's picture to a transparent PNG, for a report or a slide.
+
+    Needs the [capture] extra and a browser. See
+    `protein_inspector.capture.capture_bundle`.
+    """
+    return inspector_engine().capture_bundle(*args, **kwargs)
+
+
 def default_palette():
     """The layer colours used when a layer does not name one."""
     return inspector_engine().DEFAULT_PALETTE

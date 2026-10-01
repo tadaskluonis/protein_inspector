@@ -9,6 +9,13 @@ and `inspection_table(path)` / `read_inspection_bundle(path)` to read a
 rendered bundle back and check that the annotation landed where you meant.
 """
 
+def capture_bundle(*args, **kwargs):
+    """Write a bundle's picture to a PNG. Needs the [capture] extra."""
+    from .capture import capture_bundle as _capture
+    return _capture(*args, **kwargs)
+
+
+
 from .renderer import (INSPECTOR_VERSION, read_inspection_bundle,
                        render_inspection_bundle)
 from .inspect import (DEFAULT_PALETTE, build_manifest, inspect_structure,
@@ -18,6 +25,7 @@ __all__ = [
     "INSPECTOR_VERSION",
     "inspect_structure",
     "inspection_table",
+    "capture_bundle",
     "render_inspection_bundle",
     "read_inspection_bundle",
     "build_manifest",

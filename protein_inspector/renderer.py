@@ -39,7 +39,7 @@ UPSTREAM_LICENSE = (
     "stuff. If we meet some day, and you think this stuff is worth it, you can "
     "buy me a beer in return. Sergey Ovchinnikov"
 )
-INSPECTOR_REPOSITORY = "https://github.com/profdocpizza/protein-inspector"
+INSPECTOR_REPOSITORY = "https://github.com/profdocpizza/protein_inspector"
 # The additions are on the SAME terms as the viewer, so a reader who is allowed
 # to reuse py2Dmol is allowed to reuse the whole bundle rather than having to
 # work out where one ends and the other begins.

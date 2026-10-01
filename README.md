@@ -562,3 +562,38 @@ Control output cell behavior with the `persistence` parameter:
 **SSE palettes**: `pymol` (default), `jmol`  
 **Outline modes**: `none`, `partial`, `full` (default)  
 **Formats**: PDB (.pdb), mmCIF (.cif); multi-model files load as frames.
+
+## Taking a picture
+
+A bundle is for a reader, but a report wants a still image. The bundle has a
+Capture panel for that, and the same export is available without a human:
+
+```bash
+pip install "protein-inspector[capture]"
+playwright install chromium          # or pass --chrome to use one you have
+
+protein-inspector capture inspection.html figure.png --dpi 300
+```
+
+The PNG has a transparent background and is rendered at the requested dpi
+rather than scaled up from the screen, so 300 dpi on a 1600 px window gives
+roughly 3800 px across. It captures the view as the page currently has it: a
+layer whose manifest said `visible: false` is off in the image too.
+
+This drives the bundle's own `saveImage`, not a second renderer, so the image an
+agent takes is the image a reader would have saved.
+
+## Rebuilding the viewer bundle
+
+`py2Dmol/resources/bundles/py2Dmol.notebook.min.js` is built from `src/`, which
+is vendored here because this fork has modified the viewer. To rebuild it:
+
+```bash
+python3 tools/bundle.py check      # the manifest against every consumer
+python3 tools/bundle.py build      # writes the bundle it ships
+```
+
+The build is reproducible: rebuilding from an unmodified `src/` gives the same
+498,488 bytes. Upstream py2Dmol's own test suite for the viewer's drawing is
+not vendored — see `docs/viewer_internals.md` for how to check out the pinned
+revision if you need it.
