@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .renderer import _trace, read_inspection_bundle, render_inspection_bundle
+from .renderer import _ca_trace, _trace, read_inspection_bundle, render_inspection_bundle
 
 DEFAULT_PALETTE = ("#dc2626", "#2563eb", "#059669", "#9333ea", "#d97706", "#0891b2",
                    "#db2777", "#65a30d", "#0ea5e9", "#f59e0b")
@@ -41,15 +41,35 @@ def residue_order(cif_path, chain=None):
     return pairs
 
 
+def residue_components(cif_path, chain=None):
+    """{(chain_id, author_resnum): component_id} -- MET, ALA, DA, HOH.
+
+    component_id is a REQUIRED field of every resolved annotation, and it was
+    being filled with the string "target" for every residue this API has ever
+    annotated. The manifest validator only checks that the field is present,
+    so nothing complained, and the residue card had the layer's name to show
+    and never the residue's own identity.
+    """
+    out = {}
+    for (chain_id, number), (name, _xyz) in _ca_trace(Path(cif_path)).items():
+        if chain is not None and chain_id != chain:
+            continue
+        out[(chain_id, int(number))] = str(name)
+    return out
+
+
 def build_manifest(cif_path, layers, chain=None, highlight="color", about=None,
                    base_mode="chain", method="structure-derived annotation"):
     """Turn simple layer dicts into a validated inspection manifest.
 
-    Each layer: {"id", "label", "residues", "color"?, "kind"?, "note"?}.
+    Each layer: {"id", "label", "residues", "color"?, "kind"?, "note"?,
+    "visible"?}. `visible: False` means the layer is built and listed but
+    starts unchecked, so the opening view can be the one thing that matters.
     `residues` is a list of author residue numbers, or {resnum: note}.
     Later layers paint over earlier ones, so order background-first.
     """
     order = residue_order(cif_path, chain)
+    components = residue_components(cif_path, chain)
     canonical, seen = {}, {}
     for index, (chain_id, number) in enumerate(order):
         seen[chain_id] = seen.get(chain_id, 0) + 1
@@ -66,6 +86,10 @@ def build_manifest(cif_path, layers, chain=None, highlight="color", about=None,
                 continue
             item = {
                 "annotation_id": "%s-%s%d" % (layer["id"], target_chain, int(number)),
+            # A layer can ask to start switched off: the reader still has it,
+            # but the first view is not all sixteen things at once. Stamped on
+            # the annotations because the manifest has no separate layer list.
+            **({"layer_visible": False} if layer.get("visible", True) is False else {}),
                 "kind": layer.get("kind", "custom"),
                 "label": note or layer.get("note") or layer["label"],
                 "layer_id": layer["id"],
@@ -74,7 +98,8 @@ def build_manifest(cif_path, layers, chain=None, highlight="color", about=None,
                 "resolved": True,
                 "evidence_ids": list(layer.get("evidence_ids", [])),
                 "method": layer.get("method", method),
-                "residue": {"component_id": layer.get("component_id", "target"),
+                "residue": {"component_id": (layer.get("component_id")
+                                            or components.get(key) or "target"),
                             "canonical_position": canonical[key],
                             "chain_id": target_chain,
                             "author_residue_number": int(number)},

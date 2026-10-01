@@ -189,6 +189,8 @@ def _validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
         for field in ("layer_id", "layer_label"):
             if field in item and (not isinstance(item[field], str) or not item[field].strip()):
                 raise ValueError(f"annotation {item['annotation_id']} has an invalid {field}")
+        if "layer_visible" in item and not isinstance(item["layer_visible"], bool):
+            raise ValueError(f"annotation {item['annotation_id']} layer_visible must be a boolean")
         if "color" in item and (not isinstance(item["color"], str) or not _HEX_COLOR.fullmatch(item["color"])):
             raise ValueError(f"annotation {item['annotation_id']} color must be a #RRGGBB value")
         if item["kind"] == "partner_contact" and not item.get("partner_id"):
@@ -225,11 +227,14 @@ def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for item in annotations:
         key = _layer_key(item)
-        layer = grouped.setdefault(key, {"annotation_ids": [], "label": item.get("layer_label"), "color": item.get("color")})
+        layer = grouped.setdefault(key, {"annotation_ids": [], "label": item.get("layer_label"), "color": item.get("color"),
+                                         "visible": bool(item.get("layer_visible", True))})
         if item.get("layer_label") and layer["label"] != item["layer_label"]:
             raise ValueError(f"layer {key!r} has conflicting labels")
         if item.get("color") and layer["color"] != item["color"]:
             raise ValueError(f"layer {key!r} has conflicting colors")
+        if "layer_visible" in item and layer["visible"] != bool(item["layer_visible"]):
+            raise ValueError(f"layer {key!r} disagrees about whether it starts visible")
         layer["annotation_ids"].append(item["annotation_id"])
     return [
         {
@@ -237,7 +242,7 @@ def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "label": layer["label"] or key.replace("_", " ").replace(":", " — "),
             "color": layer["color"] or _LAYER_COLORS[index % len(_LAYER_COLORS)],
             "annotation_ids": layer["annotation_ids"],
-            "visible": True,
+            "visible": layer["visible"],
         }
         for index, (key, layer) in enumerate(grouped.items())
     ]
@@ -613,15 +618,19 @@ function showDetails(a){
   if(d)d.textContent=a.label;
   var card=document.getElementById('pinsp-card');if(!card)return;
   var res=a.residue||{};
-  var title=(a.label||'').split(' ')[0]||res.author_residue_number;
+  var title=res.component_id?(res.component_id+' '+res.author_residue_number)
+    :((a.label||'').split(' ')[0]||res.author_residue_number);
   var items='';
   for(var k=0;k<related.length;k++){var x=related[k];var lay=layerOf[x.layer_id]||{};
+    var head=lay.label||x.layer_id||x.kind;
+    var meta=(x.label&&x.label!==head)?'<span class="bp-meta">'+esc(x.label)+'</span>':'';
     items+='<li><span class="bp-sw" style="background:'+esc(x.color||'#94a3b8')+'"></span><span>'+
-      esc(lay.label||x.layer_id||x.kind)+'<span class="bp-meta">'+esc(x.label)+'</span></span></li>';}
+      esc(head)+meta+'</span></li>';}
   card.innerHTML='<div class="bp-card-head"><b>'+esc(title)+'</b>'+
     '<button class="bp-x" id="pinsp-card-close" title="clear (Esc)">&times;</button></div>'+
-    '<div class="bp-addr">chain '+esc(res.chain_id)+' &middot; author '+esc(res.author_residue_number)+
-    ' &middot; model index '+esc(res.canonical_position)+'</div><ul>'+items+'</ul>';
+    '<div class="bp-addr" title="position '+esc(res.canonical_position)+
+    ' of this chain in the file as written">chain '+esc(res.chain_id)+
+    ' &middot; residue '+esc(res.author_residue_number)+'</div><ul>'+items+'</ul>';
   card.hidden=false;
   var xb=document.getElementById('pinsp-card-close');
   if(xb)xb.addEventListener('click',function(ev){ev.stopPropagation();clearDetails();});}
@@ -1038,7 +1047,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
     counts = {item["layer_id"]: len(item["annotation_ids"]) for item in state["layers"]}
     layers = "".join(
         '<div class="bp-layer">'
-        f'<label><input type="checkbox" checked data-layer="{html.escape(item["layer_id"], quote=True)}">'
+        f'<label><input type="checkbox"{" checked" if item.get("visible", True) else ""} data-layer="{html.escape(item["layer_id"], quote=True)}">'
         f'<span class="bp-sw" style="background:{item["color"]}"></span>'
         f'<span class="bp-lab" title="{html.escape(item["label"], quote=True)}">{html.escape(item["label"])}</span>'
         '</label>'
@@ -1128,7 +1137,7 @@ var tries=0;(function wait(){var ok=syncVisibleLayers();if(ok)expandMorph();
         'See the comment at the top of this file.</footer>'
     )
     return (
-        '<!doctype html><html><head><meta charset="utf-8">'
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<title>Protein Inspector</title></head><body>{credit}'
         f'{tabstrip}{panes_open}'
         '<main class="protein-inspector">'
