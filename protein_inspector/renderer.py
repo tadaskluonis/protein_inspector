@@ -951,19 +951,30 @@ function annotationsAt(i){return s.annotations.filter(function(a){
 // listing all of them offers the reader letters for a receptor that is not
 // there, and a Select that reaches into another state's coordinates. The
 // target is always present; a partner chain belongs to exactly one state.
+// THE POSITIONS THE BUNDLE SHIPPED, which is not what the object holds once
+// anything has been drawn. `_materialiseSidechains` APPENDS one position per
+// side-chain atom -- parent chain's letter, no residue name, typed 'L' -- so
+// after the first Show the strip grew a second row under the chain it came
+// from, a run of round asterisk cells, and Select all offered them. Atoms
+// are drawing, not sequence. The frame's own chain list is the boundary.
+function shippedCount(){
+  var o=(s.viewer&&s.viewer.objects&&s.viewer.objects[0])||null,
+      f=o&&o.frames&&o.frames[0],c=f&&f.chains;
+  return (c&&c.length)?c.length:Infinity;}
 function chainInState(name){
   if(!partners||!partners.owner)return true;
   var of=partners.owner[name];
   return of===undefined||of===morphAt;}
 function inState(i){
   var r=renderer();if(!r)return true;
+  if(i>=shippedCount())return false;
   return chainInState(String((r.chains||[])[i]));}
 function keepInState(list){
   var out=[];for(var i=0;i<list.length;i++)if(inState(list[i]))out.push(list[i]);
   return out;}
 function seqChainRuns(r){
-  var ch=r.chains||[],out=[],cur=null;
-  for(var i=0;i<ch.length;i++){
+  var ch=r.chains||[],out=[],cur=null,n=Math.min(ch.length,shippedCount());
+  for(var i=0;i<n;i++){
     if(!chainInState(String(ch[i]))){cur=null;continue;}
     var key=(typeof r.chainKeyAt==='function')?r.chainKeyAt(i):ch[i];
     if(!cur||cur.key!==key){cur={key:key,label:String(ch[i]),from:i,to:i};out.push(cur);}
@@ -1145,8 +1156,8 @@ function setSidechains(on){
 // toggled off, because what is not drawn cannot be shown.
 function selectEverything(){
   var r=renderer();if(!r)return;
-  var ch=r.chains||[],next=new Set();
-  for(var i=0;i<ch.length;i++){
+  var ch=r.chains||[],next=new Set(),n=Math.min(ch.length,shippedCount());
+  for(var i=0;i<n;i++){
     var of=(partners&&partners.owner)?partners.owner[String(ch[i])]:undefined;
     if(of!==undefined&&(!partnersOn||of!==morphAt))continue;
     next.add(i);}

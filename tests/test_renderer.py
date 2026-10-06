@@ -1869,3 +1869,24 @@ def test_select_all_takes_only_what_is_on_screen(tmp_path):
         "residueNumbers": [1, 2, 3, 4] * 3})
     # Target 0-3 and the landed state's own partner 8-11; P (4-7) is elsewhere.
     assert report["selectAll"]["selection"] == [0, 1, 2, 3, 8, 9, 10, 11]
+
+
+def test_drawn_atoms_are_not_sequence(tmp_path):
+    """Materialising a side chain appends positions; the strip is not for them.
+
+    `_materialiseSidechains` pushes one position per drawn atom, carrying the
+    parent chain's letter and no residue name. Those arrived in the strip as a
+    second row of round asterisk cells under the chain they came from, and
+    `Select all` offered them.
+    """
+    _, html = _oligomer_bundle(tmp_path, {"A": _SUBUNIT}, [])
+    # The renderer holds five more positions than the file shipped: atoms.
+    report = _run_dom_harness(html, {
+        "chains": ["A"] * 17,
+        "residueNumbers": list(range(1, 13)) + [3, 3, 3, 4, 4],
+        "positionNames": _SUBUNIT + [""] * 5,
+        "positionTypes": ["P"] * 12 + ["L"] * 5})
+    assert report["seq"]["cells"] == 12
+    assert report["seq"]["chainLabels"] == ["A"]
+    assert "*" not in report["seq"]["letters"]
+    assert report["selectAll"]["selection"] == list(range(12))

@@ -4,6 +4,19 @@
 
 ### Added
 
+**Side chains are element-coloured in tube, not only in cartoon.** The
+colour pass fills `colors.halves[i]` for every style, and
+`_materialiseSidechains` already cuts a bond between two different elements
+into two half-bonds meeting at a real midpoint -- but `halfC` existed only in
+`cartoon/geom.js`. `core/mol.js` computed the halves and then stroked each
+segment in one colour, so a drawn side chain was flat in tube and turned
+blue-and-red the moment the reader picked Richardson, which is the style
+nobody has to pick to read a residue. The tube draw stage now strokes a
+split segment as two halves meeting at its midpoint, each taking its own
+atom's colour through the same tint and shadow the whole segment would have
+taken. Carbon keeps the residue's colour, as it does in PyMOL, so a coloured
+layer still reads as that layer with its heteroatoms standing out.
+
 **The strip, and selecting, are about the conformation on screen.** Every
 state's partners live in one object, and only the current state's are drawn --
 but the sequence strip listed all of them, so the mouse state of a
@@ -313,6 +326,15 @@ one place and missed in the other. That was four separate palette lookups
 before.
 
 ### Fixed
+
+**A row of asterisks appeared in the strip after the first Show.**
+`_materialiseSidechains` draws a side chain by APPENDING positions to the
+object -- one per atom, carrying the parent chain's letter, typed `L` and
+with no residue name -- and the next strip rebuild read them as sequence: a
+second row under the chain they came from, round cells reading `*`, wearing
+the layer colour of the residue they belong to, and offered by `Select all`.
+Atoms are drawing, not sequence. The strip and the selection now stop at the
+position count the bundle shipped, which the embedded state knows.
 
 **The copies lost their colour at the first repaint.** `layers_on_partners`
 painted them in Python, but `syncVisibleLayers` rebuilds the entire colour map

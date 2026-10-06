@@ -11219,6 +11219,25 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 }
             }
 
+            // THE SAME SHADING, APPLIED TO A HALF. An element half arrives
+            // from the colour pass as a raw {r, g, b}, so it has to take the
+            // tint and the shadow this segment just took - otherwise the blue
+            // half of a C-N bond sits brighter than the carbon half welded to
+            // it and the stick reads as two different materials.
+            const shadeCss = (c) => {
+                if (!c) return null;
+                let hr = c.r / 255; let hg = c.g / 255; let hb = c.b / 255;
+                if (segInfo.type !== 'C' && renderShadows) {
+                    const tintFactor = (0.50 * tints[idx]) / 3;
+                    hr = hr + (1 - hr) * tintFactor;
+                    hg = hg + (1 - hg) * tintFactor;
+                    hb = hb + (1 - hb) * tintFactor;
+                    const shadowFactor = (0.20 + 0.80 * shadows[idx]);
+                    hr *= shadowFactor; hg *= shadowFactor; hb *= shadowFactor;
+                }
+                return `rgb(${hr * 255 | 0},${hg * 255 | 0},${hb * 255 | 0})`;
+            };
+
             // Projection (Use pre-computed SoA values)
             const idx1 = segInfo.idx1;
             const idx2 = segInfo.idx2;
@@ -11348,11 +11367,38 @@ function initializePy2DmolViewer(containerElement, viewerId) {
                 ctx.fillStyle = color;
                 ctx.fill();
             } else {
-                ctx.beginPath();
-                ctx.moveTo(x1, y1);
-                ctx.lineTo(x2, y2);
-                setCanvasProps(color, currentLineWidth, 'round');
-                ctx.stroke();
+                // ELEMENT HALVES IN THE TUBE, which only the cartoon stage
+                // drew. The colour pass fills `colors.halves[i]` for every
+                // style - a bond between two different elements is already
+                // cut at its midpoint by _materialiseSidechains - but this
+                // stage stroked the whole segment in one colour, so a drawn
+                // side chain came out flat in tube and element-coloured the
+                // moment the reader switched to Richardson. PyMOL's rule:
+                // each half takes its own atom's colour, carbon keeping the
+                // residue's.
+                const half = colors.halves && colors.halves[idx];
+                const halfA = half ? shadeCss(half.a) : null;
+                const halfB = half ? shadeCss(half.b) : null;
+                if (halfA && halfB && halfA !== halfB) {
+                    const mx = (x1 + x2) / 2;
+                    const my = (y1 + y2) / 2;
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(mx, my);
+                    setCanvasProps(halfA, currentLineWidth, 'round');
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(mx, my);
+                    ctx.lineTo(x2, y2);
+                    setCanvasProps(halfB, currentLineWidth, 'round');
+                    ctx.stroke();
+                } else {
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                    setCanvasProps(color, currentLineWidth, 'round');
+                    ctx.stroke();
+                }
             }
         }
 
