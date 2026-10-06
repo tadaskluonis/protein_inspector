@@ -99,6 +99,11 @@ list of residue numbers cannot carry. Apo and bound, open and closed, wild type
 and mutant, prediction and experiment, design before and after relaxation: when
 the comparison is the result, put both states in.
 
+The sequence strip, the cell titles and the residue card follow the state on
+screen, so morphing to an ortholog or a mutant relabels the positions whose
+identity differs — the morph maps positions, not residues, and the letters
+say which residue each state actually has there.
+
 `conformers=[{"path": ..., "label": ...}]`, any number, one named button each,
 and any state morphs straight to any other — not a fixed tour. Each button
 carries the **Cα RMSD to the reference**, so the size of the change is on

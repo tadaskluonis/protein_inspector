@@ -914,11 +914,25 @@ function setList(set){var out=[];if(set&&set.forEach)set.forEach(function(v){out
   return out;}
 function currentSelection(){var r=renderer();
   return (r&&r.residueSelection&&r.residueSelection.forEach)?r.residueSelection:new Set();}
+// THE STRIP IS A CAPTION ON WHAT IS DRAWN. Each conformation carries its own
+// names, because the morph maps POSITIONS and not identities: the mouse
+// orthologue, the mutant or the redesign has its own residue where the
+// reference has another. Reading frame 0 for every state spelled the
+// reference's sequence over all of them, which is a caption contradicting the
+// structure underneath it -- the same fault the partners button had. The
+// names come from the embedded state rather than the live renderer, so the
+// answer does not depend on whether the viewer has swapped its arrays yet.
+function stateNames(st){
+  var o=(s.viewer&&s.viewer.objects&&s.viewer.objects[0])||null,fr=o&&o.frames;
+  if(!fr||!fr.length)return null;
+  var f=fr[(typeof st==='number'&&st>=0&&st<fr.length)?st:0];
+  var nm=f&&f.position_names;
+  return (nm&&nm.length)?nm:null;}
 function seqNames(r){
+  var here=stateNames(typeof morphAt==='number'?morphAt:0);
+  if(here)return here;
   if(r&&r.positionNames&&r.positionNames.length)return r.positionNames;
-  var o=(s.viewer&&s.viewer.objects&&s.viewer.objects[0])||null;
-  var f=o&&o.frames&&o.frames[0];
-  return (f&&f.position_names)||[];}
+  return [];}
 function residueAt(i){var r=renderer();if(!r)return null;
   var nm=seqNames(r),n=(r.residueNumbers||[])[i];
   return {component_id:(nm[i]==null?'':String(nm[i])),
@@ -1957,6 +1971,10 @@ function goMorph(target){
     // structure and not the buffer once the animation stops.
     r.setFrame(target);
     morphAt=target;morphBusy=false;setMorphButtons(target);
+    // The letters belong to the state that just landed, so the strip is
+    // rebuilt rather than left spelling the one we came from. Selection and
+    // layer colour are re-applied by seqBuild itself.
+    seqBuilt=false;seqBuild();
     applyPartners();syncPartnerButton();})();}
 // A WATCHDOG, BECAUSE THE FRAME MOVES BEHIND OUR BACK. Applying a visibility
 // patch makes py2Dmol jump the frame -- sometimes inside the call, sometimes
@@ -2371,7 +2389,7 @@ def render_inspection_bundle(
         for entry in conformers:
             partner_spec.append(list(entry.get("partner_chains") or ()))
         excluded = sorted({c for group in partner_spec for c in group})
-        keys, names, stacks, labels, morph_report, fits = _conformer_stacks(
+        keys, names, stacks, labels, morph_report, fits, state_names = _conformer_stacks(
             source, conformers, morph_mapping, morph_reference_label,
             exclude_chains=excluded)
         chain_ids = [k[0] for k in keys]
@@ -2473,11 +2491,19 @@ def render_inspection_bundle(
         # is chemically exact (559/559 residues, every ring closure) and its
         # geometry survives the fit intact (CA-CB median 1.530 A in both
         # frames). Nothing was wrong with the atoms. They were mislabelled.
-        position_types = _position_types(names)
+        # ...AND PER STATE, NOT PER BUNDLE. The frame on screen is a different
+        # molecule at the shared positions -- an ortholog, a mutant, a
+        # redesign -- so a strip and a residue card spelling the reference's
+        # sequence over it are captioning the wrong structure. Each frame
+        # carries its own names; the partner tail is appended unchanged,
+        # because a partner block is the same coordinates in every frame.
+        partner_tail = names[len(keys):]
+        frame_names = [list(state) + partner_tail for state in state_names]
         for index, coords in enumerate(stacks):
             viewer.add(np.asarray(coords, dtype=float), chains=chain_ids,
-                       residue_numbers=residue_numbers, position_names=names,
-                       position_types=position_types,
+                       residue_numbers=residue_numbers,
+                       position_names=frame_names[index],
+                       position_types=_position_types(frame_names[index]),
                        name="prepared-target", align=(index == 0),
                        allow_reflection=False,
                        sidechain_atoms=sidechain_rows[index])
@@ -2847,8 +2873,11 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
                       exclude_chains: list[str] | None = None):
     """Superpose any number of conformers onto a shared residue mapping.
 
-    Returns (keys, residue_names, stacks, labels, report) where `stacks` holds
-    one (n_residues, 3) array per conformer, reference first.
+    Returns (keys, residue_names, stacks, labels, report, transforms,
+    state_names) where `stacks` holds one (n_residues, 3) array per conformer,
+    reference first, `residue_names` is the reference's identity at each
+    mapped position, and `state_names` is one such list PER conformer -- the
+    same positions as each file actually spells them.
 
     `mapping="exact"` is the default and refuses anything but an identical
     (chain, author number) set across every file: a morph over a quietly
@@ -2890,6 +2919,10 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
 
     keys = sorted(common)
     names = [ref[k][0] for k in keys]
+    # ONE NAME LIST PER STATE. The mapping pairs positions, not identities: a
+    # mutant, an ortholog or a redesign has its own residue at the position it
+    # shares, and the page is entitled to say which one it is drawing.
+    state_names = [[trace[k][0] for k in keys] for trace in traces]
     base = np.array([ref[k][1] for k in keys], dtype=float)
     stacks, transforms = [base], [lambda points: np.asarray(points, dtype=float)]
     for trace in traces[1:]:
@@ -2907,7 +2940,7 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
             for label, digest, drop, stack in zip(labels, digests, dropped, stacks)
         ],
     }
-    return keys, names, stacks, labels, report, transforms
+    return keys, names, stacks, labels, report, transforms, state_names
 
 
 def _morph_frames(reference: Path, conformers: list[dict[str, Any]], steps: int):
@@ -2920,7 +2953,7 @@ def _morph_frames(reference: Path, conformers: list[dict[str, Any]], steps: int)
     endpoints, NOT a pathway: intermediates are not physical and bond geometry
     is not preserved.
     """
-    keys, names, stacks, labels, report, _ = _conformer_stacks(reference, conformers, "exact")
+    keys, names, stacks, labels, report, _, _ = _conformer_stacks(reference, conformers, "exact")
     frames, rmsds = [], []
     for index in range(len(stacks) - 1):
         start, end = stacks[index], stacks[index + 1]

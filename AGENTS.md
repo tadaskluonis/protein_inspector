@@ -91,9 +91,10 @@ Two things to know yourself rather than write a tab about:
   (chain, author number) and their NAMES are never compared, so a point
   substitution between two entries passes `"exact"` in silence. Morphing a
   wild type against a mutant is legitimate, but you should know it is what you
-  are doing: compare the residue names yourself before rendering. It now shows
-  up in the picture, because each state draws its own side chains while the
-  strip and the labels read the reference's identity.
+  are doing: compare the residue names yourself before rendering. It shows up
+  in the picture: each state draws its own side chains, and the strip, the
+  cell titles and the residue card read the identity of the state on screen,
+  so morphing to an ortholog relabels exactly the positions that differ.
 
 ## Partner chains
 

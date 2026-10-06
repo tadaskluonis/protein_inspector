@@ -4,6 +4,19 @@
 
 ### Added
 
+**The sequence strip and the residue card follow the conformation on
+screen.** A morph maps POSITIONS, not identities: the mouse orthologue, the
+mutant or the redesign has its own residue where the reference has another.
+Every frame shipped the reference's `position_names`, so the strip spelled
+the reference's sequence over all of them and a card opened on another
+state named the wrong residue -- the same class of fault as a partners
+button reading "other protomers" over a receptor. `_conformer_stacks` now
+returns one name list per state, each frame carries its own (and its own
+`position_types`, so the side-chain atoms are labelled by the residue that
+state actually has), and the page reads the names for `morphAt`, rebuilding
+the strip when a state lands. The partner tail is unchanged across frames,
+because a partner block holds the same coordinates in every one.
+
 **The other protomers wear the annotation, and the button names what is on
 screen.** Two things a homo-oligomeric target got wrong, both of them the
 same mistake: treating a copy of the target as if it were a stranger.

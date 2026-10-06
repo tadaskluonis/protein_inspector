@@ -1809,3 +1809,42 @@ def test_a_repaint_keeps_the_copies_coloured(tmp_path):
     assert report["initial"] == both
     assert report["steps"]["off"]["paint"] is None
     assert report["steps"]["on"]["paint"] == both
+
+
+def _ortholog_bundle(tmp_path, swap_at=3, swapped="TRP"):
+    """Reference and a second state differing at one mapped position."""
+    ref_seq = list(_SUBUNIT)
+    alt_seq = list(_SUBUNIT)
+    alt_seq[swap_at - 1] = swapped
+    ref = _oligomer_cif(tmp_path / "ref.cif", {"A": ref_seq})
+    alt = _oligomer_cif(tmp_path / "alt.cif", {"A": alt_seq})
+    result = render_inspection_bundle(
+        mmcif_path=str(ref), mmcif_sha256=hashlib.sha256(ref.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "out"),
+        conformers=[{"path": str(alt), "label": "Ortholog"}],
+        morph_mapping="exact", morph_steps=6)
+    html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
+    return result, Path(html)
+
+
+def test_each_state_carries_the_residue_names_of_its_own_file(tmp_path):
+    """A morph maps positions, not identities; the frame must say which it has."""
+    _, html = _ortholog_bundle(tmp_path)
+    blob = html.read_text().split(
+        '<script id="pinsp-inspection-state" type="application/json">')[1].split("</script>")[0]
+    frames = json.loads(blob.replace("<\\/", "</"))["viewer"]["objects"][0]["frames"]
+    assert [f["position_names"][2] for f in frames] == ["SER", "TRP"]
+    # Everything else is shared, so only the swapped position may differ.
+    assert frames[0]["position_names"][:2] == frames[1]["position_names"][:2]
+    assert frames[0]["position_names"][3:] == frames[1]["position_names"][3:]
+
+
+def test_the_sequence_strip_shows_the_conformation_on_screen(tmp_path):
+    """Spelling the reference over every state captions the wrong structure."""
+    _, html = _ortholog_bundle(tmp_path)
+    report = _run_dom_harness(html, {"chains": ["A"] * 12,
+                                     "residueNumbers": list(range(1, 13))})
+    # The harness lands on the last conformation, where position 3 is TRP (W).
+    assert report["seq"]["letters"] == "AGWVLTIPEKDR"
