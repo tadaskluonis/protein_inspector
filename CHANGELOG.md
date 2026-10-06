@@ -4,6 +4,21 @@
 
 ### Added
 
+**The strip, and selecting, are about the conformation on screen.** Every
+state's partners live in one object, and only the current state's are drawn --
+but the sequence strip listed all of them, so the mouse state of a
+three-state bundle offered rows of letters for a receptor that was not there,
+and `Select`, a chain button or `Select around` reached into those
+coordinates, leaving the side-chain pair drawing atoms the reader could not
+see. The strip now lists the target plus the current state's own partners,
+and every selection is filtered to what that state draws.
+
+**`Select all`**, beside `Clear`. The side-chain pair acts on a selection, so
+"draw them all and hide what I do not want" needed a selection of everything
+first, and there was no way to ask for one short of dragging the strip. It
+takes the conformation on screen, including its partners when they are
+showing and never when they are not.
+
 **The sequence strip and the residue card follow the conformation on
 screen.** A morph maps POSITIONS, not identities: the mouse orthologue, the
 mutant or the redesign has its own residue where the reference has another.

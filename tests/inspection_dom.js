@@ -76,6 +76,7 @@ const buttons = {
     'pinsp-clear-residue': stubButton(),
     'pinsp-controls': stubButton(),
     'pinsp-morph-note': {textContent: ''},
+    'pinsp-sel-all': stubButton(),
 };
 // The stage carries the controls-collapsed state as an attribute; without it
 // the toggle silently does nothing and the harness would not notice.
@@ -991,6 +992,18 @@ if (hsplitter.handlers.pointerdown) {
     report.hsplit.afterArrowUp = pair();
     hsplitter.fire('keydown', {key: 'ArrowDown'});
     report.hsplit.afterArrowDown = pair();
+}
+
+// --- select everything -----------------------------------------------------
+// Last, because it replaces whatever the sections above were holding. It must
+// take the conformation on screen and nothing from the others.
+{
+    const all = buttons['pinsp-sel-all'];
+    all.click();
+    report.selectAll = {
+        selection: Array.from(renderer.residueSelection).sort((a, b) => a - b),
+        count: renderer.residueSelection.size,
+    };
 }
 
 report.finalRenders = renders;

@@ -1848,3 +1848,24 @@ def test_the_sequence_strip_shows_the_conformation_on_screen(tmp_path):
                                      "residueNumbers": list(range(1, 13))})
     # The harness lands on the last conformation, where position 3 is TRP (W).
     assert report["seq"]["letters"] == "AGWVLTIPEKDR"
+
+
+def test_the_strip_lists_only_the_conformation_on_screen(tmp_path):
+    """Letters for a partner that is not drawn are letters for nothing."""
+    _, html = _two_partner_bundle(tmp_path)
+    report = _run_dom_harness(html, {
+        "chains": ["A"] * 4 + ["P"] * 4 + ["Q"] * 4,
+        "residueNumbers": [1, 2, 3, 4] * 3})
+    # The harness lands on the second conformation, whose partner is Q.
+    assert report["seq"]["chainLabels"] == ["A", "Q"]
+    assert report["seq"]["cells"] == 8
+
+
+def test_select_all_takes_only_what_is_on_screen(tmp_path):
+    """Select all is for the side-chain pair, so it must not reach other states."""
+    _, html = _two_partner_bundle(tmp_path)
+    report = _run_dom_harness(html, {
+        "chains": ["A"] * 4 + ["P"] * 4 + ["Q"] * 4,
+        "residueNumbers": [1, 2, 3, 4] * 3})
+    # Target 0-3 and the landed state's own partner 8-11; P (4-7) is elsewhere.
+    assert report["selectAll"]["selection"] == [0, 1, 2, 3, 8, 9, 10, 11]

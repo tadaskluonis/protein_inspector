@@ -873,7 +873,7 @@ function clearDetails(){
     r.render('Protein Inspector clear residue selection');}finally{applying=false;}}
   seqPaintSelection();syncSelTools();}
 function selectInStructure(res){var r=renderer();if(!r)return;
-  applying=true;try{r.setResidueSelection(new Set(indicesFor(res)));
+  applying=true;try{r.setResidueSelection(new Set(keepInState(indicesFor(res))));
     r.render('Protein Inspector manifest residue selection');}finally{applying=false;}
   seqPaintSelection();syncSelTools();}
 // ===========================================================================
@@ -908,7 +908,8 @@ var AA1={ALA:'A',ARG:'R',ASN:'N',ASP:'D',CYS:'C',GLU:'E',GLN:'Q',GLY:'G',HIS:'H'
 var SEQ_MAX=12000;
 var seqBody=null,seqCells=[],seqRuns=[],seqBuilt=false,seqAnchor=-1,
     seqDragging=false,seqHoverAt=-1,seqAddr={},
-    aroundBtn=null,aroundInput=null,scOn=null,scOff=null,selClearBtn=null,selOut=null,
+    aroundBtn=null,aroundInput=null,scOn=null,scOff=null,selClearBtn=null,
+    selAllBtn=null,selOut=null,
     seqMode='add',seqBase=null;
 function setList(set){var out=[];if(set&&set.forEach)set.forEach(function(v){out.push(v);});
   return out;}
@@ -945,9 +946,25 @@ function annotationsAt(i){return s.annotations.filter(function(a){
 // ONE ROW PER CHAIN OF ONE OBJECT. chainKeyAt, not the bare letter: with a
 // partner merged in, chain B of the partner and chain B of the target are two
 // molecules and one row each.
+// WHAT IS ON SCREEN, NOT WHAT IS IN THE FILE. Every conformation's partners
+// live in one object, and only the current one's are drawn -- so a strip
+// listing all of them offers the reader letters for a receptor that is not
+// there, and a Select that reaches into another state's coordinates. The
+// target is always present; a partner chain belongs to exactly one state.
+function chainInState(name){
+  if(!partners||!partners.owner)return true;
+  var of=partners.owner[name];
+  return of===undefined||of===morphAt;}
+function inState(i){
+  var r=renderer();if(!r)return true;
+  return chainInState(String((r.chains||[])[i]));}
+function keepInState(list){
+  var out=[];for(var i=0;i<list.length;i++)if(inState(list[i]))out.push(list[i]);
+  return out;}
 function seqChainRuns(r){
   var ch=r.chains||[],out=[],cur=null;
   for(var i=0;i<ch.length;i++){
+    if(!chainInState(String(ch[i]))){cur=null;continue;}
     var key=(typeof r.chainKeyAt==='function')?r.chainKeyAt(i):ch[i];
     if(!cur||cur.key!==key){cur={key:key,label:String(ch[i]),from:i,to:i};out.push(cur);}
     else cur.to=i;}
@@ -1047,6 +1064,10 @@ function seqRange(a,b){var run=seqRunOf(a),lo=Math.min(a,b),hi=Math.max(a,b),out
   return out;}
 function applySelection(set){
   var r=renderer();if(!r)return;
+  // A SELECTION IS OF WHAT IS DRAWN. Selecting a layer, a chain or a
+  // neighbourhood used to reach into every conformation's partners at once,
+  // so Show drew side chains on coordinates the reader could not see.
+  set=new Set(keepInState(setList(set)));
   applying=true;try{r.setResidueSelection(set);
     r.render('Protein Inspector residue selection');}finally{applying=false;}
   seqPaintSelection();syncSelTools();
@@ -1117,6 +1138,19 @@ function setSidechains(on){
     else r.hideSidechains({positions:list});}
   catch(err){if(selOut)selOut.textContent=String((err&&err.message)||err);}
   syncSelTools();}
+// EVERYTHING ON SCREEN, which is the selection the side-chain pair is most
+// often wanted for: draw them all, then hide the ones you do not want. It
+// takes the current conformation's positions and, when the partners are
+// showing, theirs -- never another state's, and never a chain that is
+// toggled off, because what is not drawn cannot be shown.
+function selectEverything(){
+  var r=renderer();if(!r)return;
+  var ch=r.chains||[],next=new Set();
+  for(var i=0;i<ch.length;i++){
+    var of=(partners&&partners.owner)?partners.owner[String(ch[i])]:undefined;
+    if(of!==undefined&&(!partnersOn||of!==morphAt))continue;
+    next.add(i);}
+  applySelection(next);}
 function selectAround(){
   var r=renderer();if(!r)return;
   var list=setList(currentSelection());
@@ -1361,6 +1395,8 @@ function enableClicks(){
   if(scOn)scOn.addEventListener('click',function(){setSidechains(true);});
   if(scOff)scOff.addEventListener('click',function(){setSidechains(false);});
   if(selClearBtn)selClearBtn.addEventListener('click',clearDetails);
+  selAllBtn=document.getElementById('pinsp-sel-all');
+  if(selAllBtn)selAllBtn.addEventListener('click',selectEverything);
   if(!seqBody)return;
   // ONE LISTENER FOR EVERY LETTER. A page with 20,000 cells cannot afford a
   // handler each, and the cells are leaves, so the event target IS the cell.
@@ -2204,6 +2240,9 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
         '<button type="button" class="bp-btn pinsp-sw" id="pinsp-sc-off" disabled '
         'aria-pressed="false">Hide</button>'
         '</span>'
+        '<button type="button" class="bp-btn" id="pinsp-sel-all" '
+        'title="Select every residue on screen in this conformation">'
+        'Select all</button>'
         '<button type="button" class="bp-btn" id="pinsp-sel-clear" disabled>'
         'Clear</button>'
         '</span></div>'

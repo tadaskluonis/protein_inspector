@@ -102,7 +102,10 @@ the comparison is the result, put both states in.
 The sequence strip, the cell titles and the residue card follow the state on
 screen, so morphing to an ortholog or a mutant relabels the positions whose
 identity differs — the morph maps positions, not residues, and the letters
-say which residue each state actually has there.
+say which residue each state actually has there. The strip lists only the
+chains that state draws (the target plus its own partners), and every
+selection is filtered to them, so `Select all` / `sel` / `Select around` in
+one state never reach another state's coordinates.
 
 `conformers=[{"path": ..., "label": ...}]`, any number, one named button each,
 and any state morphs straight to any other — not a fixed tour. Each button
