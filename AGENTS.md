@@ -87,6 +87,13 @@ Two things to know yourself rather than write a tab about:
   `report["morph"]["conformers"][i]["residues_dropped"]` — a silently dropped
   region is a hole in the comparison, and if something went it belongs in that
   same paragraph.
+- **The mapping is by address, not by sequence.** Residues are matched on
+  (chain, author number) and their NAMES are never compared, so a point
+  substitution between two entries passes `"exact"` in silence. Morphing a
+  wild type against a mutant is legitimate, but you should know it is what you
+  are doing: compare the residue names yourself before rendering. It now shows
+  up in the picture, because each state draws its own side chains while the
+  strip and the labels read the reference's identity.
 
 ## Partner chains
 
@@ -140,20 +147,79 @@ Emitted by the renderer — do not re-implement or hand-edit it in generated
 HTML; `tests/inspection_dom.js` clicks these controls rather than asserting
 their strings appear.
 
-- **Layers**: `All` / `None`, then one row per layer with a colour swatch, the
-  label, its annotation count, and a hover-revealed `only` button that
-  isolates it.
+- **Layers**: `All` / `None` / `Select`, then one row per layer with a colour
+  swatch, the label, its annotation count, and two hover-revealed buttons:
+  `only` isolates the layer, `sel` makes its residues the selection
+  (shift-click adds, so several layers can be selected together). `Select` in
+  the header takes every **ticked** layer at once. This is how the selection
+  tools reach a whole epitope rather than one residue: `sel` then
+  `Side chains`, or `sel` then `Select around`.
 - **Residues**: a live count, a filter box matching residue label, layer label
   and annotation id, and the list grouped into one collapsible section per
   layer.
-- **Residue card**: clicking a row opens a card with the residue identity,
-  chain / author number, and one line per annotation on it. Dismissed by `×`,
-  by clicking the row again, or by Escape; all three drop the 3D selection.
+- **Residue card**: clicking a row — or a residue in the structure, or a
+  letter in the sequence — opens a card with the residue identity, chain /
+  author number, and one line per annotation on it, which is sometimes none.
+  Dismissed by `×`, by clicking the row again, or by Escape; all three drop
+  the 3D selection.
+- **The structure is clickable**: one click selects a residue, shift-click
+  extends, double-click takes its chain, a click on the background clears.
+  py2Dmol ships with picking switched off in a notebook build; bundles turn it
+  on.
+- **Sequence**: a full-width strip under both panes, one letter per modelled
+  residue in file order, wearing the layer colours the structure wears and
+  printing the author number over every tenth residue. **The strip adds and
+  subtracts; it never replaces.** A click or a drag that starts on an
+  unselected letter adds that letter or range to what is already selected; one
+  that starts on a selected letter removes it, and dragging back over your own
+  path shrinks the change rather than ratcheting it. Shift extends from the
+  last letter pressed, and the chain button takes the whole chain unless it is
+  already all in, in which case it drops it. Hovering the structure lights the
+  corresponding letter. The seam above it trades height between the picture
+  and the strip — one seam, two rows, constant sum — so the page's height does
+  not change and nothing below it moves. The vertical seam still owns width.
+- **Selection tools**, on the sequence bar, acting on whatever is selected
+  however it was selected:
+  - `within N Å` + `Select around` adds every residue with an atom inside that
+    distance — the renderer's own atom-to-atom search, so side chains count,
+    and the selection it grew from is kept (PyMOL's
+    `byres (all within N of sele)`).
+  - `side chains` is a **Show / Hide pair, not a latch**. Selecting changes
+    nothing about what is drawn; you press afterwards, and the press is
+    absolute rather than a toggle. The pair reads back the state of the
+    selection as well as setting it: Show fills when every selected residue is
+    drawn, Hide when none is, and **neither** fills when they disagree or when
+    nothing is selected — so one press always resolves a mixed selection in a
+    known direction instead of inverting each residue separately. Deselecting
+    does not undo anything: what is drawn stays drawn, and the readout says how
+    many residues are still drawing side chains. Works on a morph, where each
+    conformation carries its own rotamers and the animation shows those of the
+    state it is leaving. Needs the atoms: both halves disabled, with the reason
+    in their tooltip, on a bundle rendered `display={"sidechains": False}` or
+    from coordinates that carry none.
+  - `Clear` drops the selection.
 - **Save**: Capture opens the panel; Save writes a **transparent** PNG at the
   chosen dpi, with Copy image beside it — the route that still works inside a
   frame that blocks downloads.
 - `window.proteinInspector` exposes `syncVisibleLayers`, `clearDetails`,
-  `setAllLayers`, `onlyLayer` and `selectAnnotation`.
+  `setAllLayers`, `onlyLayer`, `selectAnnotation`, `selectResidues(positions)`,
+  `selectAround(angstroms)`, `setSidechains(on)`, `sidechainState()`,
+  `selectLayer(id, add)`,
+  `selectVisibleLayers()` and `selection()` — the selection tools, for a
+  figure that is scripted rather than clicked. `positions` are 0-based indices
+  into what is drawn, not author residue numbers.
+
+**A frame must declare its own `position_types`.** Not optional, and not
+cosmetic: `_materialiseSidechains` appends one position per side-chain atom and
+types each `'L'`, building the array from `(data.position_types || []).slice()`.
+With no types in the frame that starts empty, the finished array is shorter than
+the coordinate count, and `_setDataField` silently replaces a length-mismatched
+per-position array with `Array(n).fill('P')` — so every side-chain atom claims
+to be protein backbone, and `cartoon/geom.js` draws it as cartoon rather than as
+a stick. That is one missing keyword argument between a correct picture and
+ribbon slabs running between a residue's atoms. Derive the value with
+`_position_types(names)`; never fill `'P'`, because `_ca_trace` accepts `C4'` as
+well as `CA` and a nucleic position typed `'P'` loses its atoms without a word.
 
 ## Colour
 
@@ -176,6 +242,52 @@ just picked.
 The default style is **`tube`**. Pass `display={"style": ...}` for `cartoon` /
 `richardson` / `ribbon` / `3d` when a figure needs it.
 
+`display` also takes `width` / `height` (the starting split for the horizontal
+seam), `color`, `chain_palette`, `background`, and two switches you will rarely
+want to change:
+
+- `gpu` (default `True`) — the WebGL2 painter, which `paintgl.js` describes as
+  keeping the drawing "resident on the GPU so that turning the model costs one
+  draw call instead of one full repaint"; the CPU painter re-runs
+  `cartoon/geom.js` every frame instead. Both are in every bundle, so `False`
+  is for reproducing a rendering difference, not for compatibility: a machine
+  without WebGL2 falls back on its own, per frame. No head-to-head timing is
+  quoted here — none has been measured, and upstream publishes none.
+- `sidechains` (default `True`) — carry the side-chain atoms, which is what the
+  `side chains` pair draws. ~8% of the bundle; `False` disables both halves.
+- `detail` (default **`8`**, py2Dmol's own default is 4) — cartoon subdivisions
+  per residue, 2–8. This is the only thing that sets sampling: upstream retired
+  an adaptive term that targeted a fixed on-screen chord length, so
+  `cartoon/geom.js` now says plainly that "magnified curves facet rather than
+  resample". At 4 a residue gets 4 subdivisions in a helix and 3 in a strand or
+  loop, which close in is three flat plates per residue of loop, each with its
+  own outline stroke — read by the first person to zoom a bundle in as
+  malformed side-chain bonds. A bundle exists to be zoomed into, so it asks for
+  the top of the range; the `Detail` slider still spans 2–8 live.
+
+**The Style panel is folded, not rewritten.** `src/parts/panel.js` builds it
+from one table of rows shared with py2dmol.solab.org — "ONE PANEL, TWO SKINS" —
+so the website exposes the same seventeen controls and there is no simpler set
+to borrow from it. What differs is the room: the site is a wide sidebar, ours
+floats over the canvas. So `Style`, `Detail`, `Color` and `Sele` stay out
+front and the rest go into a closed `Fine tuning` group — along with one
+control the shared panel does **not** ship: **`GPU painter`**. `parts/ui.js`
+leaves `useGPU` out deliberately, and that is right for a notebook, where the
+build carries one painter and the flag would ask for a file that is absent. A
+bundle carries both, and the two do not draw a close-up side chain the same
+way: the 2D painter's ink pass drops the edges of a stick box that lies inside
+another, leaving one silhouette per side chain, where the WebGL2 path has been
+reported showing those interior edges through the faces. Only built when
+WebGL2 actually answers (`py2dmolCartoonGPU.available()`), per py2Dmol's own
+rule that a control which cannot do anything is worse than none.
+
+Move whole **rows**
+if you change this: `parts/ui.js` hides per-style controls by setting `hidden`
+on the row carrying `data-style`, so a control lifted out of its row survives
+into a style that cannot honour it. A `.half` cell carries its own
+`data-style` and may move alone, which is how `Detail` rides up beside
+`Style`.
+
 ## One visual channel, not two
 
 `highlight` picks how layers mark residues, bundle-wide:
@@ -190,6 +302,12 @@ and competing with the colour underneath. There is no per-layer form for the
 same reason. Reach for `"halo"` only when the structure's own colouring is the
 subject (a pLDDT- or chain-coloured view you need to keep intact) and annotate
 on top of it.
+
+One more cost under `"halo"`: the halo *is* the selection channel, so a
+layer and the reader's own selection compete for it — ticking a layer
+replaces whatever they had selected. Selecting, `Select around` and
+`Side chains` all still work, and the sequence strip still marks the
+selection, but under `"color"` the two channels never collide.
 
 ## Other hosts
 

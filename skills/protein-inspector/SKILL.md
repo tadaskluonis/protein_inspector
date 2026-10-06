@@ -161,6 +161,30 @@ residue you named. There is also a CLI:
 
 ## Notes
 
+The reader also gets a **sequence strip** under the picture, in the layer
+colours, and a clickable structure: a click selects a residue, `sel` on a
+layer row (or `Select` in the Layers header) selects a whole layer,
+`within N Å` + `Select around` grows a selection into its neighbourhood, and a
+`side chains` **Show / Hide** pair draws the selection's side chains — on a
+morph too, each state with its own rotamers. Selecting never changes what is
+drawn and never erases a previous selection: the strip adds, or subtracts when
+the drag begins on something already selected, and the pair is pressed
+afterwards. Nothing to pass for any of it — except
+`display={"sidechains": False}` if you would rather not carry the side-chain
+atoms (~8-14% of the bundle), which disables both halves.
+
+`display={"detail": N}` sets cartoon subdivisions per residue, 2–8. A bundle
+defaults to **8** rather than py2Dmol's 4, because sampling is fixed rather
+than adaptive — a magnified curve facets instead of resampling — and a bundle
+is made to be zoomed into. At 4, a residue of loop is three flat plates, which
+reads as malformed bonds close up. The `Detail` slider spans the range live,
+beside `Style`, `Color` and `Sele`; the ten finer controls are folded into a
+`Fine tuning` group under them, with a **`GPU painter`** switch. The two
+painters do not finish a close-up side chain identically — the CPU one carves
+one silhouette per side chain where the WebGL2 one can show the edges of each
+stick box — so if a reader says the sticks look wrong, have them untick it
+before you look for a geometry bug.
+
 The display area is fluid: it fills the column beside the Layers panel at
 whatever width the page opens in, so `display={"height": ...}` is the size
 worth setting and width is ignored in practice.

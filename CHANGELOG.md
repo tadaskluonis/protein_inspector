@@ -4,6 +4,237 @@
 
 ### Added
 
+**A sequence strip, a clickable structure, and selections made from
+selections** (`protein-inspector-1.14`). Three things a reader of a bundle
+could not do, all of which are the same question — *this residue, and the ones
+around it*:
+
+- **The structure is clickable.** py2Dmol gates canvas picking on
+  `selectionEnabled`, and the notebook bundle leaves it `false` (`parts/ui.js`
+  turns it on for Focus mode alone), so an exported page's canvas was inert:
+  single click, shift-click, double-click-for-chain and clear-on-background
+  were all already written in `core/mol.js` behind one flag that nothing set.
+- **A sequence strip**, full width under both panes, with its own draggable
+  seam for its height so it cannot take width from the picture. One letter per
+  modelled position in file order, in the layer colours the structure is
+  wearing — the strip is the Layers legend with an index — the author number
+  over every tenth residue, click/drag/shift/ctrl to select, and a chain
+  button for the whole chain. Hovering the structure lights the letter, via
+  the `window.SEQ.setHoveredResidue` hook `core/mol.js` already calls when a
+  strip is present.
+
+  Written here rather than borrowed. `src/panels/seq.js` is not in the
+  notebook bundle and could not be dropped in: it is a canvas strip wired to
+  `src/app/selection.js` (also web-only), and it colours by the viewer's
+  colour mode, which is the one thing that would make it disagree with the
+  page it is on.
+- **`Select around`**, with a distance box, calling the renderer's own
+  `residuesWithin` — atom to atom on a grid it keeps between calls, so side
+  chains count — and keeping the selection it grew from, as PyMOL's
+  `byres (all within N of sele)` does.
+- **`side chains`**, a Show / Hide pair drawing the selected residues' side
+  chains. `parts/sidechains.js` had the verb and nothing in an
+  exported page reached it. The atoms have to be in the file, so
+  `view(sidechains=True)` is now set; `display={"sidechains": False}` declines
+  it, and the button is then disabled with the reason in its tooltip rather
+  than raising. Morph and conformer bundles build their frames from Cα
+  coordinates and carry none either way, which the page reads off the state
+  rather than guessing.
+
+  What the atoms cost, measured on 3PTB (233 drawn positions, 223 of them
+  with a side chain): **607,877 → 656,162 bytes, +7.9%**. They are stored once
+  per residue rather than once per frame, so a morph does not multiply them.
+
+**A layer is a selection.** The tools act on a selection and a layer is
+already a named, counted, coloured set of residues, so the two halves of the
+page were not connected: side chains could only be drawn for residues picked
+one at a time, and the unit anyone actually wants is "this whole epitope".
+`sel` on a layer row selects it (shift-click adds, so several layers go
+together) and `Select` in the Layers header takes every **ticked** layer at
+once — the same visibility the structure is painted from.
+
+**Side chains work on a morph.** The conformer path builds its frames from Cα
+coordinates, so the new button was dead on exactly the bundles most worth
+interrogating. It works because the browser's table is not world-space: each
+atom is three coefficients in its residue's own backbone frame, rebuilt from
+the final positions at draw time, and `parts/ui.js` builds a separate table
+per frame. So one row set per conformer gives every state its own rotamers,
+and the interpolation buffer borrows the table of the state it is leaving —
+frozen for the length of the animation, which is what the interpolation itself
+already is. The atoms have to travel through the same Kabsch fit as the trace
+they belong to, or every side chain is measured against a backbone that has
+rotated out from under it.
+
+Measured on the EGFR ECD bundle (609 residues, 559 with a side chain, two
+conformations): 2,309,668 → 2,627,741 bytes, +13.8%.
+
+The residue card opens on any residue now, not only an annotated one, and says
+so when there is nothing on it.
+
+`window.proteinInspector` gains `selectResidues`, `selectAround`,
+`setSidechains`, `sidechainState` and `selection`.
+
+**Selecting no longer draws anything, and selecting never erases.** Two
+borrowings from `src/app/selection.js`, both of which the website had and an
+exported page did not:
+
+- The side-chain control is a **Show / Hide pair with three states**, and the
+  press is absolute rather than a toggle. It reads the selection's state back
+  per residue from `shownSidechainSet()`: Show fills when all of them are
+  drawn, Hide when none is, and neither fills when they disagree or when
+  nothing is selected. A single latch could only show that third state as a
+  grey smear — it said what it would do and left you to work out what it had
+  done — and on a mixed selection it inverted each residue separately, which
+  is never the thing anyone wanted. Deselecting now undoes nothing: what is
+  drawn stays drawn, and the readout counts it.
+- **The strip adds and subtracts.** A click or drag beginning on an unselected
+  letter adds; one beginning on a selected letter removes; the mode is decided
+  at pointer-down and the range is recomputed from a snapshot of the selection
+  taken there, so dragging back over your own path shrinks the change instead
+  of ratcheting. A click never replaces what was selected.
+
+**The cartoon was sampled for a reader who does not zoom in.** The first person
+to zoom a bundle to where one residue fills the canvas reported the side-chain
+bonds as malformed. They were not: the side-chain table checks out exactly on
+all 559 residues of the EGFR bundle — every heavy-atom and bond count,
+including every aromatic ring closure — and the stick section is the website's
+own. What they were looking at was the cartoon.
+
+`detail` is the only thing that sets cartoon sampling, and py2Dmol defaults it
+to 4. Upstream retired an adaptive term that targeted a fixed on-screen chord
+length — it was the largest single term in the frame, and it made a picture
+depend on the zoom it was first built at — so `cartoon/geom.js` now states the
+consequence plainly: *"Magnified curves facet rather than resample."* At 4, a
+residue gets 4 subdivisions in a helix and 3 in a strand or loop, which close
+in is three flat plates per residue of loop, each carrying its own outline
+stroke. That is what read as extra bonds and rough box joins.
+
+A bundle is the one viewer made to be zoomed into, so `display` takes `detail`
+and defaults it to **8**, the top of the range and the sampling the retired
+adaptive term used to reach (~8.7 per residue on a 600 px canvas). Affordable
+because the GPU painter is on: the doubled station count is paid once, at
+capture, instead of on every frame of every rotation.
+`display={"detail": 4}` restores
+py2Dmol's default, and the `Detail` slider still spans 2–8 live.
+
+**The Style panel is folded.** `Style`, `Detail`, `Color` and `Sele` stay out
+front; `Width`, `Outline`, `Thick`, `Flat`, `Hilite`, `Shade`, `Pencil`, `Ink`,
+`Shadow`, `Ortho` and the two toggles go into a closed `Fine tuning` group.
+
+**Which painter draws is a control now**, in that group, and it is the one
+thing in the panel the shared table does not provide. `parts/ui.js` omits
+`useGPU` on the grounds that it is a backend rather than a look — right for a
+notebook, which carries one painter, and wrong for a bundle, which carries
+both. The two do not draw a close-up side chain the same way: `cartoon/geom.js`
+describes the 2D painter's rule for a stick box lying inside another — "one
+that lies inside the other is behind its surface, so the ink pass removes it" —
+and the WebGL2 path was reported showing those interior edges through the
+faces, on a structure where the same residue on py2dmol.solab.org carried a
+single silhouette. Whoever is looking at the picture is the only one who can
+say which is right for it, and they cannot say it if switching means
+re-rendering the file. Built only when `py2dmolCartoonGPU.available()` answers,
+and it drops the GPU mesh on the way across rather than re-drawing geometry
+built while the painter was off.
+
+Nothing is removed, and nothing was borrowed from py2dmol.solab.org either —
+there was nothing to borrow. `src/parts/panel.js` builds this panel from one
+shared table of rows, and its own header calls it "ONE PANEL, TWO SKINS": the
+website and the bundle get the same seventeen controls and differ only in
+stylesheet. What differs is the room they have. The site is a wide left
+sidebar; ours floats over the canvas, where seventeen controls read as clutter.
+
+Whole rows move, because `parts/ui.js` hides per-style controls by setting
+`hidden` on the row that carries `data-style` — a control lifted out of its row
+would be a slider surviving into a style that cannot honour it. `Detail` is the
+exception and is safe: a `.half` cell carries its own `data-style`, and it
+moves into the row that is always visible.
+
+**The cartoon is painted on the GPU.** `render_inspection_bundle` passed
+`gpu=False`, while py2Dmol's own default — and the website's — is `True`, so a
+`richardson` or `cartoon` bundle was handing the same geometry to the CPU
+painter and felt slow next to py2dmol.solab.org on the same machine. The
+difference is structural rather than a benchmark, and `paintgl.js`'s own header
+states it: the drawing is "resident on the GPU so that turning the model costs
+one draw call instead of one full repaint", where the 2D painter runs
+`cartoon/geom.js` every frame. No head-to-head figures are quoted because
+none were measured here and upstream publishes none.
+
+Nothing is given up, because the notebook bundle is the one build that carries
+BOTH painters and `core/mol.js` only honours the flag when both are present:
+no WebGL2 or a lost context and `_gpuWillTake` declines the frame; paintgl
+refuses any context carrying `getSerializedSvg`, so vector export still comes
+off the 2D painter; and `protein-inspector capture` already launches headless
+Chromium with SwiftShader. `display={"gpu": False}` forces the CPU painter.
+
+### Fixed
+
+**A conformer frame did not say what its positions were, and its side chains
+were drawn as cartoon.** Reported as "the boxes connecting the atoms look wrong
+in between" on a morph bundle, while the same structure rendered as a single
+file through `add_pdb` was clean — with a byte-identical side-chain table.
+
+`_materialiseSidechains` appends one position per side-chain atom and types
+each `'L'`, building the array as `(data.position_types || []).slice()` plus one
+push per atom. The conformer path called `viewer.add()` without
+`position_types`, so that started **empty**: the finished array was as long as
+the appended atoms rather than as long as the coordinates, and `_setDataField`
+takes a per-position array whose length does not match the coordinate count and
+silently replaces it with `Array(n).fill('P')`. Every side-chain atom then
+claimed to be a protein backbone position — and `cartoon/geom.js` partitions on
+exactly that, backbone drawn as cartoon and everything else as sticks. The
+atoms were swept into the ribbon and drawn as slabs running between them.
+
+Nothing was wrong with the atoms, which is why this survived every check made
+while looking for it. The table is chemically exact — all 559 residues of the
+EGFR bundle match expected heavy-atom and bond counts, every aromatic ring
+closure included — and its geometry survives the Kabsch fit intact: CA–CB
+median 1.530 Å and intra-side-chain bonds 1.488 Å in **both** frames, no
+outliers. They were mislabelled, not misplaced.
+
+Both conformer `add()` call sites now send types, derived per residue by
+`_position_types` rather than filled with `'P'`: `_ca_trace` accepts `C4'` as
+well as `CA`, so a stack can hold nucleic positions, and a base typed `'P'` is
+rebuilt through the peptide's step range — `localFrame` fails and its atoms are
+dropped in silence, which is how upstream once lost 347 of them.
+
+Three explanations were proposed and withdrawn before this one: the GPU
+painter, the cartoon sampling (a real defect, fixed above, but not this one),
+and the load path. What localised it was rendering the same 6ARU through both
+paths and diffing the frames.
+
+**Detail did not survive the style switch it was rendered for.**
+`display={"detail": N}` seeds the config and the constructor honours it, but
+`_applyLookDefaults` re-asserts `cartoonDetail = d.detail` unconditionally —
+no "did a person choose this" latch of the kind width and thickness carry — and
+all three `LOOK_DEFAULTS` entries hold 4. A bundle opens as `tube`, so the first
+pick of Richardson dropped the sampling from 8 to 4, and Richardson is the style
+it was picked for: the file shipped a detail nobody could ever see. The page now
+wraps `setStyle` / `setPreset` and re-asserts it afterwards — wrapped rather
+than listening on the dropdown, because `setStyle` is also called
+programmatically. Dragging the Detail slider makes the reader's value the kept
+one.
+
+**The sequence seam ran away from the pointer, and only the page got taller.**
+Two faults with one cause. The drag was computed as
+`grid.getBoundingClientRect().bottom - e.clientY`, and that edge moves when the
+strip resizes — so every `pointermove` read back its own previous result and
+the seam reached its ceiling in a few events. The vertical seam survives the
+same expression because it reads `right`, and changing the panel's width does
+not move the page's edge. The gesture is now anchored to `pointerdown` and the
+two rows share a fixed sum, so the picture gives up exactly what the strip
+takes, the page's height does not change, and the credit line underneath it
+stops being the only thing that visibly moves.
+
+**The selection mark appeared one frame late.** `core/mol.js`'s mouseup handler
+sets the selection and then renders only `isLargeMolecule`, on the reasoning
+that a small structure's next frame is along shortly — true on the website,
+where a hover readout and a sequence canvas are repainting anyway, and false in
+a still bundle. The yellow outline therefore appeared on the first frame AFTER
+the click: nudge the structure and there it was. The page renders on every
+canvas-driven selection change, which covers the background click too.
+
+### Added (earlier in this cycle)
+
 **`chain_palette=` on `view()`, and a colour per chain in the Style panel.**
 Chain mode drew from one hard-coded palette — `chainColors`, a module-level
 `const` in `core/mol.js` — so the only way to change what colour a chain came

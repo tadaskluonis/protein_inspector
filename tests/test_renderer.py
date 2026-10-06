@@ -7,6 +7,7 @@ from pathlib import Path
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 
 from protein_inspector import read_inspection_bundle, render_inspection_bundle
+from protein_inspector.renderer import _position_types
 
 
 def _fixture(path: Path, n: int = 5, bend: float = 0.0) -> None:
@@ -637,7 +638,10 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     """py2Dmol fixes .py2dmol-viewer-instance at 948px; layout, not JS, must beat it."""
     html = _two_layer_bundle(tmp_path)
     text = Path(html).read_text()
-    assert ".pinsp-stage{position:relative;min-width:0;overflow:hidden}" in text
+    # A flex COLUMN now, so the picture can take "the rest of the row" and the
+    # conformation ring and capture bar keep their natural heights.
+    assert (".pinsp-stage{position:relative;min-width:0;min-height:0;overflow:hidden;"
+            "display:flex;flex-direction:column}") in text
     # Orient/Focus/Rotate/Style/Clip/Capture float over the top-LEFT of the
     # canvas instead of sitting in a 340px column beside it.
     assert ".pinsp-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;" in text
@@ -657,7 +661,8 @@ def test_the_viewer_cannot_paint_over_the_layer_panel(tmp_path):
     # context those tools resolve against. Collapse it too and they detach and
     # land on whatever sits above the picture.
     assert (".pinsp-stage #mainContainer{display:block!important;position:relative;"
-            "width:auto!important;max-width:none!important;padding:0!important}") in text
+            "width:auto!important;max-width:none!important;padding:0!important;"
+            "flex:1 1 auto;min-height:0}") in text
     # setupViewport writes an INLINE pixel width on #canvasContainer, so the
     # override has to be !important or the picture stays a fixed box.
     assert ".pinsp-stage #canvasContainer{display:block!important;width:auto!important;" in text
@@ -772,6 +777,14 @@ def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
     assert "Tadas Kluonis" in text
     assert "https://github.com/tadaskluonis/protein_inspector" in text
     assert "free to reuse" in text
+    # ONE footer, on the bottom edge of the sequence section. It used to be
+    # emitted twice over -- once inside the structure pane and once after
+    # `panes_close` -- and it is inside the section now so that zone reaches
+    # the foot of the page instead of floating above a band of nothing.
+    assert text.count('class="pinsp-credit"') == 1
+    seq = text.split('<section class="pinsp-seq"')[1].split("</section>")[0]
+    assert 'class="pinsp-credit"' in seq
+    assert seq.index('id="pinsp-seqbody"') < seq.index('class="pinsp-credit"')
 
 
 def _two_partner_bundle(tmp_path):
@@ -943,8 +956,12 @@ def test_the_two_panes_share_one_draggable_boundary(tmp_path):
     text = Path(html).read_text()
     assert 'id="pinsp-split"' in text
     assert 'role="separator"' in text
-    # gap:0 -- the panes touch; the seam IS the gutter.
-    assert "var(--pinsp-panel,340px);gap:0;" in text
+    # gap:0 -- the panes touch; the seam IS the gutter. The columns and the
+    # rows are separate declarations now that the sequence strip is a third
+    # zone, so this asserts the two facts rather than one byte string that
+    # happened to carry both.
+    assert "grid-template-columns:minmax(240px,1fr) 11px var(--pinsp-panel,340px);" in text
+    assert "gap:0;" in text
     # The picture is no longer independently resizable.
     assert "resize:none!important" in text
     assert ".pinsp-stage #canvasContainer .resize-handle{display:none!important}" in text
@@ -964,6 +981,664 @@ def test_the_two_panes_share_one_draggable_boundary(tmp_path):
     # Keyboard moves it too -- left widens the panel.
     assert split["afterArrowLeft"] == 256
     assert split["afterHome"] == 340
+
+
+def _atom_fixture(path: Path, n: int = 12) -> None:
+    """A short chain with real atoms, not a Cα trace.
+
+    `_fixture` writes one CA per residue, which is the right fixture for the
+    layer and morph tests and the wrong one here: a trace carries no
+    side-chain atoms, so `view(sidechains=True)` has nothing to capture and
+    every assertion about the Side chains button would pass against a bundle
+    that cannot draw one. CB is what makes this a side chain; ALA and LEU
+    alternate so the strip's letters are distinguishable.
+    """
+    structure = Structure.Structure("fixture")
+    model = Model.Model(0)
+    chain = Chain.Chain("A")
+    for index in range(1, n + 1):
+        residue = Residue.Residue((" ", index, " "), "ALA" if index % 3 else "LEU", " ")
+        x = float(index * 3)
+        y = float(index % 2)
+        for name, offset, element in (("N", (-1.2, 0.0, 0.0), "N"),
+                                      ("CA", (0.0, 0.0, 0.0), "C"),
+                                      ("C", (1.2, 0.0, 0.0), "C"),
+                                      ("O", (1.2, 1.1, 0.0), "O"),
+                                      ("CB", (0.0, 1.5, 0.6), "C")):
+            residue.add(Atom.Atom(name, (x + offset[0], y + offset[1], offset[2]),
+                                  0.0, 1.0, " ", name, index * 5, element=element))
+        chain.add(residue)
+    model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    io.save(str(path))
+
+
+_SEQUENCE_SPEC = {
+    "chains": ["A"] * 12,
+    "residueNumbers": list(range(1, 13)),
+    "positionNames": ["ALA", "ALA", "LEU"] * 4,
+}
+
+
+def _sequence_bundle(tmp_path, sidechains=True):
+    """A 12-residue bundle with two layers, for the strip and the tools."""
+    cif = tmp_path / "atoms.cif"
+    _atom_fixture(cif)
+    manifest = {
+        "schema_version": "protein-inspector-manifest-1",
+        "annotations": [
+            {"annotation_id": "a2", "kind": "custom", "label": "Layer A res 2",
+             "layer_id": "layer-a", "layer_label": "Layer A", "color": "#111111",
+             "resolved": True, "evidence_ids": [], "method": "rule",
+             "residue": {"component_id": "ALA", "canonical_position": 2,
+                         "chain_id": "A", "author_residue_number": 2}},
+            {"annotation_id": "b5", "kind": "custom", "label": "Layer B res 5",
+             "layer_id": "layer-b", "layer_label": "Layer B", "color": "#dc2626",
+             "resolved": True, "evidence_ids": [], "method": "rule",
+             "residue": {"component_id": "ALA", "canonical_position": 5,
+                         "chain_id": "A", "author_residue_number": 5}},
+        ],
+    }
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest=manifest, output_dir=str(tmp_path / "out"), extras=True,
+        display_options={"width": 600, "height": 400, "sidechains": sidechains})
+    return Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html"))
+
+
+def test_the_sequence_strip_is_one_letter_per_residue_in_the_layer_colours(tmp_path):
+    """The strip is the Layers legend with an index: same colours, same
+    visible-layer set, one cell per drawn position in file order.
+
+    Built from the renderer's own arrays rather than from the manifest, so a
+    position the manifest never mentions still has a letter -- which is the
+    whole point, since most of a structure is unannotated.
+    """
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    seq = report["seq"]
+    assert seq["cells"] == 12
+    assert seq["letters"] == "AALAALAALAAL"
+    # The author number is printed over every tenth residue and nowhere else.
+    assert seq["ticks"] == ["10"]
+    assert seq["chainLabels"] == ["A"]
+    assert seq["firstTitle"] == "A \u00b7 ALA 1"
+    # Only the two annotated positions are painted; the rest are left to the
+    # stylesheet, for the same reason the structure's base is.
+    assert seq["colours"][1] == "#111111"
+    assert seq["colours"][4] == "#dc2626"
+    assert [c for c in seq["colours"] if c] == ["#111111", "#dc2626"]
+
+
+def test_clicking_the_viewer_selects_a_residue_and_opens_its_card(tmp_path):
+    """py2Dmol ships with canvas picking OFF -- parts/ui.js turns it on for
+    Focus mode alone -- so in an exported page the structure was inert.
+
+    Turning it on is one flag; the card is the other half. It could only open
+    on a residue that carried an annotation, and a reader clicking the
+    structure is usually asking about one that does not.
+    """
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    assert report["seq"]["selectionEnabled"] is True
+    click = report["viewerClick"]
+    # Position 7 carries no annotation. The card still names it.
+    assert "ALA 8" in click["card"]
+    assert "chain A &middot; residue 8" in click["card"]
+    assert "No annotation on this residue." in click["card"]
+    assert click["details"] == "ALA 8"
+    assert click["marked"] == [7]
+    assert click["readout"].startswith("A 8")
+    # A double-click takes the whole chain, which is not one residue: the
+    # readout says which, and the card stands down rather than picking one.
+    assert click["chainCard"] is True
+    assert click["chainReadout"].startswith("A 1\u20133")
+    # Clicking the background clears every surface at once.
+    assert click["afterBackground"]["cardHidden"] is True
+    assert click["afterBackground"]["marked"] == []
+    assert click["afterBackground"]["details"].startswith("Click a residue")
+
+
+def test_the_strip_adds_and_subtracts_and_never_replaces(tmp_path):
+    """A click used to throw the selection away and start again, which makes
+    the strip useless for what it is for: building a set a few residues at a
+    time, across two chains, on top of what the layers already gave you.
+
+    What the residue under the pointer ALREADY IS decides the gesture -- start
+    on an unselected letter and the drag adds, start on a selected one and it
+    takes away. One rule, both directions, no modifier to remember.
+    """
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    seq = report["seq"]
+    assert seq["afterClick"]["selection"] == [2]
+    assert seq["afterClick"]["marked"] == [2]
+    assert seq["afterClick"]["readout"].startswith("A 3")
+    assert "LEU 3" in seq["afterClick"]["card"]
+    # Dragging from the anchor to another letter takes everything between.
+    assert seq["afterDrag"] == [2, 3, 4, 5]
+    # ...and a release ends it, so the next move is hover and not selection.
+    assert seq["afterRelease"] == [2, 3, 4, 5]
+    # An unselected letter JOINS what is already there.
+    assert seq["afterAddClick"] == [2, 3, 4, 5, 8]
+    # ...and pressing it again takes only it away.
+    assert seq["afterRemoveClick"] == [2, 3, 4, 5]
+    # A press on a SELECTED letter starts a subtracting drag.
+    assert seq["beforeSubtract"] == [2, 4, 5]
+    assert seq["afterSubtractDrag"] == [2]
+    # ...and dragging back over your own path shrinks the range rather than
+    # ratcheting it: every move recomputes from the mousedown snapshot, so 5
+    # comes back the moment the range no longer covers it.
+    assert seq["afterDragBack"] == [2, 5]
+    # Shift extends from the last letter pressed, additively.
+    assert seq["afterShift"] == [1, 2, 3, 4, 5]
+    # The chain button reads the same way: all in -> out, otherwise in.
+    assert seq["afterChainLabel"] == 12
+    assert seq["afterChainLabelAgain"] == 0
+
+
+def test_select_around_asks_the_renderers_own_neighbourhood_search(tmp_path):
+    """A selection made FROM a selection, which is the other half of picking
+    one: "what lines this pocket" is a question about what is near what you
+    already have.
+
+    The page must not measure anything itself -- `residuesWithin` is the
+    renderer's own atom-to-atom search on a grid it keeps between calls -- so
+    what is asserted here is that the distance box reaches it and whatever it
+    answers becomes the selection, seed included, as PyMOL's byres does.
+    """
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    around = report["around"]
+    assert around["disabledWithSelection"] is False
+    assert around["calls"] == [{"seed": [4], "cutoff": 2}]
+    assert around["selection"] == [2, 3, 4, 5, 6]
+    assert around["readout"].startswith("A 3\u20137")
+    # A tool that acts on the selection is not pressable without one.
+    assert around["clearedSelection"] == []
+    assert around["disabledWhenEmpty"] is True
+
+
+def test_the_side_chain_button_draws_exactly_the_selection(tmp_path):
+    """Clicking a residue and asking to SEE it is the third thing the reader
+    could not do: the verb exists in the bundle (parts/sidechains.js) and
+    nothing in an exported page reached it.
+
+    It is a latch, and its state is read back off the renderer's own set
+    rather than kept here, so Focus mode cannot turn side chains on behind the
+    button's back and leave it saying off.
+    """
+    html = _sequence_bundle(tmp_path)
+    state = json.loads(Path(str(html).replace(".html", ".viewer.json")).read_text())
+    # The atoms are in the file -- this is what the button's enabled state and
+    # `showSidechains` both depend on.
+    assert state["sidechains"] is True
+    frame = state["viewer"]["objects"][0]["frames"][0]
+    assert len(frame["sidechain_atoms"]) == 12
+
+    report = _run_dom_harness(html, _SEQUENCE_SPEC)
+    sc = report["sidechains"]
+    assert sc["stateSaysPresent"] is True
+    assert sc["disabled"] is False
+    # A PAIR, AND THREE STATES. `Show` fills when every selected residue
+    # draws, `Hide` when none does, NEITHER when they disagree -- the state a
+    # single latch could only render as "off", which is what made it say what
+    # it would do rather than what it had done (src/app/selection.js).
+    assert sc["pressed"] == ["false", "true"]                 # none drawn yet
+    assert sc["afterShow"]["calls"] == [{"on": True, "positions": [6]}]
+    assert sc["afterShow"]["pressed"] == ["true", "false"]
+    assert sc["afterHide"]["calls"][-1] == {"on": False, "positions": [6]}
+    assert sc["afterHide"]["pressed"] == ["false", "true"]
+    # One residue drawing, one not: neither button is filled.
+    assert sc["mixedSelection"] == [6, 7]
+    assert sc["mixedPressed"] == ["false", "false"]
+    # ...and the buttons are ABSOLUTE, so one press resolves a disagreement
+    # instead of flipping it to whichever state the majority was not in.
+    assert sc["afterResolve"]["calls"] == [{"on": True, "positions": [6, 7]}]
+    assert sc["afterResolve"]["pressed"] == ["true", "false"]
+    # THE PER-RESIDUE STATE OUTLIVES THE SELECTION. Dropping the selection
+    # undraws nothing, and the bar says so rather than going blank.
+    assert sc["afterDeselect"]["shown"] == 2
+    assert "2 residues still drawing side chains" in sc["afterDeselect"]["readout"]
+    assert sc["afterDeselect"]["disabled"] is True
+    assert sc["afterDeselect"]["pressed"] == ["false", "false"]
+
+
+def test_without_side_chain_atoms_the_button_explains_itself(tmp_path):
+    """`showSidechains` RAISES on a structure that carries none, and a Cα
+    trace and every morph frame carry none. A control that throws is worse
+    than one that is disabled and says why."""
+    html = _sequence_bundle(tmp_path, sidechains=False)
+    state = json.loads(Path(str(html).replace(".html", ".viewer.json")).read_text())
+    assert state["sidechains"] is False
+    assert "sidechain_atoms" not in state["viewer"]["objects"][0]["frames"][0]
+    report = _run_dom_harness(html, _SEQUENCE_SPEC)
+    assert report["sidechains"]["disabled"] is True
+    # Pressed and nothing happened, rather than an exception in the console.
+    assert report["sidechains"]["afterShow"]["calls"] == []
+    assert "no side-chain atoms" in Path(html).read_text()
+
+
+def test_hovering_the_structure_lights_the_letter(tmp_path):
+    """core/mol.js already calls window.SEQ.setHoveredResidue on mousemove
+    when a strip is present, and skips the pick entirely when it is not. The
+    bridge is installed only once the strip exists, so the per-move cost is
+    never paid by a page with nothing to show for it."""
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    assert report["hover"]["lit"] == [5]
+    assert report["hover"]["afterLeave"] == 0
+
+
+def test_the_sequence_seam_trades_height_between_the_picture_and_the_strip(tmp_path):
+    """One seam, two rows, constant sum -- which is what the vertical seam has
+    always been, on the other axis.
+
+    Two faults, reported together and with the same cause. The gesture
+    measured against the grid's own bottom edge, which MOVES when the strip
+    resizes, so every pointermove read back its own previous result and the
+    seam ran away from the pointer to its ceiling in a few events. And only
+    the strip's row was written, so the page simply got taller: the one thing
+    a reader could see move was the credit line underneath it.
+    """
+    html = _sequence_bundle(tmp_path)          # display height 400
+    text = Path(html).read_text()
+    assert 'id="pinsp-hsplit"' in text
+    assert 'aria-orientation="horizontal"' in text
+    # ROW ONE IS A HEIGHT, NOT `auto` -- see the test below for why.
+    assert "grid-template-rows:var(--pinsp-view,400px) 11px var(--pinsp-seq,152px)" in text
+    # Every zone names its own cell: with rows that are not all `auto`,
+    # auto-placement put the Layers panel in the 11px seam row on narrow
+    # screens, where the vertical seam is display:none and placed nowhere.
+    assert ".pinsp-seq{grid-column:1/-1;grid-row:3}" in text
+    # The picture's height is the property the seam writes, seeded from the
+    # caller's `display` height so nothing moves until somebody drags.
+    assert ".protein-inspector{--pinsp-view:400px;--pinsp-seq:152px}" in text
+    # The picture's height comes from the STAGE, which the row sizes -- not
+    # from the property directly, or the conformation ring and the capture bar
+    # would be pushed out of a row that is now a fixed height.
+    assert "height:100%!important" in text
+    # The gesture is pointer-travel-since-pointerdown and nothing else. Said
+    # positively: the comment above it quotes the expression it replaced, so a
+    # "the old one is gone" assertion matches the explanation and passes
+    # whatever the code does.
+    assert "anchorSeq+(anchorY-e.clientY)" in text
+
+    report = _run_dom_harness(html, _SEQUENCE_SPEC)
+    hsplit = report["hsplit"]
+    # THE SUM IS THE WINDOW'S, NOT THE CALLER'S. Both rows used to be fixed
+    # pixel heights, so the page was exactly as tall as `display` asked for and
+    # any taller window left a band of blank page under the sequence section --
+    # the section stopped short of the bottom. The strip keeps the height it was
+    # given and the picture takes the slack: the harness window is 900 px tall
+    # with the grid at y=0, less the 14 px the page pads the body by and the
+    # 11 px seam, so the pair sums to 875 and the view is 875 - 152.
+    assert hsplit["start"] == {"seq": 152, "view": 723}
+    assert hsplit["dragAttr"] == "1"
+    total = hsplit["start"]["seq"] + hsplit["start"]["view"]
+    assert total == 875
+    # A pointermove at the anchor moves nothing. Under the old expression this
+    # was the step that drifted, because the measurement had already changed.
+    assert hsplit["atAnchor"] == {"seq": 152, "view": 723}
+    # 40 px up: the strip takes 40, the picture gives up 40, the sum holds.
+    assert hsplit["up40"] == {"seq": 192, "view": 683}
+    # ...and the gesture is anchored, so coming back to the start comes back
+    # to the start rather than to somewhere further along.
+    assert hsplit["backToAnchor"] == {"seq": 152, "view": 723}
+    assert hsplit["clampedShort"] == {"seq": 64, "view": total - 64}
+    assert hsplit["clampedTall"] == {"seq": total - 200, "view": 200}
+    assert hsplit["dragAttrAfter"] is None
+    assert hsplit["afterRelease"] == hsplit["clampedTall"]   # stops following
+    assert hsplit["afterHome"] == {"seq": 152, "view": 723}
+    assert hsplit["afterArrowUp"] == {"seq": 168, "view": 707}
+    assert hsplit["afterArrowDown"] == {"seq": 152, "view": 723}
+    # Every step keeps the pair summing to the same total, which is what keeps
+    # the page's height -- and the credit line -- still.
+    for step in ("atAnchor", "up40", "backToAnchor", "clampedShort",
+                 "clampedTall", "afterHome", "afterArrowUp", "afterArrowDown"):
+        assert hsplit[step]["seq"] + hsplit[step]["view"] == total, step
+
+
+def test_the_layers_panel_cannot_hold_the_seam_open(tmp_path):
+    """The seam moved nothing while the picture resized inside it.
+
+    Row one was `auto` and the Layers panel lives in it. On a bundle with a
+    long residue list the panel is the tallest thing in that row -- it was
+    capped at `max-height:88vh` and filled it -- so the row's height was the
+    PANEL's, not the picture's. Shrinking the canvas then left the seam
+    exactly where it was: the reader grabbed it, saw the structure resize, and
+    saw the thing in their hand stay still.
+
+    ASSERTED AS CSS, not as behaviour, and deliberately. A seam is a box-model
+    fact: the DOM harness has no layout, so it reported this one working --
+    the page wrote both custom properties and the harness read them back. What
+    actually decides whether the seam moves is which element's height the grid
+    row takes, and these five declarations are that decision. Run the page in
+    a browser to watch it; run this to keep it.
+    """
+    text = Path(_sequence_bundle(tmp_path)).read_text()
+    # The row is a height the seam owns, seeded from the caller's `display`.
+    assert "grid-template-rows:var(--pinsp-view,400px) 11px var(--pinsp-seq,152px)" in text
+    # The panel takes the row and scrolls inside it, rather than setting it.
+    assert ".pinsp-panel{border:1px solid #e2e8f0;border-radius:10px;min-height:0;overflow:auto;" in text
+    assert "max-height:88vh" not in text
+    assert "position:sticky;top:14px" not in text
+    # The picture takes what is left of the stage, so the conformation ring and
+    # the capture bar are not pushed out of a row that is now a fixed height.
+    assert ".pinsp-stage{position:relative;min-width:0;min-height:0;overflow:hidden;" in text
+    assert "display:flex;flex-direction:column}" in text
+    assert "height:100%!important;position:relative}" in text
+    # ...and #mainContainer is still a positioned box, because the floating
+    # Orient/Focus/Style cluster is its child and a sibling of the canvas.
+    assert "flex:1 1 auto;min-height:0}" in text
+    assert ".pinsp-stage #mainContainer{display:block!important;position:relative;" in text
+
+
+def test_the_selection_mark_is_drawn_on_the_click_that_made_it(tmp_path):
+    """core/mol.js's mouseup sets the selection and renders only when the
+    molecule is large, on the reasoning that a small one's next frame is along
+    shortly. True on the website, where a hover readout and a sequence canvas
+    are repainting anyway; false in a still bundle, where the yellow outline
+    appeared on the first frame AFTER the click -- nudge the structure and
+    there it was."""
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    assert report["viewerClick"]["rendered"] >= 1
+    assert report["viewerClick"]["marked"] == [7]
+
+
+def test_the_cartoon_is_painted_on_the_gpu_by_default(tmp_path):
+    """A `richardson` or `cartoon` bundle felt slow next to py2dmol.solab.org
+    on the same machine because this passed `gpu=False` while the website's
+    default is True -- the same geometry, handed to the CPU painter.
+
+    The notebook bundle is the one build carrying BOTH painters, and
+    core/mol.js only honours the flag when both are present, so nothing is
+    given up: no WebGL2 or a lost context and `_gpuWillTake` declines the
+    frame, and paintgl refuses any export context, so SVG still comes off the
+    2D painter.
+    """
+    html = _sequence_bundle(tmp_path)
+    state = json.loads(Path(str(html).replace(".html", ".viewer.json")).read_text())
+    assert state["viewer"]["config"]["rendering"]["gpu"] is True
+
+    cif = tmp_path / "atoms.cif"
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "cpu"), extras=True,
+        display_options={"gpu": False})
+    cpu = json.loads(Path(next(i["path"] for i in result["artifacts"]
+                               if i["kind"] == "viewer_state")).read_text())
+    assert cpu["viewer"]["config"]["rendering"]["gpu"] is False
+
+
+def test_the_cartoon_is_sampled_for_a_reader_who_zooms_in(tmp_path):
+    """py2Dmol samples the cartoon at `detail` subdivisions per residue and
+    nothing else: upstream retired an adaptive term that targeted a fixed
+    on-screen chord length, so a magnified curve now facets rather than
+    resampling -- cartoon/geom.js says so in those words.
+
+    At the library default of 4 that is 4 subdivisions per helix residue and 3
+    per strand or loop (HELIX_SUB 8, SHEET_SUB and SUB both 6, scaled by
+    detail/8). Zoomed to where a residue fills the canvas, three flat plates
+    per residue of loop -- each carrying its own outline stroke -- was read by
+    the first reader to zoom a bundle in as malformed side-chain bonds.
+
+    A bundle is made to be zoomed into, so it asks for the top of the range.
+    The Detail slider still spans 2-8 live and an explicit value still wins.
+    """
+    html = _sequence_bundle(tmp_path)
+    state = json.loads(Path(str(html).replace(".html", ".viewer.json")).read_text())
+    assert state["viewer"]["config"]["rendering"]["detail"] == 8
+
+    cif = tmp_path / "atoms.cif"
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "coarse"), extras=True,
+        display_options={"detail": 2})
+    coarse = json.loads(Path(next(i["path"] for i in result["artifacts"]
+                                  if i["kind"] == "viewer_state")).read_text())
+    assert coarse["viewer"]["config"]["rendering"]["detail"] == 2
+
+
+def test_a_conformer_frame_says_what_its_positions_are(tmp_path):
+    """A frame that does not carry `position_types` cannot carry side chains.
+
+    `_materialiseSidechains` appends one position per side-chain atom and types
+    each `'L'`, building the array as `(data.position_types || []).slice()` plus
+    one push per atom. With no types in the frame that starts EMPTY, so the
+    finished array is as long as the appended atoms instead of as long as the
+    coordinates -- and `_setDataField` takes a per-position array whose length
+    does not match the coordinate count and silently replaces it with
+    `Array(n).fill('P')`. Every side-chain atom then claimed to be a protein
+    backbone position, and `cartoon/geom.js` partitions on exactly that
+    (backbone drawn as cartoon, everything else as sticks), so the atoms were
+    swept into the ribbon and drawn as slabs running between them. The same
+    structure through `add_pdb` was right, because `add_pdb` sends types.
+
+    Reported as "the boxes connecting the atoms look wrong in between", and
+    invisible to everything that had been checked: the side-chain table is
+    chemically exact and its geometry survives the Kabsch fit intact (CA-CB
+    median 1.530 A in both frames of the EGFR bundle). The atoms were never
+    wrong. They were mislabelled.
+
+    The type is derived per residue rather than filled with 'P', because
+    `_ca_trace` accepts C4' as well as CA: a nucleic position typed 'P' is
+    rebuilt through the peptide's step range, `localFrame` fails, and the base's
+    atoms are dropped without a word.
+    """
+    _result, html = _morph_bundle(tmp_path)
+    state = json.loads(html.read_text()
+                       .split('id="pinsp-inspection-state" type="application/json">')[1]
+                       .split("</script>")[0].replace("<\\/", "</"))
+    frames = state["viewer"]["objects"][0]["frames"]
+    assert len(frames) >= 2
+    for frame in frames:
+        types = frame.get("position_types")
+        assert types is not None, "a conformer frame must declare its types"
+        assert len(types) == len(frame["coords"])
+        assert set(types) <= {"P", "D", "R", "L"}
+
+    assert _position_types(["ALA", "DA", "A", "HOH", "", "dg"]) == [
+        "P", "D", "R", "P", "P", "D"]
+
+
+def test_selecting_never_draws_a_side_chain(tmp_path):
+    """Nothing on the page draws a side chain except the Show/Hide pair -- and
+    py2Dmol's Focus button, which is in the bundle's own control bar, was the
+    exception that made that untrue.
+
+    Focus is a MODE that redefines what a selection means. `enterFocusMode`
+    clears every object's `sidechains` on the way in, and `focusOn` then
+    ASSIGNS the set from the neighbourhood of whatever was picked -- writing
+    every object on screen, because "hide the last click's" is the point of it.
+    It is wrapped around `setResidueSelection` rather than subscribed to it, so
+    with the mode latched EVERY selection drew atoms: a click in the picture, a
+    letter in the strip, `sel` on a layer, `Select around`. Reported as
+    selecting a residue showing its side chains before anyone asked.
+
+    Upstream already has the opt-out -- `focusOn`'s options carry `sidechains`
+    and `o.sidechains !== false` is the only gate on that block -- so the
+    camera half of the mode is kept and the drawn set is left to the one
+    control that is about the drawn set.
+    """
+    text = Path(_sequence_bundle(tmp_path)).read_text()
+    assert "o.sidechains=false" in text
+    assert "r._pinspFocusTamed" in text
+    # The wrap is on the renderer's own verbs, not a re-implementation of the
+    # mode: a bundle should say one thing about Focus, not own a copy of it.
+    assert "focusOn.call(r,sel,o)" in text
+    assert "enter.call(r)" in text
+
+
+def test_detail_survives_the_style_switch_it_was_rendered_for(tmp_path):
+    """`display={"detail": N}` seeds the viewer's config, and the constructor
+    honours it -- for as long as the viewer stays in the style it opened in.
+
+    core/mol.js's `_applyLookDefaults` re-asserts every style-owned control
+    from `LOOK_DEFAULTS`, and all three entries there carry `detail: 4`, with
+    none of the "did a person choose this" latching that width and thickness
+    get. A bundle opens as `tube`, so the first time a reader picks Richardson
+    the sampling dropped from 8 back to 4 -- and Richardson is the style they
+    picked it for. The bundle shipped a detail nobody could ever see, which is
+    worse than shipping the default.
+
+    Upstream is not wrong to re-assert: the comment above LOOK_DEFAULTS gives
+    the reason (an Outline set in cartoon surviving into richardson, whose
+    panel hides the slider, "leaving no way to see or fix it"). Detail is just
+    not a style-owned quantity for a bundle -- it is a property of the
+    document, chosen once by whoever rendered it. So the page re-asserts it
+    after the switch, and a reader who drags the slider outranks the file.
+    """
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    keep = report["detailKeeper"]
+    assert keep["configured"] == 8
+    assert keep["atStart"] == 8
+    assert keep["afterRichardson"] == 8          # not the preset's 4
+    assert keep["afterDragThenSwitch"] == 3      # the reader's, not ours
+
+
+def test_the_style_panel_keeps_four_controls_and_folds_the_rest(tmp_path):
+    """src/parts/panel.js builds this panel from ONE table of rows shared with
+    py2dmol.solab.org -- its own header calls it "ONE PANEL, TWO SKINS" -- so
+    the website does not expose fewer controls and there is no simpler set to
+    borrow. What differs is the room: the site is a wide sidebar, ours floats
+    over the canvas, and seventeen controls there read as clutter.
+
+    So the four a reader of a bundle has a question for stay out front, and
+    the rest fold into a closed <details>. NOTHING IS REMOVED: the assertion
+    is that front plus folded is still every control, because a fold that
+    dropped a row would look exactly like a fold that worked.
+
+    Whole rows move. parts/ui.js hides per-style controls by setting `hidden`
+    on the row carrying data-style, so a control lifted out of its row would
+    survive into a style that cannot honour it. Detail is the exception and is
+    safe: it is a `.half` with its own data-style, moving into the row that is
+    always visible.
+    """
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    fold = report["styleFold"]
+    assert fold["front"] == ["styleSelect", "detailSlider",
+                             "colorSelect", "selectionMarkSelect"]
+    assert fold["summary"] == "Fine tuning"
+    assert fold["closed"] is True        # no `open` attribute was set
+    assert fold["foldCount"] == 1
+    assert fold["detailIsFront"] is True
+    everything = {
+        "styleSelect", "lineWidthSlider", "outlineWidthSlider", "thicknessSlider",
+        "sheetFlatSlider", "highlightSlider", "shadeSlider", "pencilSlider",
+        "shadowSlider", "outlineTintSlider", "detailSlider", "orthoSlider",
+        "colorSelect", "selectionMarkSelect", "cartoonArrowsToggle", "basePlatesToggle",
+    }
+    # ...plus the one control the panel does not ship: which painter draws.
+    # parts/ui.js leaves it out because a notebook build carries one painter
+    # and the flag would ask for a file that is absent; a bundle carries both,
+    # and the two do not draw a close-up side chain the same way.
+    assert set(fold["front"]) | set(fold["folded"]) == everything | {"pinsp-gpu"}
+    assert not set(fold["front"]) & set(fold["folded"])
+    assert "pinsp-gpu" in fold["folded"]
+    assert fold["gpuBefore"] is True
+    assert fold["gpuAfterOff"] is False
+    assert fold["gpuAfterOn"] is True
+    assert fold["invalidated"] == 1      # the mesh is dropped, not reused
+
+
+def test_a_layer_is_a_selection_so_the_tools_can_act_on_it(tmp_path):
+    """The tools act on a selection and a layer is already a named set of
+    residues, so the two halves of the page were not connected: side chains
+    could only be drawn for residues picked one at a time, and the interesting
+    unit is "this whole epitope".
+
+    `sel` on a row takes one layer, shift adds, and the header's `Select`
+    takes every TICKED layer -- the same visibility the structure is painted
+    from, so what gets selected is what is on screen.
+    """
+    report = _run_dom_harness(_sequence_bundle(tmp_path), _SEQUENCE_SPEC)
+    pick = report["layerSelect"]
+    # layer-a is residue 2 (position 1), layer-b residue 5 (position 4).
+    assert pick["one"] == [1]
+    assert pick["marked"] == [1]
+    assert pick["readout"].startswith("A 2")
+    assert pick["replaced"] == [4]              # a plain click replaces
+    assert pick["added"] == [1, 4]              # shift adds
+    assert pick["allVisible"] == [1, 4]
+    assert pick["visibleAfterUntick"] == [4]    # an unticked layer is not in it
+    # ...and that is the set the one Side chains button then draws.
+    assert pick["sidechainsForLayers"] == [1, 4]
+
+    text = Path(_sequence_bundle(tmp_path)).read_text()
+    assert 'data-select="layer-a"' in text
+    assert 'id="pinsp-layers-select"' in text
+
+
+def test_a_morph_carries_its_side_chains_one_rotamer_set_per_state(tmp_path):
+    """The conformer path builds its frames from Cα coordinates, so the Side
+    chains button was dead on exactly the bundles most worth interrogating.
+
+    It works because the browser's table is not world-space: each atom is
+    three coefficients in its residue's own backbone frame, rebuilt from the
+    final positions at draw time, and `parts/ui.js` builds a SEPARATE table
+    per frame -- so one row set per conformer gives each state its own
+    rotamers, and the interpolation buffer borrows the table of the state it
+    is leaving.
+
+    The fit has to be applied to the atoms: a conformer's frame holds its
+    Kabsch-fitted trace while its file holds the original coordinates, and
+    measuring a side chain against a backbone that has rotated out from under
+    it puts it in the wrong place.
+    """
+    cif = tmp_path / "ref.cif"
+    _atom_fixture(cif, n=8)
+    other = tmp_path / "conf1.cif"
+    _atom_fixture(other, n=8)
+    # Rotate the conformer bodily: the superposition removes it, so the fitted
+    # trace and the file's own coordinates are genuinely different frames --
+    # which is what makes the transform load-bearing rather than decorative.
+    import gemmi
+    st = gemmi.read_structure(str(other))
+    rot = gemmi.Mat33([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    for model in st:
+        for chain in model:
+            for res in chain:
+                for atom in res:
+                    v = rot.multiply(atom.pos)
+                    atom.pos = gemmi.Position(v.x + 17.0, v.y - 9.0, v.z + 4.0)
+    st.setup_entities()
+    st.make_mmcif_document().write_file(str(other))
+
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "out"), extras=True,
+        conformers=[{"path": str(other), "label": "rotated"}],
+        morph_mapping="exact", morph_reference_label="start")
+    state = json.loads(Path(next(i["path"] for i in result["artifacts"]
+                                 if i["kind"] == "viewer_state")).read_text())
+    assert state["sidechains"] is True
+    frames = state["viewer"]["objects"][0]["frames"]
+    assert len(frames) == 2
+    # One row per residue with a side chain, in BOTH frames -- not inherited.
+    for frame in frames:
+        rows = frame["sidechain_atoms"]
+        assert len(rows) == 8
+        assert [row[0] for row in rows] == list(range(8))
+        assert all(row[2] and row[2][0][0] == "CB" for row in rows)
+    # THE FIT IS APPLIED. The conformer was rotated bodily and superposed
+    # back, so its stored side-chain atoms must sit near its stored trace --
+    # measured against the raw file they would be a whole rigid transform
+    # away. Each CB is a known 1.5 A off its own CA in the fixture.
+    import numpy as np
+    for frame in frames:
+        trace = np.asarray(frame["coords"], dtype=float)
+        for row in frame["sidechain_atoms"]:
+            cb = np.asarray(row[2][0][1:4], dtype=float)
+            assert float(np.linalg.norm(cb - trace[row[0]])) < 2.0
+
+    # ...and the page hands the animation buffer the table of the state it is
+    # leaving, rather than always the reference's.
+    html = Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html"))
+    assert "buf.sidechains=from.sidechains" in html.read_text()
 
 
 def test_the_conformation_ring_wraps_instead_of_running_off_the_stage(tmp_path):
