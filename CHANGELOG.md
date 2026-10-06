@@ -4,6 +4,34 @@
 
 ### Added
 
+**The other protomers wear the annotation, and the button names what is on
+screen.** Two things a homo-oligomeric target got wrong, both of them the
+same mistake: treating a copy of the target as if it were a stranger.
+
+- **`layers_on_partners`**, default `"auto"`. A trimer is one target
+  presenting the same site three times, but the layers were painted only on
+  the chain the analysis named, leaving the reader to work out that the grey
+  subunits carry the same epitope. `"auto"` paints the copies and only the
+  copies: a partner qualifies when it shares most of the target's author
+  residue numbers and agrees on the residue name at essentially all of them
+  (and there are at least ten — two copies of a tetrapeptide are not
+  evidence). A receptor, a Fab or a ligand chain in the same file fails that
+  test and keeps its own colour, which is the point: painting an epitope onto
+  a receptor would be a claim nobody made. `True` paints every partner chain,
+  for numbering you have made equivalent yourself; `False` is the old
+  behaviour. The chains actually painted come back as
+  `report["partners"]["painted"]`, and `read_inspection_bundle` mirrors the
+  rows the same way, so the read-back still reports what the reader sees
+  rather than what the manifest said. A residue missing from one copy is
+  skipped rather than raised on — a crystal models a loop in one subunit and
+  not the next.
+- **A partner label per conformation.** `partner_label` was one string for
+  the whole bundle, so a morph between an apo trimer and a receptor complex
+  had a button reading "other protomers" over a receptor — a caption
+  contradicting its own picture. A conformer may now carry its own
+  `"partner_label"`; the page swaps the button's text with the state and
+  falls back to the global label for any state that did not name one.
+
 **A sequence strip, a clickable structure, and selections made from
 selections** (`protein-inspector-1.14`). Three things a reader of a bundle
 could not do, all of which are the same question — *this residue, and the ones

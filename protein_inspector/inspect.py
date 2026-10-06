@@ -118,15 +118,26 @@ def inspect_structure(structure, layers=None, out="inspection.html", chain=None,
                       about=None, conformers=None, reference_label="reference",
                       morph_mapping="intersection", morph_steps=12,
                       partner_chains=None, partner_label="partners",
+                      layers_on_partners="auto",
                       highlight="color", display=None, extras=False):
     """Render one self-contained annotated HTML bundle. Returns the render report.
 
-    `conformers` is a list of {"path", "label"?} — any number. Only the
-    endpoints are written to the file; the page interpolates between them.
+    `conformers` is a list of {"path", "label"?, "partner_chains"?,
+    "partner_label"?} — any number. Only the endpoints are written to the
+    file; the page interpolates between them.
 
     `partner_chains` names chains in the SAME file that are binding partners
     rather than the target; they get a Show-partners toggle and are excluded
-    from the morph residue mapping.
+    from the morph residue mapping. The toggle is named by `partner_label`,
+    or by the conformer's own `partner_label` while that state is on screen —
+    use it when the states carry different partners ("other protomers" in the
+    apo trimer, "TNFR1" in the bound one).
+
+    `layers_on_partners` repeats the layer colours onto partner chains that
+    are COPIES of the target: "auto" (default) detects them by sequence, so a
+    homo-oligomer is painted on every subunit and a receptor or Fab is not,
+    True takes every partner chain, False keeps the colours on the annotated
+    chain alone. The painted chains come back as report["partners"]["painted"].
     """
     import hashlib
     out_dir = os.path.dirname(os.path.abspath(out)) or "."
@@ -136,7 +147,8 @@ def inspect_structure(structure, layers=None, out="inspection.html", chain=None,
     prepared = None
     if conformers:
         prepared = [{"path": to_mmcif(c["path"], out_dir), "label": c.get("label"),
-                     "partner_chains": list(c.get("partner_chains") or ()) or None}
+                     "partner_chains": list(c.get("partner_chains") or ()) or None,
+                     "partner_label": c.get("partner_label")}
                     for c in conformers]
     report = render_inspection_bundle(
         mmcif_path=cif,
@@ -150,6 +162,7 @@ def inspect_structure(structure, layers=None, out="inspection.html", chain=None,
         morph_reference_label=reference_label,
         partner_chains=list(partner_chains) if partner_chains else None,
         partner_label=partner_label,
+        layers_on_partners=layers_on_partners,
         morph_steps=morph_steps,
         extras=extras,
     )

@@ -74,6 +74,22 @@ skipped, and silently if you don't look.
 **Partner chains.** Anything in the same file that isn't the target —
 `partner_chains=["B", "C"]` — gets one toggle button. Any chain: a bound
 antibody, a ligand-bearing chain, the other half of a dimer, a docked design.
+`partner_label=` names the button, and a conformer may carry its own
+`"partner_label"` beside its `"partner_chains"` — use it whenever the states
+hold different things, so the apo trimer says `other protomers` and the bound
+state says `TNFR1` instead of one word captioning both.
+
+**A homo-oligomer is one target.** Your analysis names one chain, but the
+other protomers are the same molecule presenting the same site, so by default
+the layers are painted on them too: `layers_on_partners="auto"` detects
+copies by sequence, which means a trimer comes out annotated on all three
+subunits and a receptor or Fab in the same file does not. The toggle still
+hides them — they are partners — they just wear the colours while they are on
+screen. `True` paints every partner chain regardless (for numbering you have
+made equivalent yourself), `False` keeps the colours on the annotated chain
+alone. Check `report["partners"]["painted"]`; `inspection_table` lists the
+copies' residues under the same layers, so the read-back still matches what
+the reader sees.
 
 **Conformations — show them when you have them.** This is the feature that does
 the most for a reader and the one most often left unused. One conformation

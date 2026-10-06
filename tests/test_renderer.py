@@ -1666,3 +1666,125 @@ def test_the_partners_button_is_not_swept_into_the_conformation_ring(tmp_path):
     # The partners button carries no data-conf, which is what excludes it.
     partners_tag = text.split('id="pinsp-partners"')[0].rsplit("<button", 1)[1]
     assert "data-conf" not in partners_tag
+
+
+_SUBUNIT = ["ALA", "GLY", "SER", "VAL", "LEU", "THR", "ILE", "PRO", "GLU", "LYS",
+            "ASP", "ARG"]
+_RECEPTOR = ["TRP", "TYR", "PHE", "HIS", "CYS", "MET", "ASN", "GLN", "TRP", "TYR",
+             "PHE", "HIS"]
+
+
+def _oligomer_cif(path, sequences):
+    """One file, one chain per {chain_id: [resname, ...]} entry, laid side by side."""
+    structure = Structure.Structure("fixture")
+    model = Model.Model(0)
+    for offset, (chain_id, sequence) in enumerate(sequences.items()):
+        chain = Chain.Chain(chain_id)
+        for index, resname in enumerate(sequence, start=1):
+            residue = Residue.Residue((" ", index, " "), resname, " ")
+            residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2) + 15.0 * offset,
+                                         0.0), 0.0, 1.0, " ", "CA", index, element="C"))
+            chain.add(residue)
+        model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    io.save(str(path))
+    return path
+
+
+def _oligomer_bundle(tmp_path, sequences, partner_chains, **kwargs):
+    """One annotation on chain A of a multi-chain file, rendered with partners."""
+    cif = _oligomer_cif(tmp_path / "oligomer.cif", sequences)
+    manifest = {
+        "schema_version": "protein-inspector-manifest-1",
+        "annotations": [
+            {"annotation_id": "site", "kind": "custom", "label": "Epitope",
+             "layer_id": "epitope", "layer_label": "Epitope", "color": "#16a34a",
+             "residue": {"component_id": "target", "canonical_position": 3,
+                         "chain_id": "A", "author_residue_number": 3},
+             "resolved": True, "evidence_ids": [], "method": "model"},
+        ],
+    }
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest=manifest, output_dir=str(tmp_path / "out"),
+        partner_chains=partner_chains, partner_label="other protomers",
+        **kwargs)
+    html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
+    return result, Path(html)
+
+
+def test_a_homo_oligomer_wears_the_annotation_on_every_copy(tmp_path):
+    """Three protomers are one target presenting the same site three times."""
+    result, html = _oligomer_bundle(
+        tmp_path, {"A": _SUBUNIT, "B": _SUBUNIT, "C": _SUBUNIT}, ["B", "C"])
+    assert result["partners"]["painted"] == ["B", "C"]
+    painted = {(row["chain_id"], row["author_residue_number"]): row
+               for row in read_inspection_bundle(str(html))["residues"]
+               if row["layers"]}
+    # The analysis named chain A alone; the reader sees the site on all three.
+    assert sorted(painted) == [("A", 3), ("B", 3), ("C", 3)]
+    assert {row["color"] for row in painted.values()} == {"#16a34a"}
+    assert {tuple(row["layers"]) for row in painted.values()} == {("epitope",)}
+
+
+def test_a_binding_partner_is_not_painted_with_the_targets_epitope(tmp_path):
+    """A receptor is not a copy of the target, so it keeps its own colour."""
+    result, html = _oligomer_bundle(
+        tmp_path, {"A": _SUBUNIT, "R": _RECEPTOR}, ["R"])
+    assert result["partners"]["painted"] is None
+    coloured = {row["chain_id"] for row in read_inspection_bundle(str(html))["residues"]
+                if row["layers"]}
+    assert coloured == {"A"}
+
+
+def test_painting_the_copies_can_be_forced_and_refused(tmp_path):
+    """`auto` decides by sequence; True and False take the decision back."""
+    one, two = tmp_path / "forced", tmp_path / "refused"
+    one.mkdir()
+    two.mkdir()
+    forced, _ = _oligomer_bundle(one, {"A": _SUBUNIT, "R": _RECEPTOR},
+                                 ["R"], layers_on_partners=True)
+    assert forced["partners"]["painted"] == ["R"]
+    refused, _ = _oligomer_bundle(two, {"A": _SUBUNIT, "B": _SUBUNIT}, ["B"],
+                                  layers_on_partners=False)
+    assert refused["partners"]["painted"] is None
+
+
+def test_the_partner_button_is_named_by_the_conformation_on_screen(tmp_path):
+    """A bound receptor captioned 'other protomers' contradicts its own picture."""
+    apo = _oligomer_cif(tmp_path / "apo.cif", {"A": _SUBUNIT, "B": _SUBUNIT})
+    bound = _oligomer_cif(tmp_path / "bound.cif", {"A": _SUBUNIT, "R": _RECEPTOR})
+    result = render_inspection_bundle(
+        mmcif_path=str(apo), mmcif_sha256=hashlib.sha256(apo.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "out"),
+        partner_chains=["B"], partner_label="other protomers",
+        conformers=[{"path": str(bound), "label": "Bound", "partner_chains": ["R"],
+                     "partner_label": "receptor"}],
+        morph_mapping="exact", morph_steps=6)
+    assert result["partners"]["labels"] == {"0": "other protomers", "1": "receptor"}
+    html = Path(next(item["path"] for item in result["artifacts"]
+                     if item["kind"] == "html")).read_text()
+    # The button opens on the reference's word for its partners and is renamed
+    # from the same map as the conformation changes.
+    assert '>other protomers</button>' in html
+    assert "function partnerLabelAt(" in html
+    assert "btn.textContent=name" in html
+
+
+def test_a_conformer_without_its_own_label_keeps_the_global_one(tmp_path):
+    """Naming one state must not leave the others anonymous."""
+    apo = _oligomer_cif(tmp_path / "apo.cif", {"A": _SUBUNIT, "B": _SUBUNIT})
+    bound = _oligomer_cif(tmp_path / "bound.cif", {"A": _SUBUNIT, "R": _RECEPTOR})
+    result = render_inspection_bundle(
+        mmcif_path=str(apo), mmcif_sha256=hashlib.sha256(apo.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "out"),
+        partner_chains=["B"], partner_label="partners",
+        conformers=[{"path": str(bound), "label": "Bound", "partner_chains": ["R"]}],
+        morph_mapping="exact", morph_steps=6)
+    assert result["partners"]["labels"] == {"0": "partners", "1": "partners"}

@@ -249,8 +249,18 @@ def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: list[dict[str, Any]],
-                       base_color: str = BASE_COLOR, paint_base: bool = True) -> None:
+                       base_color: str = BASE_COLOR, paint_base: bool = True,
+                       mirror_chains: list[str] | None = None) -> None:
     """Paint a neutral base over the whole chain, then each layer on top.
+
+    `mirror_chains` repeats every layer onto chains that are COPIES of the
+    annotated one -- the other protomers of a homo-oligomer. An annotation
+    names one chain because that is where the analysis ran, but a trimer's
+    three subunits are one target presenting the same site three times, and
+    painting one of them makes the reader hunt for the other two. A residue
+    missing from a copy is skipped rather than raised on: a crystal often
+    models a loop in one subunit and not the next, and that is not an error
+    in the annotation.
 
     The base is painted EXPLICITLY rather than left to the viewer's colour
     mode. py2Dmol's mode list is {auto, chain, rainbow, plddt, deepmind,
@@ -289,8 +299,58 @@ def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: l
             if not matched:
                 raise ValueError(f"resolved annotation {annotation_id} does not match a residue in the mmCIF")
             indices.extend(matched)
+            for copy in mirror_chains or ():
+                indices.extend(positions.get((str(copy), int(residue["author_residue_number"])), []))
         if indices:
             viewer.set_color(layer["color"], position=indices)
+
+
+def _partner_copies(frame: dict[str, Any], partner_chains: set[str],
+                    mode: bool | str = "auto") -> list[str]:
+    """Which partner chains are copies of the annotated target, by sequence.
+
+    A homo-oligomer is one target wearing several chain letters, so a layer
+    computed on chain A is a fact about chains B and C too. A receptor, a Fab
+    or a ligand-bearing chain is not, and painting an epitope onto it would be
+    a claim nobody made. The two cases are told apart here rather than asked
+    of the caller: a partner counts as a copy when it shares most of the
+    target's author residue numbers AND agrees with it on the residue name at
+    essentially all of them.
+
+    `mode="auto"` applies that test, `True` takes every partner chain
+    whatever it is (for numbering you have made equivalent yourself), and
+    `False` returns nothing. Chains are reported under the names they carry
+    in the rendered object, which is what `_color_annotations` addresses and
+    what a collision may have renamed.
+    """
+    if mode is False or not partner_chains:
+        return []
+    chains = [str(c) for c in (frame.get("chains") or [])]
+    numbers = [int(n) for n in (frame.get("residue_numbers") or [])]
+    if mode is True:
+        return sorted({c for c in chains if c in partner_chains})
+    names = list(frame.get("position_names") or [])
+    if len(names) != len(chains):
+        # Nothing to compare: a copy cannot be told from a binding partner,
+        # and guessing here would paint a receptor with the target's epitope.
+        return []
+    residues: dict[str, dict[int, str]] = {}
+    for chain, number, name in zip(chains, numbers, names):
+        residues.setdefault(chain, {})[number] = str(name)
+    targets = [c for c in residues if c not in partner_chains]
+    copies = []
+    for partner in sorted(c for c in residues if c in partner_chains):
+        other = residues[partner]
+        for target in targets:
+            ref = residues[target]
+            shared = set(ref) & set(other)
+            if len(shared) < 10 or len(shared) < 0.8 * len(ref):
+                continue
+            agree = sum(1 for n in shared if ref[n] == other[n])
+            if agree >= 0.95 * len(shared):
+                copies.append(partner)
+                break
+    return copies
 
 
 def _trace(cif_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
@@ -1783,12 +1843,21 @@ function hasPartnersHere(){
   if(!partners)return false;
   for(var c in partners.owner)if(partners.owner[c]===morphAt)return true;
   return false;}
+// THE BUTTON NAMES WHAT IS ON SCREEN. Partners belong to a state, so the
+// word for them does too: the apo trimer's are other protomers, the bound
+// state's is a receptor. `labels` carries one per conformation; the global
+// label is the fallback for a state that did not name its own.
+function partnerLabelAt(st){
+  var m=partners&&partners.labels;
+  if(m){var v=m[String(st)];if(v)return v;}
+  return (partners&&partners.label)||'partners';}
 function syncPartnerButton(){
   var btn=document.getElementById('pinsp-partners');if(!btn||!partners)return;
-  var here=hasPartnersHere();
+  var here=hasPartnersHere(),name=partnerLabelAt(morphAt);
   btn.disabled=!here;
+  if(here)btn.textContent=name;
   btn.setAttribute('aria-pressed',String(!!(here&&partnersOn)));
-  btn.title=here?(partnersOn?'Hide ':'Show ')+(partners.label||'partners')
+  btn.title=here?(partnersOn?'Hide ':'Show ')+name
     :'No partners in this conformation';}
 var partnerBtn=document.getElementById('pinsp-partners');
 if(partnerBtn)partnerBtn.addEventListener('click',function(){
@@ -1961,8 +2030,12 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
     partners = state.get("partners") or {}
     partnerbar = ""
     if partners.get("owner"):
+        # The opening state is the reference, so the button opens wearing the
+        # reference's word for its partners; syncPartnerButton swaps it with
+        # the conformation from there.
+        opening = (partners.get("labels") or {}).get("0") or partners.get("label") or "Partners"
         partnerbar = ('<button type="button" class="bm-btn bm-solo" id="pinsp-partners" '
-                      f'aria-pressed="true">{html.escape(partners.get("label") or "Partners")}'
+                      f'aria-pressed="true">{html.escape(opening)}'
                       '</button>')
 
     morph = state.get("morph") or {}
@@ -2135,6 +2208,7 @@ def render_inspection_bundle(
     conformers: list[dict[str, Any]] | None = None,
     partner_chains: list[str] | None = None,
     partner_label: str = "Partners",
+    layers_on_partners: bool | str = "auto",
     morph_mapping: str = "exact",
     morph_reference_label: str = "reference",
     morph_to: list[dict[str, Any]] | None = None,
@@ -2337,7 +2411,17 @@ def render_inspection_bundle(
                            "n_positions": len(extra)})
         if blocks:
             morph_report["partner_blocks"] = blocks
+            # ONE LABEL PER STATE. The button names what is on screen, and
+            # what is on screen changes with the conformation: the apo trimer
+            # shows its other protomers, the bound state shows a receptor.
+            # One global string made the button say "other protomers" over a
+            # receptor, which is a caption contradicting its own picture.
+            per_state = {0: partner_label}
+            for index, entry in enumerate(conformers, start=1):
+                per_state[index] = entry.get("partner_label") or partner_label
             partner_state = {"label": partner_label, "owner": owner,
+                             "labels": {str(k): v for k, v in per_state.items()
+                                        if k in set(owner.values())},
                              "per_conformer": True}
         # ONE SIDE-CHAIN ROW SET PER CONFORMATION. `add_pdb` gets these for
         # free; this path builds its frames from Cα coordinates, so without
@@ -2415,15 +2499,26 @@ def render_inspection_bundle(
             # state there is. Same button, same visibility patch.
             partner_state = {"label": partner_label,
                              "owner": {chain: 0 for chain in partner_chains},
+                             "labels": {"0": partner_label},
                              "per_conformer": False}
     if not any(item.get("frames") for item in viewer.objects):
         raise ValueError("py2Dmol could not load a renderable structure")
     layers = _layers(manifest["annotations"])
     highlight = manifest.get("highlight", "color")
+    # THE OTHER PROTOMERS WEAR THE ANNOTATION TOO. A copy of the target is
+    # the target: hiding it is still one button, but while it is on screen it
+    # carries the same colours rather than sitting next to them in grey.
+    mirror_chains: list[str] = []
+    if partner_state:
+        mirror_chains = _partner_copies(viewer.objects[-1]["frames"][0],
+                                        set(partner_state["owner"]),
+                                        layers_on_partners)
+        partner_state["painted"] = mirror_chains or None
     if highlight == "color":
         _color_annotations(viewer, manifest["annotations"], layers,
                            base_color=manifest.get("base_color", BASE_COLOR),
-                           paint_base=manifest.get("base_mode", "chain") == "custom")
+                           paint_base=manifest.get("base_mode", "chain") == "custom",
+                           mirror_chains=mirror_chains)
     # WHETHER THE ATOMS ARE ACTUALLY IN THE FILE, which is not the same as
     # whether they were asked for: the conformer and morph paths build their
     # frames from Cα coordinates, so there is nothing to capture there however
@@ -2480,6 +2575,10 @@ def render_inspection_bundle(
         "annotation_count": len(state["annotations"]),
         "about_tabs": [item["title"] for item in state.get("about") or []],
         "morph": morph_report,
+        "partners": ({"labels": partner_state.get("labels"),
+                      "chains": sorted(partner_state["owner"]),
+                      "painted": partner_state.get("painted")}
+                     if partner_state else None),
         "artifacts": artifacts,
     }
     html_bytes = html_path.stat().st_size
@@ -2540,6 +2639,20 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
         slot["labels"].append(item["label"])
         if item.get("color"):
             slot["color"] = item["color"]      # last layer wins, as on screen
+
+    # A COPY WEARS THE ANNOTATION IT WAS PAINTED WITH. The annotations name
+    # one chain, but `layers_on_partners` may have painted the same colours
+    # onto the other protomers of a homo-oligomer, and this table is meant to
+    # report what the reader sees rather than what the manifest said. Mirror
+    # the rows the same way the colour pass did; a residue absent from a copy
+    # simply never appears in the loop below.
+    partners = state.get("partners") or {}
+    owners = set(partners.get("owner") or {})
+    for copy in partners.get("painted") or ():
+        for (chain, number), slot in list(by_residue.items()):
+            if chain in owners:
+                continue
+            by_residue.setdefault((str(copy), number), slot)
 
     frames = (state.get("viewer", {}).get("objects") or [{}])[0].get("frames") or [{}]
     frame = frames[0]

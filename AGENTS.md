@@ -106,6 +106,17 @@ while its own state is on screen. This is enforced, not merely documented: a
 partner solved against one conformation and left draped over another's
 coordinates is a composite passed off as an observation.
 
+It may bring its own `partner_label` too, and should whenever the states hold
+different things — the button is a caption, and one string over an apo trimer
+and a receptor complex is wrong for one of them.
+
+A partner that is a COPY of the target is painted with the target's layers:
+`layers_on_partners="auto"` (the default) tells copies from binding partners
+by sequence, so a homo-oligomer comes out annotated on every subunit while a
+receptor or Fab in the same file keeps its own colour. The copies are still
+partners — the toggle hides them with the rest. `True` paints every partner
+chain, `False` none; `report["partners"]["painted"]` says which it did.
+
 ## Show less than you have
 
 A bundle with every layer you could compute is a legend with a structure
