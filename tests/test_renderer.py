@@ -1890,3 +1890,110 @@ def test_drawn_atoms_are_not_sequence(tmp_path):
     assert report["seq"]["chainLabels"] == ["A"]
     assert "*" not in report["seq"]["letters"]
     assert report["selectAll"]["selection"] == list(range(12))
+
+
+# --- the tube's element colours ---------------------------------------------
+#
+# WHY THESE RUN THE JS RATHER THAN A PICTURE. The tube's GPU path bakes a
+# colour per capsule into an instance buffer - there is no palette texture on
+# that path to hold a second entry - so element colouring is GEOMETRY there: a
+# bond whose two atoms differ is cut at its middle into two instances. That is
+# arithmetic over plain objects, and the only thing in buildTube that needs a
+# GL context is the upload at the end, which these stub. The alternative is a
+# browser with WebGL, which the suite does not have.
+def _tube_builder():
+    """buildTube, lifted out of the painter and given the handful of module
+    names it reads. Extracted rather than imported because the file is one
+    IIFE and the function is not part of its public surface."""
+    quickjs = pytest.importorskip("quickjs", reason="QuickJS runs the real painter")
+    path = Path(__file__).resolve().parent.parent / "src" / "cartoon" / "paintgl.js"
+    if not path.exists():
+        pytest.skip("source tree not present (installed without src/)")
+    text = path.read_text(encoding="utf-8")
+    start = text.index("function buildTube(renderer, S) {")
+    depth = 0
+    end = start
+    while True:
+        if text[end] == "{":
+            depth += 1
+        elif text[end] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        end += 1
+    ctx = quickjs.Context()
+    ctx.eval("""
+        var gl = {}, tubeTouch = null, tubeClaim = null, tubeData = null;
+        var TUBE_FLOATS = 15, TUBE_AO_DENSITY = 0.1, window = {};
+        var captured = null;
+        function activateTube(m) { captured = m; return m.count > 0; }
+    """)
+    ctx.eval(text[start:end + 1])
+    ctx.eval("""
+        function buildAndRead(bonds, halves) {
+            var co = [], segments = [], colors = [];
+            for (var i = 0; i < bonds.length + 1; i++) co.push({x: i * 1.5, y: 0, z: 0});
+            for (var i = 0; i < bonds.length; i++) {
+                segments.push({idx1: bonds[i][0], idx2: bonds[i][1], type: 'L'});
+                colors.push({r: 200, g: 200, b: 200});
+            }
+            if (halves) colors.halves = halves;
+            var order = [];
+            for (var i = 0; i < bonds.length; i++) order.push(i);
+            captured = null;
+            buildTube({coords: co, lineWidth: 1.0, cartoonJointCaps: true,
+                       viewerState: {}, objectsData: {}},
+                      {order: order, count: bonds.length, segments: segments,
+                       colors: colors, segData: colors.map(function () { return null; }),
+                       renderShadows: false});
+            var rows = [];
+            for (var k = 0; k < captured.count; k++) {
+                var b = k * TUBE_FLOATS, d = captured.data;
+                rows.push({x0: d[b], x1: d[b + 3], col: [d[b + 7], d[b + 8], d[b + 9]],
+                           capA: d[b + 10], capB: d[b + 11],
+                           ballA: d[b + 13], ballB: d[b + 14]});
+            }
+            return JSON.stringify({count: captured.count, cuts: window.__tubeCuts,
+                                   rows: rows});
+        }
+    """)
+    return lambda bonds, halves=None: json.loads(
+        ctx.eval(f"buildAndRead({json.dumps(bonds)}, {json.dumps(halves)})"))
+
+
+def test_an_element_coloured_bond_is_cut_in_two_in_the_tube():
+    build = _tube_builder()
+    grey = {"r": 200, "g": 200, "b": 200}
+    red = {"r": 255, "g": 76, "b": 76}
+    bonds = [[0, 1], [1, 2]]
+    plain = build(bonds)
+    assert plain["count"] == 2 and plain["cuts"] == 0
+    cut = build(bonds, [None, {"a": grey, "b": red}])
+    # the carbon-carbon bond is one instance, the carbon-oxygen bond is two
+    assert cut["count"] == 3 and cut["cuts"] == 1
+    halves = cut["rows"][1:]
+    assert [h["col"] for h in halves] == [[200, 200, 200], [255, 76, 76]]
+    # ...meeting at the middle of the bond, and butt cut there: a round outline
+    # cap at the join would print an arc across the middle of a stick
+    assert halves[0]["x1"] == pytest.approx(halves[1]["x0"])
+    assert halves[0]["x1"] == pytest.approx((halves[0]["x0"] + halves[1]["x1"]) / 2)
+    assert (halves[0]["capB"], halves[1]["capA"]) == (0, 0)
+    # ...and the far end is still a free end
+    assert halves[1]["capB"] == 1
+
+
+def test_the_ball_at_a_heteroatom_wears_the_elements_colour():
+    build = _tube_builder()
+    grey = {"r": 200, "g": 200, "b": 200}
+    red = {"r": 255, "g": 76, "b": 76}
+    packed = lambda c: c["r"] * 65536 + c["g"] * 256 + c["b"]
+    # C-O-C: both bonds are cut, and the atom they share is the oxygen
+    out = build([[0, 1], [1, 2]], [{"a": grey, "b": red}, {"a": red, "b": grey}])
+    assert out["count"] == 4 and out["cuts"] == 2
+    arriving, leaving = out["rows"][1], out["rows"][2]
+    assert arriving["col"] == [255, 76, 76] and leaving["col"] == [255, 76, 76]
+    # BOTH surfaces at the shared atom paint its ball the same colour, or the
+    # depth buffer's pick between them shows up as a seam - and the colour is
+    # the shared atom's own, not the far end of whichever bond owns the joint.
+    assert arriving["ballB"] == packed(red)
+    assert leaving["ballA"] == packed(red)

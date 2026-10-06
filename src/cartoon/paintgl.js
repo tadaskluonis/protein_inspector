@@ -5610,10 +5610,22 @@ function colourKeyOf(colors) {
     let d = colourDigests.get(colors);
     if (d === undefined) {
         let a = colors.length >>> 0;
+        // ...AND THE HALF-BOND TABLE, because element colouring is geometry
+        // here: a cut bond is two instances (see buildTube), so a list with
+        // the same segment colours and different halves is a different
+        // buffer. Left out, switching element colours on changed nothing on
+        // screen - the key matched and the build was skipped.
+        const hv = colors.halves || null;
         for (let i = 0; i < colors.length; i++) {
             const c = colors[i];
             if (!c) { a = (a * 31 + 7) >>> 0; continue; }
             a = (Math.imul(a, 16777619) ^ (((c.r | 0) << 16) | ((c.g | 0) << 8) | (c.b | 0))) >>> 0;
+            const h = hv && hv[i];
+            if (!h) continue;
+            for (const e of [h.a, h.b]) {
+                a = (Math.imul(a, 16777619) ^ (e
+                    ? (((e.r | 0) << 16) | ((e.g | 0) << 8) | (e.b | 0)) : 1)) >>> 0;
+            }
         }
         d = 'c' + colors.length + ':' + a.toString(36);
         colourDigests.set(colors, d);
@@ -5750,19 +5762,78 @@ function buildTube(renderer, S) {
         if (!sg2 || sg2.idx1 === undefined || sg2.type === 'C') continue;
         if (touch[sg2.idx2] > 1 && claim[sg2.idx2] === 0) claim[sg2.idx2] = k + 1;
     }
-    // EACH SEGMENT'S FINAL COLOUR AND WHERE ITS INSTANCE LANDED, so a joint can
-    // be given one colour after the fact. Both are per k, and the emit skips
-    // some segments, so the slot is not the loop index.
-    const colOf = new Float64Array(cnt);
-    const slotOf = new Int32Array(cnt).fill(-1);
+    // EACH SEGMENT'S FINAL COLOUR AT EACH END AND WHERE ITS INSTANCE LANDED, so
+    // a joint can be given one colour after the fact. Both are per k, and the
+    // emit skips some segments, so the slot is not the loop index.
+    //
+    // PER END, because a bond whose two atoms are different elements is CUT at
+    // its middle into two instances and the halves have different colours. The
+    // ball at a shared atom then has to take the colour of the half that
+    // touches THAT atom, which is what makes a side chain's joints read as the
+    // elements they are.
+    const colOfA = new Float64Array(cnt);
+    const colOfB = new Float64Array(cnt);
+    const slotOfA = new Int32Array(cnt).fill(-1);
+    const slotOfB = new Int32Array(cnt).fill(-1);
+    // WHICH BONDS ARE CUT, counted first because each costs a second instance
+    // and the scratch array has to hold them. Both ends must have a colour or
+    // there is nothing to cut - the same rule the 2D geometry applies in
+    // stickBox (see cartoon/geom.js), and the halves ride on the colour array
+    // for the same reason they do there.
+    const halves = (S.colors && S.colors.halves) || null;
+    let cuts = 0;
+    if (halves) {
+        for (let k = 0; k < cnt; k++) {
+            const hv = halves[order[k]];
+            if (hv && hv.a && hv.b) cuts++;
+        }
+    }
     // REUSED. At 30,000 segments this is a 1.5 MB allocation, and it was being
     // made every frame to hold bytes that had not changed.
-    const need = cnt * TUBE_FLOATS;
+    const need = (cnt + cuts) * TUBE_FLOATS;
     if (!tubeData || tubeData.length < need) tubeData = new Float32Array(need);
     const data = tubeData;
     let o = 0;
     let count = 0;
     let rad = 0;
+    // ONE INSTANCE, and the only place the fifteen floats are written: two
+    // model-space endpoints, a radius in Angstrom, a colour, the two cap marks,
+    // the annotation flag and the two ends' ball colours. It is a function
+    // because a CUT bond writes two of them (see below), and two copies of the
+    // layout is how the two would drift apart.
+    const emit = (ax, ay, az, bx, by, bz, radius, col,
+        capA, capB, flat, ballA, ballB) => {
+        data[o++] = ax; data[o++] = ay; data[o++] = az;
+        data[o++] = bx; data[o++] = by; data[o++] = bz;
+        data[o++] = radius;                             // radius, Angstrom
+        data[o++] = col[0]; data[o++] = col[1]; data[o++] = col[2];
+        data[o++] = capA;
+        data[o++] = capB;
+        data[o++] = flat ? 1 : 0;                       // annotation: no shading
+        data[o++] = ballA;
+        data[o++] = ballB;
+        return count++;
+    };
+    // A COLOUR THROUGH THE OCCLUSION SHADING, 0..255 out: a contact stays
+    // bright and flat, everything else is tinted toward white by the occlusion
+    // it sits under and then multiplied down by it. One function rather than
+    // the arithmetic inline, so a HALF colour goes through exactly what the
+    // segment's own colour goes through - the alternative was the two drifting
+    // and a cut bond's halves shading differently from the bond beside it.
+    const tint = (c3, idx2, flat) => {
+        let r = c3.r / 255;
+        let g = c3.g / 255;
+        let b = c3.b / 255;
+        if (!flat && S.renderShadows) {
+            const tf = (0.50 * S.tints[idx2]) / 3;
+            r += (1 - r) * tf; g += (1 - g) * tf; b += (1 - b) * tf;
+            const sf = 0.20 + 0.80 * S.shadows[idx2];
+            r *= sf; g *= sf; b *= sf;
+        }
+        return [r * 255, g * 255, b * 255];
+    };
+    const pack = (c3) => (Math.round(c3[0]) * 65536) + (Math.round(c3[1]) * 256)
+        + Math.round(c3[2]);
     for (let k = 0; k < cnt; k++) {
         const idx = order[k];
         const sg = S.segments[idx];
@@ -5772,26 +5843,13 @@ function buildTube(renderer, S) {
         if (i1 === undefined || i2 === undefined || i1 >= n || i2 >= n) continue;
         const base = S.colors && S.colors[idx];
         if (!base) continue;
-        // THE LOOP'S OWN COLOUR, arrived at the same way: a contact stays bright
-        // and flat, everything else is tinted toward white by the occlusion it
-        // sits under and then multiplied down by it.
-        let r = base.r / 255;
-        let g = base.g / 255;
-        let b = base.b / 255;
-        if (sg.type !== 'C' && S.renderShadows) {
-            const tf = (0.50 * S.tints[idx]) / 3;
-            r += (1 - r) * tf; g += (1 - g) * tf; b += (1 - b) * tf;
-            const sf = 0.20 + 0.80 * S.shadows[idx];
-            r *= sf; g *= sf; b *= sf;
-        }
+        const isC = sg.type === 'C';
+        const body = tint(base, idx, isC);
         const wm = renderer._calculateSegmentWidthMultiplier
             ? renderer._calculateSegmentWidthMultiplier(S.segData && S.segData[idx], sg) : 1;
         const a = co[i1];
         const c2 = co[i2];
-        data[o++] = a.x - cx; data[o++] = a.y - cy; data[o++] = a.z - cz;
-        data[o++] = c2.x - cx; data[o++] = c2.y - cy; data[o++] = c2.z - cz;
-        data[o++] = Math.max(0.02, lw * wm * 0.5);      // radius, Angstrom
-        data[o++] = r * 255; data[o++] = g * 255; data[o++] = b * 255;
+        const radius = Math.max(0.02, lw * wm * 0.5);
         // a free end gets a cap. Written out rather than through a closure
         // built per segment, which is what it was.
         // WHO CARRIES THE CAP AT A JOINT.
@@ -5820,28 +5878,56 @@ function buildTube(renderer, S) {
         // owner with no outline arc, which is what cartoonJointCaps = false
         // asks for. Gating the claim itself on the flag left both sides butt-
         // cut and opened a notch at every bend.
-        const isC = sg.type === 'C';
         const jointOwn = jointCaps ? 2 : 3;
         let cA = 0, cB = 0;
         if (isC || touch[i1] <= 1) cA = 1;
         else if (claim[i1] === k + 1) cA = jointOwn;
         if (isC || touch[i2] <= 1) cB = 1;
         else if (claim[i2] === k + 1) cB = jointOwn;
-        data[o++] = cA;
-        data[o++] = cB;
-        data[o++] = isC ? 1 : 0;                        // annotation: no shading
         // THE BALL COLOUR AT EACH END, its own for now. A joint's two segments
         // are patched to share the owner's below, once every segment's colour
         // has been worked out - the owner may be a segment this loop has not
         // reached yet, and its colour is not simply its palette entry: the
         // occlusion tint above is per segment.
-        const packed = (Math.round(r * 255) * 65536) + (Math.round(g * 255) * 256)
-            + Math.round(b * 255);
-        colOf[k] = packed;
-        slotOf[k] = count;
-        data[o++] = packed;
-        data[o++] = packed;
-        count++;
+        //
+        // WHERE THE TWO ENDS ARE DIFFERENT ELEMENTS, the bond is CUT at its
+        // middle into two instances, each painted from its own end's colour.
+        // The same cut cartoon/geom.js makes in stickBox, and it has to be a
+        // cut here rather than a second colour on one instance because an
+        // instance IS one capsule with one colour - there is no palette
+        // texture on this path to hold a second entry in.
+        //
+        // The two halves are collinear and the same width, so their union is
+        // the capsule that was there before: every fill, every rim and every
+        // depth is unchanged, and the colour boundary the depth buffer places
+        // between them is the mid-circle - which is the boundary the 2D pass
+        // paints. The middle gets cap 0 on both: a butt cut draws no outline
+        // arc, and nothing needs closing where the two are already flush.
+        const hv = halves && halves[idx];
+        const cut = !!(hv && hv.a && hv.b);
+        const colA = cut ? tint(hv.a, idx, isC) : body;
+        const colB = cut ? tint(hv.b, idx, isC) : body;
+        const pkA = pack(colA);
+        const pkB = pack(colB);
+        const ax = a.x - cx; const ay = a.y - cy; const az = a.z - cz;
+        const bx = c2.x - cx; const by = c2.y - cy; const bz = c2.z - cz;
+        if (cut) {
+            const mx = (ax + bx) / 2; const my = (ay + by) / 2;
+            const mz = (az + bz) / 2;
+            // EACH HALF'S MIDDLE BALL IS ITS OWN COLOUR, which makes the
+            // substitution in the fragment shader a no-op there: the ball a
+            // cap-0 end takes is the colour that half is already painted in,
+            // so neither half borrows the other's across the cut.
+            slotOfA[k] = emit(ax, ay, az, mx, my, mz, radius, colA,
+                cA, 0, isC, pkA, pkA);
+            slotOfB[k] = emit(mx, my, mz, bx, by, bz, radius, colB,
+                0, cB, isC, pkB, pkB);
+        } else {
+            slotOfA[k] = slotOfB[k] = emit(ax, ay, az, bx, by, bz, radius, body,
+                cA, cB, isC, pkA, pkB);
+        }
+        colOfA[k] = pkA;
+        colOfB[k] = pkB;
         const dax = a.x - cx; const day = a.y - cy; const daz = a.z - cz;
         const da = dax * dax + day * day + daz * daz;
         if (da > rad) rad = da;
@@ -5853,17 +5939,27 @@ function buildTube(renderer, S) {
     // paint the ball there in the owner's colour, so the depth buffer's choice
     // between their two surfaces stops being visible: there is no colour
     // boundary inside the lens for it to place. See the fragment shader.
+    //
+    // THE OWNER'S COLOUR AT THAT ATOM, not the owner's colour: a cut bond has
+    // two, and the ball takes the one belonging to the end that touches the
+    // shared atom. Taking either one unconditionally put a carbon ball on an
+    // oxygen.
+    const ownCol = (own, at2) => (S.segments[order[own]].idx1 === at2
+        ? colOfA[own] : colOfB[own]);
     for (let k = 0; k < cnt; k++) {
-        const slot = slotOf[k];
-        if (slot < 0) continue;
+        if (slotOfA[k] < 0) continue;
         const sg2 = S.segments[order[k]];
         if (!sg2 || sg2.type === 'C') continue;
-        const at = slot * TUBE_FLOATS;
         const ownA = claim[sg2.idx1] - 1;
         const ownB = claim[sg2.idx2] - 1;
-        if (ownA >= 0 && slotOf[ownA] >= 0) data[at + 13] = colOf[ownA];
-        if (ownB >= 0 && slotOf[ownB] >= 0) data[at + 14] = colOf[ownB];
+        if (ownA >= 0 && slotOfA[ownA] >= 0) {
+            data[slotOfA[k] * TUBE_FLOATS + 13] = ownCol(ownA, sg2.idx1);
+        }
+        if (ownB >= 0 && slotOfA[ownB] >= 0) {
+            data[slotOfB[k] * TUBE_FLOATS + 14] = ownCol(ownB, sg2.idx2);
+        }
     }
+
     rad = Math.sqrt(rad) + 2;    // room for the capsule's own bulge
     // HOW MANY SEGMENTS PER SQUARE ANGSTROM the occlusion pass should assume.
     // Each of its taps stands for a patch of the sampling disc, and what the
@@ -5901,6 +5997,9 @@ function buildTube(renderer, S) {
     // restore that quietly rebuilt would otherwise look identical.
     if (typeof window !== 'undefined') {
         window.__tubeBuilds = (window.__tubeBuilds || 0) + 1;
+        // ...and how many of its bonds were cut for element colouring, which is
+        // the one question a probe cannot answer from the instance count alone.
+        window.__tubeCuts = cuts;
     }
     // ...and everything this build decided goes in as ONE value. `data` is the
     // scratch array and is written over by the next build, so the value takes
