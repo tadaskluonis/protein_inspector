@@ -756,9 +756,20 @@ function renderer(){var reg=window.py2dmol_viewers;if(!reg)return null;
   var id=(s.viewer&&s.viewer.config&&s.viewer.config.viewer_id)||(window.viewerConfig&&window.viewerConfig.viewer_id);
   var e=id?reg[id]:null;if(!e){var k=Object.keys(reg);if(k.length===1)e=reg[k[0]];}
   return e&&e.renderer?e.renderer:null;}
+// AN ANNOTATION ADDRESSES EVERY COPY OF ITS CHAIN. The page rebuilds the
+// whole colour map from the annotations whenever a layer is ticked, so the
+// mirroring the renderer did in Python lasted exactly until the first sync
+// and a trimer went back to one painted subunit. `partners.painted` is the
+// list the render decided on; resolving an address through it here is what
+// makes the copies keep the colour -- and, with the same call behind the
+// card, the selection and the sequence strip, a click on another protomer
+// reports the annotation rather than an empty card under a painted residue.
+var paintedCopies=(s.partners&&s.partners.painted)||[];
 function indicesFor(res){var r=renderer(),out=[];if(!r||!res)return out;
+  var wanted=paintedCopies.length?[res.chain_id].concat(paintedCopies):[res.chain_id];
   for(var i=0;i<(r.residueNumbers||[]).length;i++){
-    if(r.chains&&r.chains[i]===res.chain_id&&r.residueNumbers[i]===res.author_residue_number)out.push(i);}
+    if(!r.chains||r.residueNumbers[i]!==res.author_residue_number)continue;
+    for(var w=0;w<wanted.length;w++)if(r.chains[i]===wanted[w]){out.push(i);break;}}
   return out;}
 function sameResidue(a,b){return a&&b&&a.component_id===b.component_id&&a.copy_index===b.copy_index&&
   a.canonical_position===b.canonical_position;}

@@ -1788,3 +1788,24 @@ def test_a_conformer_without_its_own_label_keeps_the_global_one(tmp_path):
         conformers=[{"path": str(bound), "label": "Bound", "partner_chains": ["R"]}],
         morph_mapping="exact", morph_steps=6)
     assert result["partners"]["labels"] == {"0": "partners", "1": "partners"}
+
+
+def test_a_repaint_keeps_the_copies_coloured(tmp_path):
+    """The page rebuilds the colour map from the annotations on every tick.
+
+    Mirroring in Python alone lasted until the first sync, after which a
+    trimer went back to one painted subunit -- the state carried the copies
+    and the page threw them away.
+    """
+    result, html = _oligomer_bundle(tmp_path, {"A": _SUBUNIT, "B": _SUBUNIT}, ["B"])
+    assert result["partners"]["painted"] == ["B"]
+    report = _run_dom_harness(html, {
+        "chains": ["A"] * 12 + ["B"] * 12,
+        "residueNumbers": list(range(1, 13)) * 2,
+        "steps": [{"name": "off", "set": {"epitope": False}},
+                  {"name": "on", "set": {"epitope": True}}]})
+    # Residue 3 of the target is index 2; the same residue of the copy is 14.
+    both = {"2": "#16a34a", "14": "#16a34a"}
+    assert report["initial"] == both
+    assert report["steps"]["off"]["paint"] is None
+    assert report["steps"]["on"]["paint"] == both

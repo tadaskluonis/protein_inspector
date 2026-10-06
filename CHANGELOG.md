@@ -286,6 +286,16 @@ before.
 
 ### Fixed
 
+**The copies lost their colour at the first repaint.** `layers_on_partners`
+painted them in Python, but `syncVisibleLayers` rebuilds the entire colour map
+from the annotations whenever a layer is ticked -- and `indicesFor` resolved
+an annotation to its own chain only, so the first sync dropped every copy and
+a trimer went back to one painted subunit. The address is now resolved through
+`partners.painted` in the page as well. The same call sits behind the card,
+the selection and the sequence strip, so a click on another protomer reports
+the annotation instead of opening an empty card under a visibly painted
+residue, and `sel` on a layer row selects the site on all of the copies.
+
 **`normalizeConfig` dropped unrecognised `color` keys silently.** It rebuilds
 `config.color` from a named whitelist, so a key plumbed end to end through
 `view()` and read back in `parts/ui.js` never arrived, with no error on the
