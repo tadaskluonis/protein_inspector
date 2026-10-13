@@ -66,6 +66,25 @@ legend but unchecked at open. Numbers are **author residue numbers** in
 the file, so renumber before rendering if your analysis speaks a different
 numbering. Later layers paint over earlier ones — order background first.
 
+**Give every layer a `description`.** A layer name is a label, not an
+explanation: a reader who meets `AS1`, `connector`, `AS2` has three names and
+no idea what they are, and an answer that lives in a tab is an answer they
+have to go and find. One sentence saying what the thing IS and why it is
+marked becomes the row's tooltip and a small info glyph that opens it inline:
+
+```python
+{"id": "as1", "label": "AS1 (278-296)", "color": "#2563eb",
+ "description": "First amphipathic helix. The transmembrane segment feeds "
+                "straight into it, so this is where the input signal arrives.",
+ "residues": range(278, 297)},
+```
+
+Write it for someone who knows structural biology but not this protein.
+Expand the abbreviation you just used, say what the region does, and stop —
+it is a tooltip, not the context paragraph. A layer whose label is already
+self-explanatory (`"Catalytic residues"`) does not need one, and the glyph
+then correctly does not appear on that row.
+
 Always read `report["unmapped_residues"]`: residues absent from the model are
 skipped, and silently if you don't look.
 
@@ -113,22 +132,51 @@ carries the **Cα RMSD to the reference**, so the size of the change is on
 screen rather than guessed from the animation. Only the endpoints
 are stored; the page interpolates, so states are cheap — three conformations of
 a 148-residue protein is about 0.64 MB. Each conformer may bring its own
-`partner_chains`, and a partner is shown only while its own state is on
-screen — a partner solved against one conformation, left draped over
+`partner_chains`, and a partner is shown only while one of its own states is
+on screen — a partner solved against one conformation, left draped over
 another's coordinates, is a composite passed off as an observation.
+
+**A partner both states hold morphs with them.** The other protomers of a
+homo-oligomer are the same molecule in each state, so a chain that two files
+both carry — matched by author numbering and residue identity, not by chain
+letter — becomes one block with its own coordinates per state and travels
+through the animation with the target. Two different molecules under one
+letter are still kept apart and renamed, and a partner only one endpoint
+holds still disappears the moment the target starts moving. Check
+`report["morph"]["partner_blocks"][i]["morphs"]` if you want to know which
+way a given chain was read.
+
+**The side chains move with it.** An atom both states have is interpolated
+between its two rotamers over the same animation — every atom of an unchanged
+residue, and as much of a substituted one as the two have in common (CB
+almost always, the tip rarely). Nothing to pass; it costs no extra bytes.
 
 Two things for you to know, not to write a tab about:
 
 - The morph is **Cartesian interpolation between endpoints, not a pathway**.
-  Intermediates are not physical and bond geometry is not preserved. If that
+  Intermediates are not physical and bond geometry is not preserved — that
+  now covers the side chains too, where a long chi rotation is cut across
+  rather than turned through. If that
   matters to the argument, say it in one clause of your context paragraph. It
   does not need a tab of its own, and a reader who has to open a tab to learn
   it will have formed the wrong impression before they get there.
-- `morph_mapping="intersection"` (as against `"exact"`) drops residues not
-  shared by every file. Check
-  `report["morph"]["conformers"][i]["residues_dropped"]`. A silently dropped
-  region is a hole in the comparison — and if something was dropped, that
-  belongs in the same paragraph, not in a caveats tab.
+- **States that differ by an indel: use `morph_mapping="union"`.** One morph is
+  one topology, so the three modes differ in what happens to a position only
+  some states model. `"exact"` refuses the render. `"intersection"` keeps the
+  positions every state shares, which deletes the odd residue from the state
+  that HAS it — the ribbon then breaks there, in the state whose file is
+  complete, and it reads as a broken model rather than as an alignment gap.
+  `"union"` keeps every position: the state that has the residue draws it, and
+  a state that lacks it is bridged across (a point on its own path between the
+  flanking residues it does model) and named `UNK` there, so the strip and the
+  residue card say "no residue in this state" instead of naming one it does not
+  have. Bridges are excluded from the superposition and from the reported RMSD.
+  Read `report["morph"]["conformers"][i]["residues_dropped"]` and
+  `["residues_bridged"]`: a dropped region is a hole in the comparison, a
+  bridged one is a depiction, and either belongs in your context paragraph.
+  Name the indel on the structure too — a layer on the residue itself, worded
+  from the sequence you are annotating ("mouse deletion" on the human residue),
+  turns the one visual oddity in the picture into the thing it is evidence of.
 
 **About tabs, and how few to write.** `about=` takes a string, a
 `{title: body}` mapping, or a list of `{"title", "body"}`; each becomes a tab

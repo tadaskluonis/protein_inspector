@@ -43,6 +43,19 @@ caption. Numbers are **author residue numbers** in the file — renumber before
 rendering if your analysis speaks a different numbering. Later layers paint
 over earlier ones, so order background first.
 
+**Give every layer a `description`** unless its label already explains
+itself. One sentence on what the region IS and why it is marked; it becomes
+the row's tooltip and a small info glyph that pins it open under the row.
+`"AS1"`, `"connector"`, `"AS2"` are names, and a reader who has to open a tab
+to find out what they mean has been sent away from the picture:
+
+```python
+{"id": "as1", "label": "AS1 (278-296)", "color": "#2563eb",
+ "description": "First amphipathic helix. The transmembrane segment feeds "
+                "straight into it, so this is where the input arrives.",
+ "residues": range(278, 297)}
+```
+
 ## Show the morph
 
 **If you have two or more conformations, show them.** This is the feature that
@@ -82,11 +95,16 @@ Two things to know yourself rather than write a tab about:
 - The morph is **Cartesian interpolation between endpoints, not a pathway**.
   Intermediates are not physical and bond geometry is not preserved. If that
   matters to the argument, say it in one clause of your context paragraph.
-- `morph_mapping="intersection"` drops residues not shared by every file;
-  `"exact"` requires them to match. Check
-  `report["morph"]["conformers"][i]["residues_dropped"]` — a silently dropped
-  region is a hole in the comparison, and if something went it belongs in that
-  same paragraph.
+- `morph_mapping="exact"` requires an identical residue set;
+  `"intersection"` keeps only the shared positions, which removes an
+  indel residue from the state that models it and leaves a chain break there;
+  `"union"` keeps every position, draws it in the states that have it, and
+  bridges + names `UNK` the states that do not (bridges are excluded from the
+  fit and the RMSD). `"union"` is the right default for orthologs, isoforms and
+  any pair differing by an indel. Check
+  `report["morph"]["conformers"][i]["residues_dropped"]` and `["residues_bridged"]`
+  — a silently dropped region is a hole in the comparison, and if something went
+  it belongs in that same paragraph.
 - **The mapping is by address, not by sequence.** Residues are matched on
   (chain, author number) and their NAMES are never compared, so a point
   substitution between two entries passes `"exact"` in silence. Morphing a
@@ -95,6 +113,15 @@ Two things to know yourself rather than write a tab about:
   in the picture: each state draws its own side chains, and the strip, the
   cell titles and the residue card read the identity of the state on screen,
   so morphing to an ortholog relabels exactly the positions that differ.
+- **The side chains move with the backbone.** An atom both states have —
+  every atom of an unchanged residue, and CB, often CG, rarely the tip of a
+  substituted one — is interpolated between its two rotamers over the same
+  animation. Atoms are paired by (position, atom name), so nothing is matched
+  across an atom it is not; one the leaving state alone has holds its own
+  rotamer, and one the entering state alone has arrives on landing. It costs
+  no bytes (both tables already ship) and one lerp per atom per frame. Note
+  the depiction it is: a long chi rotation is cut across rather than turned
+  through, so a bond is short at the half-way point.
 
 ## Partner chains
 
@@ -103,9 +130,23 @@ Anything in the same file that is not the target — `partner_chains=["B", "C"]`
 half of a dimer, a docked design.
 
 Each conformer may bring its own `partner_chains`, and a partner is shown only
-while its own state is on screen. This is enforced, not merely documented: a
-partner solved against one conformation and left draped over another's
+while one of ITS states is on screen. This is enforced, not merely documented:
+a partner solved against one conformation and left draped over another's
 coordinates is a composite passed off as an observation.
+
+A partner chain that two states BOTH carry — the other protomers of a
+homo-oligomer, typically — is one molecule seen twice, and it morphs with the
+target instead of blinking out and reappearing. The two cases are told apart
+by sequence, not by chain letter: a chain with the same author numbering and
+the same residues in both files becomes one block holding its own coordinates
+per state, while two different molecules under one letter stay two blocks and
+are renamed apart. `report["morph"]["partner_blocks"][i]` carries
+`"conformers"` (the states it belongs to) and `"morphs"`; under
+`morph_mapping="union"` a shared partner is bridged by the same rule as the
+target, and the bridged positions are listed per state in
+`"residues_bridged"`. A partner that only one endpoint holds still leaves the
+screen the moment the target starts moving, because the far end has no
+coordinates it was ever solved against.
 
 It may bring its own `partner_label` too, and should whenever the states hold
 different things — the button is a caption, and one string over an apo trimer

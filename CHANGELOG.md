@@ -4,6 +4,159 @@
 
 ### Added
 
+**A morph borrows a coarser ribbon for the length of the animation.** Reported
+as jitter in richardson, and it was: the bundle's detail default of 8 is
+affordable because a resting structure is tessellated once and then rotated,
+but a morph moves every Cα, so the cartoon geometry is rebuilt on every tick.
+Profiled in headless Chromium on a 222-residue dimer in richardson, CPU
+painter, the animation was spending **71.8 ms per tick (render 36.5 ms)**
+against a 16.7 ms budget and landing **10 ticks** in a ~320 ms animation —
+most of the motion was dropped frames.
+
+`morphDetail` is a temporary floor of 4, applied in `goMorph`, honoured by
+`keepDetail` so the style-switch wrapper cannot undo it mid-animation, and
+dropped on landing so the frame the reader stops on — the one they will zoom
+into — has the sampling the bundle was rendered for. It never raises detail: a
+bundle rendered at 2 or 3 keeps what it was given, and the Detail slider goes
+on showing the reader's own value while the animation borrows another. Same
+structure after: **45.4 ms per tick (render 24.2 ms), 15 ticks** — 37% off the
+per-tick cost and half as many frames again delivered.
+
+Two things this is NOT, both checked before changing anything. Bond
+re-derivation was the first suspect and the profile cleared it: with the
+structure alone the frame carries no bond list at all, and with side chains
+drawn the list is built once per real frame at load, not per tick — the
+side-chain rebuild measures 0.4-0.8 ms of a 72 ms frame. (The residual: the
+SG-SG distance scan inside py2Dmol's `_materialiseSidechains` does run per
+frame, so a cysteine pair that drifts within 2.5 Å mid-morph would flash a
+disulfide. Nothing in this structure does.) And the GPU painter was already
+on — `rendering.gpu` has been true by default since detail went to 8; what
+costs here is the CPU-side tessellation that `detail` controls, which is
+exactly what the floor cuts.
+
+**`description` on a layer — the legend says what the thing IS, on the row.**
+A layer carried a name and nothing else, and the row's tooltip repeated that
+name back. `AS1`, `connector`, `AS2` is three labels and no information, and
+the explanation living in an About tab means the reader has to leave the
+picture to get it. A layer may now carry `"description"`: one sentence that
+becomes the row's tooltip and puts a small dimmed info glyph on the row,
+which marks the rows that have one and pins the sentence open under the row
+when pressed. Rows without a description get no glyph and keep the label as
+their tooltip, so the affordance stays meaningful instead of decorating every
+row. Carried as `layer_description` on the annotations (the manifest has no
+separate layer list, like `layer_label` and `layer_visible` before it), with
+the same conflicting-value check, and surfaced in the page state so
+`read_inspection_bundle` sees it. `SKILL.md` and `AGENTS.md` now tell the
+caller to write one for any layer whose label is not self-explanatory.
+
+**The control bar no longer changes height when the state changes.** Pressing
+a conformation button could re-wrap the bar onto a second line and push the
+structure down — at the exact moment the reader was watching it move. Two
+things varied with the state: the partner button's word, and the RMSD note.
+Neither does now.
+
+The partner button carries EVERY state's word at once, stacked in one CSS
+grid cell with the inactive ones merely `visibility:hidden`, so the control
+is as wide as the longest of them in every state; `syncPartnerButton` changes
+which one is visible instead of rewriting `textContent`. Done in CSS rather
+than by measuring in JS so it survives a resize, a zoom and a late font load.
+The RMSD note has moved out of the flex row onto its own reserved single
+line below the controls, clipped with an ellipsis and its full text on the
+tooltip. Conformation labels are capped at `24ch` with the full label on the
+button's tooltip, so one verbose state name cannot push the row over on its
+own.
+
+The bar still wraps — that is what keeps a sixth conformation pressable
+rather than clipped. What changed is that the wrap point is now a function of
+the available width alone, never of which state is on screen.
+
+**The side chains morph too, atom by atom, wherever the two states share the
+atom.** The animation buffer borrowed the leaving state's side-chain table
+whole, so every rotamer was frozen for the length of the morph and snapped to
+its new angle on landing. The backbone moved and the side chains rode along
+rigidly, which is the one part of the picture that was not showing what the
+two structures actually say.
+
+The fix is free because of where the table lives. py2Dmol stores each
+side-chain atom as three coefficients in its residue's OWN backbone frame and
+rebuilds world positions from the frame's coordinates at draw time, so
+interpolating the COEFFICIENTS interpolates the rotamer and it follows the
+moving backbone with no transform. `sidechainBlend(from, to)` pairs the two
+tables by `(position, atom name)` — never by index, since the tables are built
+independently per frame and a substituted residue has a different atom list —
+and hands back a copy of the leaving table with its own `coef` buffer; every
+other field stays the one py2Dmol validated. `blendSidechains(plan, e)` then
+runs one lerp per paired atom per tick, on the same easing as the backbone.
+
+Identical residues pair completely. A substituted one pairs as far as the two
+side chains have atoms in common: CB almost always, CG often, the tip rarely.
+An atom only the leaving state has keeps its own coefficients (what the whole
+side chain used to do); one only the entering state has arrives when the
+animation lands on that state's own table. No table, or no shared atom at all,
+falls back to the previous frozen behaviour.
+
+Cost: **nothing in the file** — both endpoint tables already shipped, one row
+set per conformer — and one lerp per atom per frame against a
+`_materialiseSidechains` rebuild py2Dmol was already running for every frame
+it draws. The usual caveat is now a little wider: the intermediates are a
+depiction, and a long chi rotation is cut across rather than turned through,
+so a bond is short at the half-way point.
+
+**A partner chain both states hold now morphs with them instead of blinking
+out.** A partner belonged to exactly one conformation, so a homodimer rendered
+with `partner_chains=["B"]` on both states produced two frozen blocks, `B` and
+`B1`: pressing a state button dropped the second protomer the instant the
+first one started moving and produced a different copy of it at the far end.
+Nothing about the second protomer justified that — it is the same molecule in
+both files, and the animation simply had no coordinates for it.
+
+Partner chains are now clustered across states before any of them is placed
+(`_partner_clusters`). A chain that two states both carry, and that agrees
+with itself on author numbering and residue identity (`_same_molecule`, the
+same shape of test `layers_on_partners` already used to tell a copy from a
+binding partner), becomes ONE block holding its own fitted coordinates in
+every frame — so the interpolation that moves the target moves it too, for
+free, and its side chains and residue names are per state like the target's.
+`partners.owner` in the page therefore maps a chain to a LIST of states;
+`applyPartners(from, to)` keeps a chain on through the animation only when it
+belongs to both endpoints.
+
+What has NOT changed is the guarantee that made partners state-bound in the
+first place. Two different molecules under one chain letter still fail
+`_same_molecule`, still get renamed apart, and still each appear only in their
+own state; a partner that one endpoint holds and the other does not still
+leaves the screen the moment the target starts moving, because the far end has
+no coordinates it was ever solved against. Under `morph_mapping="union"` a
+shared partner is bridged by `_bridge_trace` — the target's own routine,
+lifted to module scope for the purpose — and the bridges are reported per
+state. `morph["partner_blocks"][i]` gains `"conformers"`, `"morphs"` and
+`"residues_bridged"`.
+
+**`morph_mapping="union"` — a morph between states that differ by an indel no
+longer breaks the chain in the state that is complete.** A morph is one
+topology, and `"intersection"` builds it from the positions every state shares,
+so an ortholog pair differing by one residue lost that residue *everywhere* --
+including from the file that models it. The reader saw a gap in the reference
+state's ribbon at a position its own structure has, which reads as a broken
+model rather than as an alignment gap (reported as "there should be no break at
+all - why is there a break?"). `"union"` keeps every position any state models.
+A state that lacks one is not given a residue there: it is given a point on its
+OWN path between the flanking residues it does model, so its ribbon stays
+continuous along the bond that is really there, and the position is named `UNK`
+for that state so the sequence strip and the residue card report an absence
+rather than naming a residue the state does not have. A bridge is a depiction,
+not an observation, so it is excluded from the Kabsch fit and from the reported
+RMSD -- both still use the shared positions only -- and each conformer's report
+carries `residues_bridged` beside `residues_dropped`. `"exact"` and
+`"intersection"` are unchanged.
+
+While adding it: the reference frame's name list was aliased to the list the
+partner loop appends to, so with the new mode the reference frame's
+`position_names` grew by the partner tail twice (1409 entries against 783
+coordinates) and py2Dmol silently dropped names and types for that frame -- it
+prints a warning to stdout and renders on. Fixed with a copy; the comment at
+that line says why.
+
 **Side chains are element-coloured in tube, not only in cartoon.** The
 colour pass fills `colors.halves[i]` for every style, and
 `_materialiseSidechains` already cuts a bond between two different elements

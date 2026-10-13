@@ -755,10 +755,12 @@ def test_a_partner_is_excluded_from_the_morph_and_held_still(tmp_path):
     # The residue mapping is the target chain alone -- the conformer has no P.
     assert morph["n_residues"] == 4
     assert morph["mapping"] == "exact"
-    # ...but the partner is still drawn, as its own block of positions.
+    # ...but the partner is still drawn, as its own block of positions, and it
+    # belongs to the reference alone -- so it does not morph.
     assert morph["partner_blocks"] == [
-        {"conformer": 0, "label": "reference", "chains": ["P"],
-         "renamed_from": None, "n_positions": 4}]
+        {"conformer": 0, "conformers": [0], "label": "reference", "chains": ["P"],
+         "renamed_from": None, "n_positions": 4, "morphs": False,
+         "residues_bridged": None}]
 
 
 def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
@@ -837,34 +839,47 @@ def test_each_conformation_shows_its_own_partner(tmp_path):
     partners = report["partners"]
     # State 0: target + P, no Q.
     assert partners["onAtStart"] == partners["expectedOn"] == [0, 1, 2, 3, 4, 5, 6, 7]
+    # Exactly one of the stacked words is showing (both states inherit the
+    # global label here; the swap itself is asserted where they differ).
+    assert partners["wordAtStart"] == partners["wordAfterMorph"] == "Bound partner"
     # After morphing to state 1: target + Q, and P is gone.
     assert partners["afterMorph"] == partners["expectedAfterMorph"] \
         == [0, 1, 2, 3, 8, 9, 10, 11]
     assert partners["disabledAfterMorph"] is False
+    # Neither belongs to both endpoints, so both are off while the animation
+    # runs: P would be bound to coordinates it was never solved against, and
+    # Q has none at this end at all.
+    assert partners["duringMorph"] == partners["expectedDuringMorph"] == [0, 1, 2, 3]
 
 
-def test_a_colliding_partner_chain_is_renamed_not_merged(tmp_path):
-    """Two conformations both carrying chain B are two molecules, not one."""
-    def complex_cif(path, shift, bend=0.0):
-        structure = Structure.Structure("fixture")
-        model = Model.Model(0)
-        for chain_id, offset, bendy in (("A", 0.0, bend), ("B", shift, 0.0)):
-            chain = Chain.Chain(chain_id)
-            for index in range(1, 5):
-                residue = Residue.Residue((" ", index, " "), "ALA", " ")
-                residue.add(Atom.Atom("CA", (float(index * 3),
-                                             float(index % 2) + offset + bendy * index, 0.0),
-                                      0.0, 1.0, " ", "CA", index, element="C"))
-                chain.add(residue)
-            model.add(chain)
-        structure.add(model)
-        io = MMCIFIO()
-        io.set_structure(structure)
-        io.save(str(path))
-        return path
+def _homodimer_cif(path, shift, bend=0.0, partner_name="ALA",
+                   partner_numbers=range(1, 5)):
+    structure = Structure.Structure("fixture")
+    model = Model.Model(0)
+    chain = Chain.Chain("A")
+    for index in range(1, 5):
+        residue = Residue.Residue((" ", index, " "), "ALA", " ")
+        residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2) + bend * index, 0.0),
+                              0.0, 1.0, " ", "CA", index, element="C"))
+        chain.add(residue)
+    model.add(chain)
+    chain = Chain.Chain("B")
+    for index in partner_numbers:
+        residue = Residue.Residue((" ", index, " "), partner_name, " ")
+        residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2) + shift, 0.0),
+                              0.0, 1.0, " ", "CA", index, element="C"))
+        chain.add(residue)
+    model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    io.save(str(path))
+    return path
 
-    reference = complex_cif(tmp_path / "ref.cif", 12.0)
-    other = complex_cif(tmp_path / "alt.cif", -12.0, bend=1.5)
+
+def _homodimer_bundle(tmp_path, **conformer_partner):
+    reference = _homodimer_cif(tmp_path / "ref.cif", 12.0)
+    other = _homodimer_cif(tmp_path / "alt.cif", -12.0, bend=1.5, **conformer_partner)
     result = render_inspection_bundle(
         mmcif_path=str(reference),
         mmcif_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(),
@@ -873,8 +888,122 @@ def test_a_colliding_partner_chain_is_renamed_not_merged(tmp_path):
         partner_chains=["B"],
         conformers=[{"path": str(other), "label": "Alt", "partner_chains": ["B"]}],
         morph_mapping="exact")
+    html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
+    return result, Path(html)
+
+
+def test_the_morph_borrows_a_coarser_ribbon_and_gives_it_back(tmp_path):
+    """Detail 8 is for a structure being zoomed into, not for 20 frames a second.
+
+    The high default is affordable because the ribbon is tessellated once and
+    then rotated; a morph moves every C-alpha, so the geometry is rebuilt on
+    every tick and detail 8 eats the frame budget. Measured on a 222-residue
+    dimer in richardson, headless, CPU painter: 71.8 ms per tick at 8 against
+    45.4 ms at 4, and 10 ticks delivered against 15. The frame the reader
+    stops on is the one they will zoom into, so it gets the full sampling
+    back.
+    """
+    _, html = _two_partner_bundle(tmp_path)
+    text = html.read_text()
+    # Borrowed for the animation, never raised above what the bundle asked for.
+    assert "morphDetail=Math.max(2,Math.min(4,resting))" in text
+    assert "if(morphDetail>=resting)morphDetail=null;else keepDetail();" in text
+    # ...and handed back on landing, before the reader can touch anything.
+    assert "morphDetail=null;keepDetail();" in text
+    # The keeper honours the temporary floor, so the style-switch wrapper
+    # cannot restore detail 8 in the middle of the animation.
+    assert "function detailTarget(){return morphDetail!==null?morphDetail:wantDetail;}" in text
+    assert "var r=renderer(),want=detailTarget();if(!r||want===null)return;" in text
+    # The slider keeps showing the reader's own value while the morph runs.
+    assert "if(sl&&morphDetail===null)sl.value=String(want);" in text
+
+
+def test_a_layer_description_reaches_the_row_as_a_tooltip_and_a_glyph(tmp_path):
+    """A name is not an explanation, and a tab is not where the answer goes.
+
+    `AS1` tells a reader nothing. The description has to be ON the row: as
+    the tooltip (replacing one that only repeated the label it sits beside)
+    and as a small glyph that both marks the rows which have one and pins it
+    open inline when pressed.
+    """
+    from protein_inspector import inspect_structure
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif)
+    report = inspect_structure(
+        str(cif),
+        layers=[
+            {"id": "as1", "label": "AS1", "color": "#2563eb", "residues": [1, 2],
+             "description": "First amphipathic helix \u2014 where the input arrives."},
+            {"id": "plain", "label": "Catalytic residues", "color": "#dc2626",
+             "residues": [4]},
+        ],
+        out=str(tmp_path / "out.html"))
+    text = Path(report["path"]).read_text()
+
+    # Tooltip on the row, and the glyph that says there is one.
+    assert ('<label title="First amphipathic helix \u2014 where the input arrives.">'
+            in text)
+    assert 'class="bp-i" data-info="as1"' in text
+    assert ('<div class="bp-note" data-note="as1" hidden>First amphipathic helix'
+            in text)
+    # A label that explains itself gets no glyph and keeps its own tooltip, so
+    # the affordance stays meaningful instead of appearing on every row.
+    assert 'data-info="plain"' not in text
+    assert '<label title="Catalytic residues">' in text
+    # ...and it survives into the state, so a reader of the bundle gets it too.
+    state = json.loads(text.split(
+        '<script id="pinsp-inspection-state" type="application/json">')[1]
+        .split("</script>")[0])
+    described = {item["layer_id"]: item.get("description") for item in state["layers"]}
+    assert described == {"as1": "First amphipathic helix \u2014 where the input arrives.",
+                         "plain": None}
+
+
+def test_a_partner_both_states_hold_is_one_block_that_morphs(tmp_path):
+    """The other protomer of a homodimer is the same molecule in both states.
+
+    It used to be split into B and B1 -- one block frozen in each state -- so
+    it vanished the moment the target started moving and a different copy of
+    it reappeared at the far end. It is one block now, with its own
+    coordinates in each frame, so the interpolation that moves the target
+    moves it too.
+    """
+    result, html = _homodimer_bundle(tmp_path)
+    blocks = result["morph"]["partner_blocks"]
+    assert [b["chains"] for b in blocks] == [["B"]]
+    assert blocks[0]["conformers"] == [0, 1]
+    assert blocks[0]["morphs"] is True
+    assert blocks[0]["renamed_from"] is None
+
+    # The block really does hold different coordinates per frame -- a block
+    # that merely survived the morph by being identical in both would pass
+    # every visibility assertion and still show nothing moving.
+    state = json.loads(html.read_text().split(
+        '<script id="pinsp-inspection-state" type="application/json">')[1].split("</script>")[0])
+    assert state["partners"]["owner"] == {"B": [0, 1]}
+    report = _run_dom_harness(html, {"chains": ["A"] * 4 + ["B"] * 4,
+                                     "residueNumbers": [1, 2, 3, 4] * 2})
+    partners = report["partners"]
+    # On screen in both states, and -- the point of the change -- still on
+    # screen while the morph between them is running.
+    assert partners["onAtStart"] == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert partners["afterMorph"] == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert partners["duringMorph"] == [0, 1, 2, 3, 4, 5, 6, 7]
+
+
+def test_a_colliding_partner_chain_is_renamed_not_merged(tmp_path):
+    """Two DIFFERENT molecules under one chain letter are still two molecules.
+
+    Merging is for the same molecule seen twice. A conformer whose chain B is
+    a different thing that happens to wear the same letter has to keep its own
+    block, or the page would interpolate between two unrelated molecules.
+    """
+    result, _ = _homodimer_bundle(tmp_path, partner_name="GLY",
+                                  partner_numbers=range(11, 17))
     blocks = result["morph"]["partner_blocks"]
     assert [b["chains"] for b in blocks] == [["B"], ["B1"]]
+    assert [b["conformers"] for b in blocks] == [[0], [1]]
+    assert [b["morphs"] for b in blocks] == [False, False]
     assert blocks[1]["renamed_from"] == {"B1": "B"}
 
 
@@ -1635,10 +1764,75 @@ def test_a_morph_carries_its_side_chains_one_rotamer_set_per_state(tmp_path):
             cb = np.asarray(row[2][0][1:4], dtype=float)
             assert float(np.linalg.norm(cb - trace[row[0]])) < 2.0
 
-    # ...and the page hands the animation buffer the table of the state it is
-    # leaving, rather than always the reference's.
+    # ...and the page hands the animation buffer a table built from the state
+    # it is leaving, blended toward the one it is entering where the two share
+    # an atom, falling back to the leaving state's own table when they do not.
     html = Path(next(i["path"] for i in result["artifacts"] if i["kind"] == "html"))
-    assert "buf.sidechains=from.sidechains" in html.read_text()
+    assert "buf.sidechains=blend?blend.table:from.sidechains" in html.read_text()
+
+
+def test_the_rotamer_blends_atom_by_atom_where_both_states_have_the_atom(tmp_path):
+    """A side chain swings between its two rotamers instead of snapping.
+
+    The table py2Dmol builds per frame is three coefficients per atom in the
+    residue's own backbone frame, so interpolating the coefficients is
+    interpolating the rotamer and it follows the moving backbone for free.
+    What has to be right is the PAIRING: atoms are matched by (position, atom
+    name), never by index, because the two states' tables are built
+    independently and a substituted residue has a different atom list.
+
+    Driven on the shipped source rather than a copy of it -- the two helpers
+    are lifted out of the rendered bundle and run on synthetic tables, which
+    is the only way to reach them without stubbing py2Dmol's own loader.
+    """
+    import subprocess
+    cif = tmp_path / "ref.cif"
+    _atom_fixture(cif, n=8)
+    other = tmp_path / "conf1.cif"
+    _atom_fixture(other, n=8)
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest={"schema_version": "protein-inspector-manifest-1",
+                             "annotations": []},
+        output_dir=str(tmp_path / "out"),
+        conformers=[{"path": str(other), "label": "other"}], morph_mapping="exact")
+    text = Path(next(i["path"] for i in result["artifacts"]
+                     if i["kind"] == "html")).read_text()
+    helpers = text[text.index("function sidechainBlend("):text.index("function expandMorph(")]
+
+    # `to` lists CB and CG in the OPPOSITE order and adds an atom of its own;
+    # `from` carries one the other lacks. Index pairing would blend CB into CG.
+    probe = helpers + """
+var from={pos:[0,0,0],names:['CB','CG','CD'],frameOf:[0,0,0],
+          elements:['C','C','C'],onBackbone:[0,0,0],bonds:[],toBackbone:[],
+          coef:[0,0,0, 10,0,0, 20,0,0]};
+var to  ={pos:[0,0,0],names:['CG','CB','NE'],frameOf:[0,0,0],
+          elements:['C','C','N'],onBackbone:[0,0,0],bonds:[],toBackbone:[],
+          coef:[30,0,0, 4,0,0, 50,0,0]};
+var plan=sidechainBlend(from,to);
+blendSidechains(plan,0.5);
+console.log(JSON.stringify({paired:plan.paired,
+                            blended:Array.prototype.slice.call(plan.table.coef),
+                            source:Array.prototype.slice.call(from.coef),
+                            names:plan.table.names,
+                            bonds:plan.table.bonds}));
+"""
+    script = tmp_path / "probe.js"
+    script.write_text(probe)
+    out = subprocess.run(["node", str(script)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout)
+
+    assert got["paired"] == 2                      # CB and CG; CD and NE are not shared
+    # CB: 0 -> 4 by name (NOT -> 30, which is what index pairing would give).
+    # CG: 10 -> 30. CD is in `from` only, so it holds its own coefficients.
+    assert got["blended"] == [2.0, 0, 0, 20.0, 0, 0, 20.0, 0, 0]
+    # The endpoint table is read, never written: landing on it must show the
+    # state's own rotamers, not the half-way ones.
+    assert got["source"] == [0, 0, 0, 10, 0, 0, 20, 0, 0]
+    # Everything except the numbers is the table py2Dmol already validated.
+    assert got["names"] == ["CB", "CG", "CD"]
+    assert got["bonds"] == []
 
 
 def test_the_conformation_ring_wraps_instead_of_running_off_the_stage(tmp_path):
@@ -1768,11 +1962,26 @@ def test_the_partner_button_is_named_by_the_conformation_on_screen(tmp_path):
     assert result["partners"]["labels"] == {"0": "other protomers", "1": "receptor"}
     html = Path(next(item["path"] for item in result["artifacts"]
                      if item["kind"] == "html")).read_text()
-    # The button opens on the reference's word for its partners and is renamed
-    # from the same map as the conformation changes.
-    assert '>other protomers</button>' in html
+    # The button carries BOTH words, stacked, and opens showing the
+    # reference's. Only the visible one changes with the conformation, so the
+    # control is the width of the longer word in either state and swapping it
+    # cannot re-wrap the bar and shift the structure down mid-morph.
+    assert '<span class="bm-swap-i on" data-state="0">other protomers</span>' in html
+    assert '<span class="bm-swap-i" data-state="1">receptor</span>' in html
     assert "function partnerLabelAt(" in html
-    assert "btn.textContent=name" in html
+    assert "items[i].className='bm-swap-i'+(on?' on':'')" in html
+    # ...and in the page: exactly one word visible, and it follows the state.
+    report = _run_dom_harness(
+        Path(next(item["path"] for item in result["artifacts"] if item["kind"] == "html")),
+        {"chains": ["A"] * len(_SUBUNIT) + ["B"] * len(_SUBUNIT) + ["R"] * len(_RECEPTOR),
+         "residueNumbers": (list(range(1, len(_SUBUNIT) + 1)) * 2
+                            + list(range(1, len(_RECEPTOR) + 1)))})
+    assert report["partners"]["wordAtStart"] == "other protomers"
+    assert report["partners"]["wordAfterMorph"] == "receptor"
+    # The note is a reserved line of its own rather than a flex item among the
+    # buttons, so its text changing with the state cannot move anything.
+    assert '</div><span id="pinsp-morph-note"></span>' in html
+    assert "#pinsp-morph-note{display:block;min-height:14px" in html
 
 
 def test_a_conformer_without_its_own_label_keeps_the_global_one(tmp_path):

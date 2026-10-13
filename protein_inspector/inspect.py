@@ -63,7 +63,10 @@ def build_manifest(cif_path, layers, chain=None, highlight="color", about=None,
     """Turn simple layer dicts into a validated inspection manifest.
 
     Each layer: {"id", "label", "residues", "color"?, "kind"?, "note"?,
-    "visible"?}. `visible: False` means the layer is built and listed but
+    "description"?, "visible"?}. `description` is one sentence saying what
+    the layer IS -- it becomes the row's tooltip and an info glyph that opens
+    it inline, so a reader meeting "AS1" does not have to go to a tab to find
+    out. `visible: False` means the layer is built and listed but
     starts unchecked, so the opening view can be the one thing that matters.
     `residues` is a list of author residue numbers, or {resnum: note}.
     Later layers paint over earlier ones, so order background-first.
@@ -94,6 +97,11 @@ def build_manifest(cif_path, layers, chain=None, highlight="color", about=None,
                 "label": note or layer.get("note") or layer["label"],
                 "layer_id": layer["id"],
                 "layer_label": layer["label"],
+            # WHAT THE LAYER IS, not only what it is called. "AS1" is a name;
+            # "the first amphipathic helix, which the transmembrane segment
+            # feeds into" is the thing the reader needs, and it belongs on
+            # the row rather than in a tab they have to go and find.
+            **({"layer_description": layer["description"]} if layer.get("description") else {}),
                 "color": layer.get("color") or DEFAULT_PALETTE[position % len(DEFAULT_PALETTE)],
                 "resolved": True,
                 "evidence_ids": list(layer.get("evidence_ids", [])),

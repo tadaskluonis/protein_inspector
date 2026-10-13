@@ -186,7 +186,7 @@ def _validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
             required_residue_fields = {"component_id", "canonical_position", "chain_id", "author_residue_number"}
             if not isinstance(residue, dict) or any(residue.get(field) is None for field in required_residue_fields):
                 raise ValueError(f"resolved annotation {item['annotation_id']} lacks a complete residue reference")
-        for field in ("layer_id", "layer_label"):
+        for field in ("layer_id", "layer_label", "layer_description"):
             if field in item and (not isinstance(item[field], str) or not item[field].strip()):
                 raise ValueError(f"annotation {item['annotation_id']} has an invalid {field}")
         if "layer_visible" in item and not isinstance(item["layer_visible"], bool):
@@ -228,9 +228,12 @@ def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for item in annotations:
         key = _layer_key(item)
         layer = grouped.setdefault(key, {"annotation_ids": [], "label": item.get("layer_label"), "color": item.get("color"),
+                                         "description": item.get("layer_description"),
                                          "visible": bool(item.get("layer_visible", True))})
         if item.get("layer_label") and layer["label"] != item["layer_label"]:
             raise ValueError(f"layer {key!r} has conflicting labels")
+        if item.get("layer_description") and layer["description"] != item["layer_description"]:
+            raise ValueError(f"layer {key!r} has conflicting descriptions")
         if item.get("color") and layer["color"] != item["color"]:
             raise ValueError(f"layer {key!r} has conflicting colors")
         if "layer_visible" in item and layer["visible"] != bool(item["layer_visible"]):
@@ -243,6 +246,10 @@ def _layers(annotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "color": layer["color"] or _LAYER_COLORS[index % len(_LAYER_COLORS)],
             "annotation_ids": layer["annotation_ids"],
             "visible": layer["visible"],
+            # Absent rather than empty when there is none, so a reader of the
+            # state (and `read_inspection_bundle`) can tell "no description"
+            # from "an empty one".
+            **({"description": layer["description"]} if layer["description"] else {}),
         }
         for index, (key, layer) in enumerate(grouped.items())
     ]
@@ -353,6 +360,67 @@ def _partner_copies(frame: dict[str, Any], partner_chains: set[str],
     return copies
 
 
+def _same_molecule(first: dict[int, str], second: dict[int, str]) -> bool:
+    """Are two chains the same molecule seen twice, by numbering and identity?
+
+    This is what decides whether a partner chain carried by two conformations
+    is one molecule to be morphed or two molecules that happen to share a
+    letter. Deliberately the same shape of test as `_partner_copies` applies
+    to the target -- most author numbers shared, essentially every shared
+    number agreeing on the residue name -- but with a floor of three residues
+    rather than ten, because the question here is whether two files hold the
+    same thing and not whether an annotation may be painted onto a neighbour.
+    """
+    shared = set(first) & set(second)
+    if len(shared) < 3:
+        return False
+    if len(shared) < 0.8 * max(len(first), len(second)):
+        return False
+    agree = sum(1 for number in shared if first[number] == second[number])
+    return agree >= 0.95 * len(shared)
+
+
+def _partner_clusters(partner_spec: list[list[str]],
+                      traces: dict[int, dict[tuple[str, int], Any]],
+                      ) -> dict[str, list[list[int]]]:
+    """Group each partner chain's appearances into runs of a single molecule.
+
+    Returns `{chain_id: [[state, ...], ...]}` -- one list of state indices per
+    distinct molecule carrying that chain letter, in state order.
+
+    A chain that appears in one state gives one single-state cluster, which is
+    the behaviour a partner has always had: drawn while its own state is on
+    screen and nowhere else. A chain the reference and a conformer BOTH carry,
+    and that passes `_same_molecule`, gives one cluster spanning both states --
+    and that is what earns it a place in the morph. The second protomer of a
+    homodimer is the same molecule in both states and has no business blinking
+    out while the first one moves.
+
+    Chains are matched by letter, never across letters. Among identical copies
+    there is nothing to choose between B->C and B->B, and picking one would
+    invent a correspondence the files do not state.
+    """
+    clusters: dict[str, list[list[int]]] = {}
+    for chain in sorted({c for group in partner_spec for c in group}):
+        found: list[dict[str, Any]] = []
+        for index, group in enumerate(partner_spec):
+            if chain not in group or index not in traces:
+                continue
+            seq = {key[1]: value[0] for key, value in traces[index].items()
+                   if key[0] == chain}
+            if not seq:
+                continue
+            for cluster in found:
+                if _same_molecule(cluster["seq"], seq):
+                    cluster["states"].append(index)
+                    break
+            else:
+                found.append({"seq": seq, "states": [index]})
+        if found:
+            clusters[chain] = [cluster["states"] for cluster in found]
+    return clusters
+
+
 def _trace(cif_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
     structure = MMCIFParser(QUIET=True).get_structure(cif_path.stem, str(cif_path))
     models = list(structure.get_models())
@@ -363,7 +431,16 @@ def _trace(cif_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
     numbers: list[int] = []
     for chain in models[0]:
         for residue in chain:
-            atom = residue.child_dict.get("CA") or residue.child_dict.get("C4'")
+            # NOT `get("CA") or get("C4prime")`. Biopython returns an Entity
+            # here, and `or` asks it for a truth value, which calls
+            # Entity.__len__ -> len(self.selected_child); on a DisorderedAtom
+            # whose selected child is a plain Atom that raises "TypeError:
+            # object of type Atom has no len()". So every crystal structure
+            # carrying an altloc at a backbone atom died on the way in, with a
+            # traceback naming neither the file nor the residue.
+            atom = residue.child_dict.get("CA")
+            if atom is None:
+                atom = residue.child_dict.get("C4'")
             if atom is None or residue.id[0] != " ":
                 continue
             coords.append([float(value) for value in atom.coord])
@@ -566,13 +643,38 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         # stage's overflow, and their clicks landed on the Layers header
         # behind them. A control you can see the label of but cannot press is
         # worse than one that has wrapped onto a second line.
+        # THE BAR MUST NOT CHANGE HEIGHT WHEN THE STATE CHANGES. It may wrap --
+        # that is what keeps a sixth conformation pressable rather than clipped
+        # -- but the wrap point has to be a function of the WIDTH, never of
+        # which conformation is on screen. Otherwise pressing a state button
+        # re-wraps the bar, the bar grows a line, and the structure jumps down
+        # under the reader's cursor at the exact moment they are watching it
+        # move. Two things used to vary with the state and both are fixed
+        # here: the partner button's word (see .bm-swap) and the RMSD note,
+        # which is now its own reserved line below the controls rather than a
+        # flex item among them.
         ".pinsp-morph{display:flex;flex-wrap:wrap;align-items:center;gap:8px;"
-        "padding:0 0 8px;max-width:100%}"
+        "padding:0 0 4px;max-width:100%}"
         ".bm-ring{display:inline-flex;flex-wrap:wrap;align-items:center;gap:2px;padding:3px;"
         "border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc;max-width:100%}"
+        # A long label is clipped rather than allowed to push the row over; the
+        # full text is on the button's own tooltip.
         ".bm-btn{font:11.5px system-ui;padding:5px 13px;border:0;background:none;"
         "border-radius:999px;cursor:pointer;color:#475569;white-space:nowrap;"
-        "max-width:100%;overflow:hidden;text-overflow:ellipsis}"
+        "max-width:min(100%,24ch);overflow:hidden;text-overflow:ellipsis}"
+        # EVERY STATE'S WORD FOR ITS PARTNERS, STACKED IN ONE GRID CELL. The
+        # cell is as wide as the longest of them, and swapping which one is
+        # visible changes no geometry. Done in CSS rather than by measuring in
+        # JS so it survives a resize, a late font load and a zoom.
+        ".bm-swap{display:grid;align-items:center}"
+        ".bm-swap-i{grid-area:1/1;white-space:nowrap;overflow:hidden;"
+        "text-overflow:ellipsis;max-width:24ch;visibility:hidden}"
+        ".bm-swap-i.on{visibility:visible}"
+        # One line, always there, never more than one: reserved so that going
+        # from \"reference\" to a long RMSD caption cannot move the viewer.
+        "#pinsp-morph-note{display:block;min-height:14px;margin:0 0 6px;"
+        "font:11px system-ui;color:#64748b;white-space:nowrap;overflow:hidden;"
+        "text-overflow:ellipsis;max-width:100%}"
         ".bm-btn:hover:not([aria-pressed='true']){background:#fff;color:#0f172a}"
         ".bm-btn[aria-pressed='true']{background:#0f172a;color:#fff}"
         ".pinsp-morph[data-busy='1'] .bm-btn{cursor:default;opacity:.55}"
@@ -626,6 +728,15 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         ".bp-only{font:10px system-ui;padding:1px 6px;border:1px solid #e2e8f0;background:#fff;"
         "border-radius:5px;cursor:pointer;color:#64748b;flex:none;visibility:hidden}"
         ".bp-layer:hover .bp-only{visibility:visible}.bp-only:hover{border-color:#94a3b8;color:#0f172a}"
+        # NOT hover-revealed, unlike `only` and `sel`. Its presence is the
+        # information -- it is how a reader knows this layer has an
+        # explanation at all -- so it has to be on the row before the cursor
+        # is. Dimmed to stay out of the way of the colour and the name.
+        ".bp-i{font:italic 10px/12px ui-serif,Georgia,serif;width:14px;height:14px;padding:0;"
+        "border:1px solid #e2e8f0;background:#fff;border-radius:999px;cursor:help;"
+        "color:#94a3b8;flex:none}"
+        ".bp-i:hover,.bp-i[aria-expanded='true']{border-color:#94a3b8;color:#0f172a}"
+        ".bp-note{margin:0 0 6px 20px;font:11.5px/1.5 system-ui;color:#475569;max-width:48ch}"
         "#pinsp-filter{margin:0 12px 8px;padding:5px 8px;font:12px system-ui;border:1px solid #cbd5e1;"
         "border-radius:6px}"
         ".bp-card{margin:0 12px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;"
@@ -963,8 +1074,8 @@ function shippedCount(){
   return (c&&c.length)?c.length:Infinity;}
 function chainInState(name){
   if(!partners||!partners.owner)return true;
-  var of=partners.owner[name];
-  return of===undefined||of===morphAt;}
+  var of=ownerStates(name);
+  return of===null||of.indexOf(morphAt)>=0;}
 function inState(i){
   var r=renderer();if(!r)return true;
   if(i>=shippedCount())return false;
@@ -1158,8 +1269,8 @@ function selectEverything(){
   var r=renderer();if(!r)return;
   var ch=r.chains||[],next=new Set(),n=Math.min(ch.length,shippedCount());
   for(var i=0;i<n;i++){
-    var of=(partners&&partners.owner)?partners.owner[String(ch[i])]:undefined;
-    if(of!==undefined&&(!partnersOn||of!==morphAt))continue;
+    var of=ownerStates(String(ch[i]));
+    if(of!==null&&(!partnersOn||of.indexOf(morphAt)<0))continue;
     next.add(i);}
   applySelection(next);}
 function selectAround(){
@@ -1218,15 +1329,35 @@ var wantDetail=(function(){
     &&s.viewer.config.rendering.detail;
   var n=parseInt(d,10);
   return (isFinite(n)&&n>=2&&n<=8)?n:null;})();
+// A MORPH IS THE ONE PLACE A BUNDLE SHOULD NOT PAY FOR DETAIL 8. The high
+// default is affordable because the ribbon is tessellated once and then
+// rotated on the GPU -- but a morph moves every C-alpha, so the geometry is
+// rebuilt on EVERY tick, and at 8 that is the whole frame budget. Measured on
+// a 222-residue dimer in richardson, headless: ~54 ms per frame on the CPU
+// painter with the structure alone, ~113 ms with side chains drawn, against a
+// 16.7 ms budget -- so most ticks were dropped and the motion arrived in
+// visible steps.
+//
+// The reader already accepts that the in-between frames are a depiction and
+// not a pathway; they can accept a coarser ribbon for a third of a second
+// too. `morphDetail` is that temporary floor, honoured by keepDetail so the
+// style-switch wrapper cannot undo it mid-animation, and dropped on landing
+// so the structure the reader actually stops on is the full-detail one.
+var morphDetail=null;
+function detailTarget(){return morphDetail!==null?morphDetail:wantDetail;}
 function keepDetail(){
-  var r=renderer();if(!r||wantDetail===null)return;
-  if(r.cartoonDetail===wantDetail)return;
-  r.cartoonDetail=wantDetail;
+  var r=renderer(),want=detailTarget();if(!r||want===null)return;
+  if(r.cartoonDetail===want)return;
+  r.cartoonDetail=want;
   var sl=document.getElementById('detailSlider');
-  if(sl)sl.value=String(wantDetail);
+  // The slider keeps showing the reader's own choice while the morph borrows
+  // a coarser one -- the control has not changed, the animation has.
+  if(sl&&morphDetail===null)sl.value=String(want);
   r.render('Protein Inspector detail');}
 function installDetailKeeper(){
-  var r=renderer();if(!r||wantDetail===null)return false;
+  // Installed even when the bundle named no detail, because the morph's
+  // temporary floor goes through the same wrapper.
+  var r=renderer();if(!r)return false;
   if(r._pinspDetailKept)return true;
   r._pinspDetailKept=true;
   // WRAPPED RATHER THAN LISTENED FOR. A change listener on #styleSelect would
@@ -1608,6 +1739,18 @@ for(var i=0;i<s.layers.length;i++){var b=box(s.layers[i].layer_id);
 var onlys=document.querySelectorAll('[data-only]');
 for(var o=0;o<onlys.length;o++)(function(btn){btn.addEventListener('click',function(ev){
   ev.preventDefault();ev.stopPropagation();onlyLayer(btn.getAttribute('data-only'));});})(onlys[o]);
+// WHAT THE LAYER IS, WITHOUT LEAVING THE STRUCTURE. The row's tooltip
+// already carries the description; pressing the glyph pins it open under the
+// row instead, for a reader who wants to keep it while they look. Nothing
+// else on the page moves -- the note is a block in the layer list, which
+// scrolls on its own.
+var infos=document.querySelectorAll('[data-info]');
+for(var f=0;f<infos.length;f++)(function(btn){btn.addEventListener('click',function(ev){
+  ev.preventDefault();ev.stopPropagation();
+  var note=document.querySelector('[data-note="'+CSS.escape(btn.getAttribute('data-info'))+'"]');
+  if(!note)return;
+  var open=note.hidden;note.hidden=!open;
+  btn.setAttribute('aria-expanded',String(open));});})(infos[f]);
 var picks=document.querySelectorAll('[data-select]');
 for(var q=0;q<picks.length;q++)(function(btn){btn.addEventListener('click',function(ev){
   ev.preventDefault();ev.stopPropagation();
@@ -1873,23 +2016,35 @@ document.addEventListener('py2dmol-color-change',function(){
       var img=document.createElement('img');img.src=url;img.alt=nice;box.appendChild(img);}
     box.hidden=false;}
 })();
-// PARTNERS ARE DRAWN, NOT ANNOTATED, AND THEY BELONG TO A STATE. Every
-// conformation's partners sit in the same object as their own block of
-// positions; only the current conformation's are shown. So changing state
-// swaps the partner too -- the tethered receptor does not keep wearing the
-// Fab that was bound to the extended one, which would be a composite passed
-// off as an observation. `owner` maps each partner chain to the conformation
-// it came from; everything not in it is the target and is always visible.
+// PARTNERS ARE DRAWN, NOT ANNOTATED, AND THEY BELONG TO THE STATES THAT HOLD
+// THEM. Every partner chain sits in the same object as its own block of
+// positions, and is shown only while one of ITS conformations is on screen.
+// So changing state swaps a partner that belongs to one state -- the tethered
+// receptor does not keep wearing the Fab that was bound to the extended one,
+// which would be a composite passed off as an observation -- while a partner
+// both states hold simply stays. `owner` maps each partner chain to the list
+// of conformations it came from; everything not in it is the target and is
+// always visible.
+//
+// `applyPartners(from,to)` is the morph case: a chain is kept on only if it
+// belongs to BOTH endpoints, because only then does its block hold real
+// coordinates at each end for the interpolation to run between.
 var partners=(s.partners&&s.partners.owner)?s.partners:null,partnersOn=true;
-function applyPartners(showFor){
+function ownerStates(chain){
+  var v=partners?partners.owner[chain]:undefined;
+  if(v===undefined)return null;
+  // Bundles written before partners could span states carry a bare number.
+  return (typeof v==='number')?[v]:v;}
+function applyPartners(showFor,alsoFor){
   var state=(showFor===undefined)?morphAt:showFor;
   var r=renderer();if(!r||!partners)return false;
   var list=r.chains||[];if(!list.length)return false;
   var pos=new Set(),chs=new Set(),shown=0;
   for(var i=0;i<list.length;i++){
-    var of=partners.owner[list[i]];
-    if(of!==undefined){
-      if(!partnersOn||of!==state)continue;
+    var of=ownerStates(list[i]);
+    if(of!==null){
+      if(!partnersOn||of.indexOf(state)<0)continue;
+      if(alsoFor!==undefined&&of.indexOf(alsoFor)<0)continue;
       shown++;}
     pos.add(i);
     if(typeof r.chainKeyAt==='function')chs.add(r.chainKeyAt(i));}
@@ -1913,7 +2068,8 @@ function applyPartners(showFor){
   return shown;}
 function hasPartnersHere(){
   if(!partners)return false;
-  for(var c in partners.owner)if(partners.owner[c]===morphAt)return true;
+  for(var c in partners.owner){var st=ownerStates(c);
+    if(st&&st.indexOf(morphAt)>=0)return true;}
   return false;}
 // THE BUTTON NAMES WHAT IS ON SCREEN. Partners belong to a state, so the
 // word for them does too: the apo trimer's are other protomers, the bound
@@ -1927,7 +2083,17 @@ function syncPartnerButton(){
   var btn=document.getElementById('pinsp-partners');if(!btn||!partners)return;
   var here=hasPartnersHere(),name=partnerLabelAt(morphAt);
   btn.disabled=!here;
-  if(here)btn.textContent=name;
+  // SHOW A WORD, DO NOT WRITE ONE. Every state's label is already in the
+  // button, stacked in a single grid cell; making one visible instead of
+  // rewriting textContent is what keeps the control's width -- and so the
+  // bar's wrap point, and so the viewer's top edge -- fixed across states.
+  var items=btn.querySelectorAll('.bm-swap-i'),shown=false,i;
+  for(i=0;i<items.length;i++){
+    var on=items[i].getAttribute('data-state')===String(morphAt);
+    items[i].className='bm-swap-i'+(on?' on':'');
+    if(on)shown=true;}
+  if(!shown&&items.length)items[0].className='bm-swap-i on';
+  if(!items.length&&here)btn.textContent=name;
   btn.setAttribute('aria-pressed',String(!!(here&&partnersOn)));
   btn.title=here?(partnersOn?'Hide ':'Show ')+name
     :'No partners in this conformation';}
@@ -1956,6 +2122,34 @@ function morphNow(){return (window.performance&&window.performance.now)
 function morphObject(){var r=renderer();if(!r)return null;
   var name=r.currentObjectName||'prepared-target';
   return (r.objectsData&&r.objectsData[name])||null;}
+// Pair two frames' side-chain tables atom by atom, once per animation. The
+// plan is a copy of the table being LEFT with its own `coef` buffer, so every
+// other field -- pos, frameOf, names, elements, bonds, toBackbone -- stays the
+// table py2Dmol already validated, and only the numbers move. Returns null
+// when either state has no table or the two share no atom, and the caller
+// then keeps the old frozen-rotamer behaviour.
+function sidechainBlend(from,to){
+  if(!from||!to||!from.coef||!to.coef||!from.pos||!to.pos||!from.names||!to.names)
+    return null;
+  var where={},k;
+  for(k=0;k<to.pos.length;k++)where[to.pos[k]+'|'+to.names[k]]=k;
+  var n=from.pos.length,map=new Int32Array(n),paired=0;
+  for(k=0;k<n;k++){
+    var j=where[from.pos[k]+'|'+from.names[k]];
+    map[k]=(j===undefined)?-1:j;
+    if(map[k]>=0)paired++;}
+  if(!paired)return null;
+  var table={};for(var key in from)table[key]=from[key];
+  table.coef=from.coef.slice();
+  return {table:table,map:map,a:from.coef,b:to.coef,paired:paired};}
+function blendSidechains(plan,e){
+  var map=plan.map,a=plan.a,b=plan.b,out=plan.table.coef;
+  for(var k=0;k<map.length;k++){
+    var j=map[k];if(j<0)continue;
+    var u=3*k,v=3*j;
+    out[u]  =a[u]  +(b[v]  -a[u]  )*e;
+    out[u+1]=a[u+1]+(b[v+1]-a[u+1])*e;
+    out[u+2]=a[u+2]+(b[v+2]-a[u+2])*e;}}
 function expandMorph(){
   if(!morph||morphReady)return;
   var r=renderer(),obj=morphObject(),n=morph.conformers.length;
@@ -1983,27 +2177,52 @@ function setMorphButtons(active){
   if(note&&morph){var c=morph.conformers[active];
     note.textContent=(c&&c.rmsd_to_reference_A)
       ?c.rmsd_to_reference_A+' \u00c5 C\u03b1 RMSD from '+morph.conformers[0].label
-      :'reference';}}
+      :'reference';
+    // The line is one line by construction, so a long reference label is
+    // clipped; the tooltip is where the rest of it lives.
+    note.title=note.textContent;}}
 function goMorph(target){
   var r=renderer();if(!morph||!r||morphBusy||target===morphAt)return;
   expandMorph();if(!morphReady)return;
   var obj=morphObject(),from=obj.frames[morphAt],to=obj.frames[target],
       buf=obj.frames[morphScratch];
   if(!from||!to||!buf)return;
-  // THE SIDE CHAINS TRAVEL WITH THE STATE BEING LEFT. Each real frame has its
-  // own side-chain table -- coefficients in the residue's backbone frame, so
-  // they follow interpolated coordinates without a transform -- and the buffer
-  // borrows whichever one the animation starts from rather than always the
-  // reference's. The rotamer is frozen for the length of the animation, which
-  // is the same thing the interpolation itself is: a depiction of two
-  // endpoints, not a pathway. Landing on the target's own frame picks up the
-  // target's own rotamers.
-  buf.sidechains=from.sidechains;
+  // THE SIDE CHAINS TRAVEL TOO, AS FAR AS THE TWO STATES SHARE ATOMS. Each
+  // real frame has its own side-chain table -- three coefficients per atom in
+  // its residue's OWN backbone frame, which py2Dmol rebuilds into world space
+  // from that frame's coordinates at draw time. So the table needs no
+  // transform to follow a moving backbone, and interpolating the COEFFICIENTS
+  // interpolates the rotamer: the buffer gets a blended table instead of a
+  // frozen one, and a side chain swings from its starting rotamer to its
+  // finishing one over the same animation.
+  //
+  // Atoms are paired by (position, atom name), so two identical residues pair
+  // completely and a substituted one pairs as far as the two side chains have
+  // atoms in common -- CB almost always, CG often, the tip rarely. An atom
+  // only the state being LEFT has keeps its own coefficients, which is what
+  // the whole side chain used to do; an atom only the state being ENTERED has
+  // arrives when the animation lands. Landing on the target's own frame picks
+  // up the target's own table either way, so nothing here can leave a rotamer
+  // behind.
+  //
+  // The intermediates are a depiction exactly as the backbone's are: a long
+  // chi rotation is cut across rather than turned through, which shortens a
+  // bond mid-flight. Endpoints are structures; the path between them is not.
+  var blend=sidechainBlend(from.sidechains,to.sidechains);
+  buf.sidechains=blend?blend.table:from.sidechains;
   morphBusy=true;setMorphButtons(morphAt);
-  // The outgoing partner goes the moment the target starts moving: leaving it
-  // on through the animation shows it bound to coordinates it was never
-  // solved against.
-  applyPartners(-1);syncPartnerButton();
+  // Coarsen the ribbon for the length of the animation only. Never raise it:
+  // a bundle already rendered at 2 or 3 keeps what it was given.
+  var resting=(typeof r.cartoonDetail==='number')?r.cartoonDetail:(wantDetail||8);
+  morphDetail=Math.max(2,Math.min(4,resting));
+  if(morphDetail>=resting)morphDetail=null;else keepDetail();
+  // A partner that belongs to only ONE of the two endpoints goes the moment
+  // the target starts moving: leaving it on through the animation shows it
+  // bound to coordinates it was never solved against. A partner both
+  // endpoints hold stays, and its block interpolates with everything else --
+  // the other protomers of a homo-oligomer are not a separate observation
+  // that has to be withdrawn while the first one moves.
+  applyPartners(morphAt,target);syncPartnerButton();
   var a=from.coords,b=to.coords,out=buf.coords,
       t0=morphNow(),dur=Math.max(320,Math.min(900,morphSteps*36));
   (function step(){
@@ -2012,11 +2231,18 @@ function goMorph(target){
       out[k][0]=a[k][0]+(b[k][0]-a[k][0])*e;
       out[k][1]=a[k][1]+(b[k][1]-a[k][1])*e;
       out[k][2]=a[k][2]+(b[k][2]-a[k][2])*e;}
+    // Same easing as the backbone, so a side chain and the helix it sits on
+    // arrive together. One lerp per paired atom, against a table rebuild
+    // py2Dmol already runs for every frame it draws.
+    if(blend)blendSidechains(blend,e);
     r.setFrame(morphScratch);
     if(p<1){requestAnimationFrame(step);return;}
     // Land on the conformation's own frame, so the viewer is showing a real
     // structure and not the buffer once the animation stops.
     r.setFrame(target);
+    // ...at full detail. The frame the reader stops on is the one they will
+    // zoom into, so it gets the sampling the bundle was rendered for.
+    morphDetail=null;keepDetail();
     morphAt=target;morphBusy=false;setMorphButtons(target);
     // The letters belong to the state that just landed, so the strip is
     // rebuilt rather than left spelling the one we came from. Selection and
@@ -2063,13 +2289,26 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
              + script).replace("__STATE__", payload)
 
     counts = {item["layer_id"]: len(item["annotation_ids"]) for item in state["layers"]}
+    # THE LEGEND SAYS WHAT THE LAYER IS, NOT JUST WHAT IT IS CALLED. A reader
+    # looking at "AS1", "connector", "AS2" has three names and no idea what
+    # they are, and the answer being one tab away is the answer being
+    # somewhere else. A layer's `description` becomes the row's tooltip --
+    # replacing a title that only repeated the label it sits next to -- and
+    # puts a small dimmed info glyph on the row, which both marks the rows
+    # that have one and opens it inline when pressed, for a reader who wants
+    # it to stay while they look at the structure.
     layers = "".join(
         '<div class="bp-layer">'
-        f'<label><input type="checkbox"{" checked" if item.get("visible", True) else ""} data-layer="{html.escape(item["layer_id"], quote=True)}">'
+        f'<label title="{html.escape(item.get("description") or item["label"], quote=True)}">'
+        f'<input type="checkbox"{" checked" if item.get("visible", True) else ""} data-layer="{html.escape(item["layer_id"], quote=True)}">'
         f'<span class="bp-sw" style="background:{item["color"]}"></span>'
-        f'<span class="bp-lab" title="{html.escape(item["label"], quote=True)}">{html.escape(item["label"])}</span>'
+        f'<span class="bp-lab">{html.escape(item["label"])}</span>'
         '</label>'
-        f'<span class="bp-n">{counts[item["layer_id"]]}</span>'
+        + (f'<button type="button" class="bp-i" data-info="{html.escape(item["layer_id"], quote=True)}" '
+           f'aria-expanded="false" title="{html.escape(item["description"], quote=True)}" '
+           f'aria-label="What {html.escape(item["label"], quote=True)} is">i</button>'
+           if item.get("description") else "")
+        + f'<span class="bp-n">{counts[item["layer_id"]]}</span>'
         f'<button type="button" class="bp-only" data-only="{html.escape(item["layer_id"], quote=True)}">only</button>'
         # SELECTING THE LAYER IS WHAT CONNECTS THE TWO HALVES OF THE PAGE: the
         # side-chain and neighbourhood tools act on a selection, and a layer
@@ -2077,9 +2316,12 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
         # the same affordance in the same place.
         '<button type="button" class="bp-only" data-select='
         f'"{html.escape(item["layer_id"], quote=True)}" '
-        'title="Select this layer\u2019s residues \u2014 shift-click to add to '
+        + 'title="Select this layer\u2019s residues \u2014 shift-click to add to '
         'the selection">sel</button>'
         '</div>'
+        + (f'<div class="bp-note" data-note="{html.escape(item["layer_id"], quote=True)}" '
+           f'hidden>{html.escape(item["description"])}</div>'
+           if item.get("description") else "")
         for item in state["layers"]
     )
 
@@ -2109,9 +2351,19 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
         # The opening state is the reference, so the button opens wearing the
         # reference's word for its partners; syncPartnerButton swaps it with
         # the conformation from there.
-        opening = (partners.get("labels") or {}).get("0") or partners.get("label") or "Partners"
+        # ...and it carries ALL of them at once, stacked, so the control is
+        # the width of the longest word in every state. syncPartnerButton only
+        # changes which one is visible.
+        words = dict(partners.get("labels") or {})
+        if not words:
+            words = {"0": partners.get("label") or "Partners"}
+        first = min(words, key=lambda key: int(key))
+        swap = "".join(
+            f'<span class="bm-swap-i{" on" if key == first else ""}" '
+            f'data-state="{html.escape(str(key), quote=True)}">{html.escape(word)}</span>'
+            for key, word in sorted(words.items(), key=lambda kv: int(kv[0])))
         partnerbar = ('<button type="button" class="bm-btn bm-solo" id="pinsp-partners" '
-                      f'aria-pressed="true">{html.escape(opening)}'
+                      f'aria-pressed="true"><span class="bm-swap">{swap}</span>'
                       '</button>')
 
     morph = state.get("morph") or {}
@@ -2119,14 +2371,15 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
     if morph.get("mode") == "browser":
         buttons = "".join(
             '<button type="button" class="bm-btn" '
-            f'data-conf="{index}" aria-pressed="{"true" if index == 0 else "false"}">'
+            f'data-conf="{index}" aria-pressed="{"true" if index == 0 else "false"}" '
+            f'title="{html.escape(item["label"], quote=True)}">'
             f'{html.escape(item["label"])}</button>'
             for index, item in enumerate(morph.get("conformers", []))
         )
         morphbar = ('<div class="pinsp-morph" id="pinsp-morph" data-busy="0">'
                     f'<div class="bm-ring" role="group" aria-label="Conformation">{buttons}</div>'
-                    f'{partnerbar}'
-                    '<span class="bp-muted" id="pinsp-morph-note"></span></div>')
+                    f'{partnerbar}</div>'
+                    '<span id="pinsp-morph-note"></span>')
     elif partnerbar:
         morphbar = f'<div class="pinsp-morph" id="pinsp-morph">{partnerbar}</div>'
     stage_has_ring = morph.get("mode") == "browser"
@@ -2429,12 +2682,17 @@ def render_inspection_bundle(
         # own machine can work out: N conformers cost N frames here and the
         # page expands them to N + (N-1)*steps on load. At 600 residues that
         # is the difference between 15 frames and 3 in the file.
-        # A PARTNER BELONGS TO A STATE. The reference's partner is where the
-        # reference put it; a conformer that brings its own has it somewhere
-        # else entirely. So each conformation's partners are their own block of
-        # positions, present in every frame and revealed only while that
-        # conformation is the one on screen -- which is the only honest way to
-        # show a receptor whose bound partner differs between states.
+        # A PARTNER BELONGS TO THE STATES THAT HOLD IT -- WHICH MAY BE MORE
+        # THAN ONE. A receptor's bound Fab is in the state it was solved in and
+        # nowhere else, so it is drawn only while that conformation is on
+        # screen; showing it over the other state's coordinates would be a
+        # composite passed off as an observation. But the second protomer of a
+        # homodimer is in BOTH files, and it is the same molecule in both: there
+        # is no reason for it to blink out while the first protomer moves and
+        # reappear when it lands. So partner chains are clustered across states
+        # first (`_partner_clusters`), and a chain that two states both carry
+        # becomes ONE block whose coordinates differ per frame -- which means
+        # the interpolation that moves the target moves it too, for free.
         partner_spec = [list(partner_chains or ())]
         for entry in conformers:
             partner_spec.append(list(entry.get("partner_chains") or ()))
@@ -2445,49 +2703,98 @@ def render_inspection_bundle(
         chain_ids = [k[0] for k in keys]
         residue_numbers = [k[1] for k in keys]
         paths = [source] + [Path(e["path"]).resolve() for e in conformers]
-        owner, taken, blocks = {}, set(chain_ids), []
-        partner_sidechains: list[list[Any]] = []
-        for index, (path, group) in enumerate(zip(paths, partner_spec)):
-            if not group:
-                continue
-            trace = _ca_trace(path)
-            wanted = set(group)
-            extra = sorted(k for k in trace if k[0] in wanted)
-            if not extra:
-                continue
-            # Two conformations may both carry a chain "B", and one object
-            # cannot hold the same (chain, number) address twice -- the
-            # annotation lookup and the selection both key on it. Rename on
-            # collision rather than silently merging two different molecules.
-            renamed = {}
-            for chain in sorted(wanted):
+        n_states = len(paths)
+        traces = {index: _ca_trace(path) for index, path in enumerate(paths)
+                  if partner_spec[index]}
+        clusters = _partner_clusters(partner_spec, traces)
+        owner: dict[str, list[int]] = {}
+        taken = set(chain_ids)
+        renamed_from: dict[str, str] = {}
+        partner_names: list[list[str]] = [[] for _ in range(n_states)]
+        partner_sidechains: list[list[Any]] = [[] for _ in range(n_states)]
+        grouped: dict[tuple[int, ...], list[str]] = {}
+        sizes: dict[tuple[int, ...], int] = {}
+        bridges: dict[tuple[int, ...], dict[int, list[list[Any]]]] = {}
+        for chain in sorted(clusters):
+            for states in clusters[chain]:
+                # One object cannot hold the same (chain, number) address
+                # twice -- the annotation lookup and the selection both key on
+                # it. Two DIFFERENT molecules under one letter are still
+                # renamed apart rather than merged; what has changed is that
+                # the same molecule twice is no longer one of those cases.
                 label = chain
                 suffix = 1
                 while label in taken:
                     label = f"{chain}{suffix}"
                     suffix += 1
                 taken.add(label)
-                renamed[chain] = label
-                owner[label] = index
-            # THE PARTNER MOVES WITH ITS RECEPTOR. Conformer i's target was
-            # rotated onto the reference; its partner has to take the same
-            # trip or it is left floating where the original crystal put it.
-            block = fits[index](np.array([trace[k][1] for k in extra], dtype=float))
-            # ...and so do its side chains, under the same transform and at the
-            # offset this block lands on. Read before chain_ids grows, because
-            # that length IS the offset.
-            if capture_sidechains:
-                partner_sidechains += _sidechain_rows(path, extra, len(chain_ids),
-                                                      fits[index])
-            stacks = [np.vstack([stack, block]) for stack in stacks]
-            chain_ids += [renamed[k[0]] for k in extra]
-            residue_numbers += [k[1] for k in extra]
-            names += [trace[k][0] for k in extra]
-            blocks.append({"conformer": index, "label": labels[index],
-                           "chains": [renamed[c] for c in sorted(wanted)],
-                           "renamed_from": {renamed[c]: c for c in sorted(wanted)
-                                            if renamed[c] != c} or None,
-                           "n_positions": len(extra)})
+                if label != chain:
+                    renamed_from[label] = chain
+                owner[label] = list(states)
+                # THE SAME MAPPING RULE AS THE TARGET. A protomer the two
+                # states model over different residues poses the question
+                # `morph_mapping` already answers, so it is answered the same
+                # way here rather than by a second rule that could disagree:
+                # "exact" refuses, "intersection" keeps what they share, and
+                # "union" keeps every position and bridges the state that
+                # lacks one -- through `_bridge_trace`, the target's own
+                # routine.
+                sets = [{k for k in traces[index] if k[0] == chain} for index in states]
+                shared = set.intersection(*sets)
+                extra = sorted(set.union(*sets) if morph_mapping == "union" else shared)
+                if not extra:
+                    continue
+                if morph_mapping == "exact" and any(len(s) != len(shared) for s in sets):
+                    raise ValueError(
+                        f"partner chain {chain} is modelled over different residues in the "
+                        f"{len(states)} states that share it, so an exact mapping cannot pair "
+                        'its positions; pass morph_mapping="union" (or "intersection") or '
+                        "trim the files to the same range")
+                # THE PARTNER MOVES WITH ITS RECEPTOR. State i's target was
+                # rotated onto the reference; its partner has to take the same
+                # trip or it is left floating where the original crystal put
+                # it. A state that does not hold this chain at all still needs
+                # coordinates for the positions -- the frames of one object are
+                # all the same length -- so it borrows the first owning state's.
+                # They are never drawn there.
+                offset = len(chain_ids)
+                for frame in range(n_states):
+                    home = frame if frame in states else states[0]
+                    trace = {k: v for k, v in traces[home].items() if k[0] == chain}
+                    coords, block_names, bridged = _bridge_trace(extra, trace)
+                    stacks[frame] = np.vstack([stacks[frame], fits[home](coords)])
+                    partner_names[frame] += block_names
+                    if frame in states and bridged:
+                        bridges.setdefault(tuple(states), {}).setdefault(
+                            frame, []).extend([label, int(k[1])] for k in bridged)
+                    # ...and so do the side chains, under the same transform
+                    # and at the offset this block lands on. Read before
+                    # chain_ids grows, because that length IS the offset. A
+                    # bridged position has no residue in this state and so no
+                    # side chain; `_sidechain_rows` skips the keys it cannot
+                    # find, which is exactly that.
+                    if capture_sidechains:
+                        partner_sidechains[frame] += _sidechain_rows(
+                            paths[home], extra, offset, fits[home])
+                chain_ids += [label] * len(extra)
+                residue_numbers += [k[1] for k in extra]
+                signature = tuple(states)
+                grouped.setdefault(signature, []).append(label)
+                sizes[signature] = sizes.get(signature, 0) + len(extra)
+        names = list(names) + partner_names[0]
+        blocks = [
+            {"conformer": states[0], "conformers": list(states),
+             "label": labels[states[0]], "chains": sorted(chains),
+             "renamed_from": {c: renamed_from[c] for c in sorted(chains)
+                              if c in renamed_from} or None,
+             "n_positions": sizes[states], "morphs": len(states) > 1,
+             # Which of this block's positions are a depiction rather than an
+             # observation, per state. A bridged protomer residue is the same
+             # claim as a bridged target residue and is reported beside it.
+             "residues_bridged": {str(k): v for k, v
+                                  in sorted(bridges.get(states, {}).items())} or None}
+            for states, chains in sorted(grouped.items())
+        ]
         if blocks:
             morph_report["partner_blocks"] = blocks
             # ONE LABEL PER STATE. The button names what is on screen, and
@@ -2495,12 +2802,13 @@ def render_inspection_bundle(
             # shows its other protomers, the bound state shows a receptor.
             # One global string made the button say "other protomers" over a
             # receptor, which is a caption contradicting its own picture.
-            per_state = {0: partner_label}
+            state_labels = {0: partner_label}
             for index, entry in enumerate(conformers, start=1):
-                per_state[index] = entry.get("partner_label") or partner_label
+                state_labels[index] = entry.get("partner_label") or partner_label
+            used = {index for states in owner.values() for index in states}
             partner_state = {"label": partner_label, "owner": owner,
-                             "labels": {str(k): v for k, v in per_state.items()
-                                        if k in set(owner.values())},
+                             "labels": {str(k): v for k, v in state_labels.items()
+                                        if k in used},
                              "per_conformer": True}
         # ONE SIDE-CHAIN ROW SET PER CONFORMATION. `add_pdb` gets these for
         # free; this path builds its frames from Cα coordinates, so without
@@ -2515,7 +2823,8 @@ def render_inspection_bundle(
         sidechain_rows: list[list[Any] | None] = [None] * len(stacks)
         if capture_sidechains:
             sidechain_rows = [
-                (_sidechain_rows(path, keys, 0, fits[index]) + partner_sidechains) or None
+                (_sidechain_rows(path, keys, 0, fits[index]) + partner_sidechains[index])
+                or None
                 for index, path in enumerate(paths)
             ]
         # ...AND THE TYPES, WHICH IS WHAT MAKES THE SIDE CHAINS DRAW AS ATOMS.
@@ -2545,10 +2854,11 @@ def render_inspection_bundle(
         # molecule at the shared positions -- an ortholog, a mutant, a
         # redesign -- so a strip and a residue card spelling the reference's
         # sequence over it are captioning the wrong structure. Each frame
-        # carries its own names; the partner tail is appended unchanged,
-        # because a partner block is the same coordinates in every frame.
-        partner_tail = names[len(keys):]
-        frame_names = [list(state) + partner_tail for state in state_names]
+        # carries its own names, and so does the partner tail: a shared
+        # protomer is a different molecule at a mutated position in the state
+        # that mutates it, exactly as the target is.
+        frame_names = [list(state) + partner_names[index]
+                       for index, state in enumerate(state_names)]
         for index, coords in enumerate(stacks):
             viewer.add(np.asarray(coords, dtype=float), chains=chain_ids,
                        residue_numbers=residue_numbers,
@@ -2829,7 +3139,16 @@ def _ca_trace(cif_path: Path) -> dict[tuple[str, int], tuple[str, list[float]]]:
     out: dict[tuple[str, int], tuple[str, list[float]]] = {}
     for chain in models[0]:
         for residue in chain:
-            atom = residue.child_dict.get("CA") or residue.child_dict.get("C4'")
+            # NOT `get("CA") or get("C4prime")`. Biopython returns an Entity
+            # here, and `or` asks it for a truth value, which calls
+            # Entity.__len__ -> len(self.selected_child); on a DisorderedAtom
+            # whose selected child is a plain Atom that raises "TypeError:
+            # object of type Atom has no len()". So every crystal structure
+            # carrying an altloc at a backbone atom died on the way in, with a
+            # traceback naming neither the file nor the residue.
+            atom = residue.child_dict.get("CA")
+            if atom is None:
+                atom = residue.child_dict.get("C4'")
             if atom is None or residue.id[0] != " ":
                 continue
             key = (chain.id, int(residue.id[1]))
@@ -2918,6 +3237,42 @@ def _superpose(mobile: np.ndarray, target: np.ndarray) -> np.ndarray:
     return _kabsch(mobile, target)(mobile)
 
 
+def _bridge_trace(keys: list[tuple[str, int]], trace: dict[tuple[str, int], Any]):
+    """(coords for every key, per-key name, bridged key list) for one state.
+
+    Shared by the target mapping and by a partner chain that two states both
+    carry, so a protomer modelled over different residues in the two files is
+    bridged by exactly the rule the target is, rather than by a second one
+    that could disagree with it.
+    """
+    coords, names_out, bridged = [], [], []
+    present = [index for index, key in enumerate(keys) if key in trace]
+    for index, key in enumerate(keys):
+        if key in trace:
+            coords.append(trace[key][1])
+            names_out.append(trace[key][0])
+            continue
+        same = [j for j in present if keys[j][0] == key[0]]
+        before = [j for j in same if j < index]
+        after = [j for j in same if j > index]
+        if before and after:
+            j0, j1 = before[-1], after[0]
+            span = float(j1 - j0)
+            t = (index - j0) / span if span else 0.5
+            p0 = np.asarray(trace[keys[j0]][1], dtype=float)
+            p1 = np.asarray(trace[keys[j1]][1], dtype=float)
+            coords.append(p0 * (1.0 - t) + p1 * t)
+        elif before or after:
+            j = (before[-1] if before else after[0])
+            coords.append(np.asarray(trace[keys[j]][1], dtype=float))
+        else:
+            raise ValueError(
+                f"state models no residue in chain {key[0]}; cannot bridge it")
+        names_out.append("UNK")
+        bridged.append(key)
+    return np.array(coords, dtype=float), names_out, bridged
+
+
 def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
                       mapping: str = "exact", reference_label: str = "reference",
                       exclude_chains: list[str] | None = None):
@@ -2937,8 +3292,8 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     and the report then names how many residues each file lost, so a dropped
     epitope cannot pass unnoticed.
     """
-    if mapping not in {"exact", "intersection"}:
-        raise ValueError('morph_mapping must be "exact" or "intersection"')
+    if mapping not in {"exact", "intersection", "union"}:
+        raise ValueError('morph_mapping must be "exact", "intersection" or "union"')
     skip = set(exclude_chains or ())
     ref = {k: v for k, v in _ca_trace(reference).items() if k[0] not in skip}
     traces, labels, digests = [ref], [reference_label], [_sha256(reference)]
@@ -2954,6 +3309,9 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     common = set(ref)
     for trace in traces[1:]:
         common &= set(trace)
+    union = set(ref)
+    for trace in traces[1:]:
+        union |= set(trace)
     dropped = []
     for label, trace in zip(labels, traces):
         missing = len(set(trace) - common)
@@ -2967,29 +3325,48 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     if len(common) < 4:
         raise ValueError("conformers share fewer than 4 residues; nothing to superpose")
 
-    keys = sorted(common)
-    names = [ref[k][0] for k in keys]
+    # UNION: every position any state models stays in the topology, so the state
+    # that HAS a residue draws it. A state that lacks one is not given a residue
+    # there -- it is given a point ON ITS OWN 71->73 path (linear bridge between
+    # its nearest modelled flanks in the same chain) so the ribbon does not snap,
+    # and the position is named UNK for that state so the strip and the residue
+    # card say "not in this state" rather than naming a residue it does not have.
+    # The fit and the reported RMSD use the shared positions only; a bridge is a
+    # depiction, never an observation, and must not move the superposition.
+    keys = sorted(union if mapping == "union" else common)
+    shared = [k for k in keys if all(k in trace for trace in traces)]
+    shared_rows = [index for index, key in enumerate(keys) if key in set(shared)]
+
+    per_state = [_bridge_trace(keys, trace) for trace in traces]
+    # A COPY. The partner loop appends to `names` in place, and if this is the
+    # same list object as state_names[0] the reference frame's name list grows
+    # by the partner tail twice and the viewer drops names for that frame.
+    names = list(per_state[0][1])
     # ONE NAME LIST PER STATE. The mapping pairs positions, not identities: a
     # mutant, an ortholog or a redesign has its own residue at the position it
     # shares, and the page is entitled to say which one it is drawing.
-    state_names = [[trace[k][0] for k in keys] for trace in traces]
-    base = np.array([ref[k][1] for k in keys], dtype=float)
+    state_names = [entry[1] for entry in per_state]
+    base = per_state[0][0]
     stacks, transforms = [base], [lambda points: np.asarray(points, dtype=float)]
-    for trace in traces[1:]:
-        moved = np.array([trace[k][1] for k in keys], dtype=float)
-        fit = _kabsch(moved, base)
-        stacks.append(fit(moved))
+    for coords in (entry[0] for entry in per_state[1:]):
+        fit = _kabsch(coords[shared_rows], base[shared_rows])
+        stacks.append(fit(coords))
         transforms.append(fit)
     report = {
         "mapping": mapping,
         "n_residues": len(keys),
+        "n_shared_residues": len(shared),
         "residue_range": [int(keys[0][1]), int(keys[-1][1])],
         "conformers": [
             {"label": label, "sha256": digest, "residues_dropped": drop,
-             "rmsd_to_reference_A": round(float(np.sqrt(((stack - base) ** 2).sum(1).mean())), 2)}
-            for label, digest, drop, stack in zip(labels, digests, dropped, stacks)
+             "residues_bridged": [[k[0], int(k[1])] for k in entry[2]],
+             "rmsd_to_reference_A": round(float(np.sqrt(
+                 ((stack[shared_rows] - base[shared_rows]) ** 2).sum(1).mean())), 2)}
+            for label, digest, drop, stack, entry
+            in zip(labels, digests, dropped, stacks, per_state)
         ],
     }
+
     return keys, names, stacks, labels, report, transforms, state_names
 
 

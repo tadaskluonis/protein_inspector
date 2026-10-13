@@ -94,6 +94,27 @@ buttons['pinsp-morph'] = morphBar;
 const partnerBtn = stubButton();
 partnerBtn.disabled = false;
 partnerBtn.click = function () { if (!this.disabled) this.handlers.forEach((fn) => fn()); };
+// EVERY STATE'S WORD, STACKED INSIDE THE BUTTON. The real control holds one
+// `.bm-swap-i` span per conformation and shows one of them, so the button is
+// as wide as the longest word in every state and swapping it cannot re-wrap
+// the bar. The page reads them with querySelectorAll and sets className, so
+// the stub has to be a small real list rather than a textContent sink --
+// otherwise the page throws on the first sync and nothing else is tested.
+partnerBtn.swap = Object.keys((state.partners && state.partners.labels) || {'0': ''})
+    .sort((a, b) => Number(a) - Number(b))
+    .map((key, index) => ({
+        className: 'bm-swap-i' + (index === 0 ? ' on' : ''),
+        textContent: ((state.partners && state.partners.labels) || {})[key] || '',
+        getAttribute(name) { return name === 'data-state' ? key : null; },
+    }));
+partnerBtn.querySelectorAll = function (sel) {
+    return sel === '.bm-swap-i' ? this.swap : [];
+};
+// What a reader would see on it: the one span that is visible.
+Object.defineProperty(partnerBtn, 'shownLabel', {
+    get() { const on = this.swap.filter((s) => / on$/.test(s.className));
+            return on.length === 1 ? on[0].textContent : null; },
+});
 buttons['pinsp-partners'] = partnerBtn;
 
 // One button per conformation, discovered the way the page discovers them.
@@ -573,16 +594,28 @@ if (state.partners && state.partners.owner) {
         const v = renderer.visibility;
         return (v && v.positions) ? Array.from(v.positions).sort((a, b) => a - b) : null;
     };
+    // A partner belongs to a LIST of conformations -- one for a bound Fab,
+    // both for a protomer the two states share. (A bare number is what a
+    // bundle written before that carried.)
+    const statesOf = (c) => {
+        const v = ownerOf[c];
+        if (v === undefined) return null;
+        return Array.isArray(v) ? v : [v];
+    };
     const targetOnly = chains.map((c, i) => [c, i])
-        .filter(([c]) => ownerOf[c] === undefined).map(([, i]) => i);
-    const ownedBy = (k) => chains.map((c, i) => [c, i])
-        .filter(([c]) => ownerOf[c] === k).map(([, i]) => i);
+        .filter(([c]) => statesOf(c) === null).map(([, i]) => i);
+    const ownedBy = (...ks) => chains.map((c, i) => [c, i])
+        .filter(([c]) => {
+            const s = statesOf(c);
+            return s !== null && ks.every((k) => s.indexOf(k) >= 0);
+        }).map(([, i]) => i);
 
     report.partners = {
         disabledAtStart: partnerBtn.disabled,
         pressedAtStart: partnerBtn.getAttribute('aria-pressed'),
         onAtStart: visible(),
         expectedOn: targetOnly.concat(ownedBy(0)).sort((a, b) => a - b),
+        wordAtStart: partnerBtn.shownLabel,
     };
     renderer.framesVisited.length = 0;
     partnerBtn.click();
@@ -615,6 +648,23 @@ if (state.partners && state.partners.owner) {
         drain(400);
     }
 
+    // ...and WHILE the animation is running, two frames in. A partner that
+    // belongs to only one endpoint goes the moment the target starts moving,
+    // because the far end holds no coordinates it was ever solved against. A
+    // partner BOTH endpoints hold stays and interpolates with them -- the
+    // other protomers of a homo-oligomer have no reason to blink out.
+    if (state.morph && morphButtons.length > 1) {
+        const last = morphButtons.length - 1;
+        morphButtons[last].click();
+        drain(2);
+        report.partners.duringMorph = visible();
+        report.partners.expectedDuringMorph = targetOnly.concat(ownedBy(0, last))
+            .sort((a, b) => a - b);
+        drain(400);
+        morphButtons[0].click();
+        drain(400);
+    }
+
     // Morph to the last conformation: its own partners appear, state 0's go.
     if (state.morph && morphButtons.length > 1) {
         const last = morphButtons.length - 1;
@@ -624,6 +674,10 @@ if (state.partners && state.partners.owner) {
         report.partners.expectedAfterMorph = targetOnly.concat(ownedBy(last))
             .sort((a, b) => a - b);
         report.partners.disabledAfterMorph = partnerBtn.disabled;
+        // Exactly one word visible, and it is this state's -- the swap is a
+        // visibility change, so "none on" or "two on" would both be bugs that
+        // a textContent assertion could not see.
+        report.partners.wordAfterMorph = partnerBtn.shownLabel;
     }
 }
 

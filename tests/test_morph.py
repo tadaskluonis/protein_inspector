@@ -21,7 +21,8 @@ from Bio.PDB import Atom, Chain, Model, Residue, Structure
 from Bio.PDB.mmcifio import MMCIFIO
 
 from protein_inspector import render_inspection_bundle
-from protein_inspector.renderer import _ca_trace, _morph_frames, _superpose
+from protein_inspector.renderer import (_ca_trace, _conformer_stacks, _morph_frames,
+                                        _superpose)
 
 
 def _write(path, coords, chain_id="A", numbers=None, resname="ALA", extra_atom=False):
@@ -220,3 +221,151 @@ def test_morph_does_not_disturb_the_colouring(tmp_path):
     assert morphed["frames"][0]["chains"] == plain["frames"][0]["chains"]
     assert (morphed["frames"][0]["residue_numbers"]
             == plain["frames"][0]["residue_numbers"])
+
+
+# --- union mapping: states that differ by an indel -----------------------
+
+def test_union_keeps_a_position_only_one_state_models(tmp_path):
+    """THE POINT OF THE MODE. Under "intersection" a residue only one state has
+    is removed from EVERY state, so the state whose file is complete draws a
+    chain break at a position its own structure models -- which reads as a
+    broken model rather than an alignment gap. "union" keeps the position."""
+    full = _write(tmp_path / "full.cif", _helix(6), numbers=[1, 2, 3, 4, 5, 6])
+    short = _write(tmp_path / "short.cif", _helix(5, phase=0.3),
+                   numbers=[1, 2, 3, 5, 6])
+
+    keys, names, stacks, labels, report, _, state_names = _conformer_stacks(
+        full, [{"path": str(short), "label": "short"}], "union", "full")
+
+    assert [k[1] for k in keys] == [1, 2, 3, 4, 5, 6]
+    assert report["n_residues"] == 6 and report["n_shared_residues"] == 5
+    assert report["conformers"][0]["residues_bridged"] == []
+    assert report["conformers"][1]["residues_bridged"] == [["A", 4]]
+    # ...and "intersection" is unchanged: the position goes, from both states.
+    inter = _conformer_stacks(full, [{"path": str(short), "label": "short"}],
+                              "intersection", "full")[4]
+    assert inter["n_residues"] == 5
+
+
+def test_union_names_the_missing_position_unk_in_the_state_that_lacks_it(tmp_path):
+    """A BRIDGE MUST NOT CLAIM A RESIDUE. The strip and the residue card read
+    the per-state names, so a state that does not model position 4 has to say
+    so there rather than inherit the reference's residue."""
+    full = _write(tmp_path / "full.cif", _helix(6), numbers=[1, 2, 3, 4, 5, 6])
+    short = _write(tmp_path / "short.cif", _helix(5, phase=0.3),
+                   numbers=[1, 2, 3, 5, 6])
+
+    keys, _names, _stacks, _labels, _report, _fits, state_names = _conformer_stacks(
+        full, [{"path": str(short), "label": "short"}], "union", "full")
+
+    gap = [k[1] for k in keys].index(4)
+    assert state_names[0][gap] == "ALA"
+    assert state_names[1][gap] == "UNK"
+    assert "UNK" not in state_names[0]
+
+
+def test_union_bridges_on_the_lacking_states_own_path(tmp_path):
+    """The bridge is a point between the flanks THAT STATE models, so its
+    ribbon stays continuous along the bond that is really there -- it is not
+    the reference's coordinate borrowed into another structure."""
+    full = _write(tmp_path / "full.cif", _helix(6), numbers=[1, 2, 3, 4, 5, 6])
+    short = _write(tmp_path / "short.cif", _helix(5, phase=0.3),
+                   numbers=[1, 2, 3, 5, 6])
+
+    keys, _n, stacks, _l, _r, _f, _sn = _conformer_stacks(
+        full, [{"path": str(short), "label": "short"}], "union", "full")
+
+    gap = [k[1] for k in keys].index(4)
+    bridged = stacks[1][gap]
+    midpoint = (stacks[1][gap - 1] + stacks[1][gap + 1]) / 2.0
+    assert np.allclose(bridged, midpoint, atol=1e-9)
+
+
+def test_union_keeps_bridges_out_of_the_fit_and_the_rmsd(tmp_path):
+    """A DEPICTION MUST NOT MOVE THE SUPERPOSITION. Both numbers have to be the
+    ones the shared positions alone would give, or an invented coordinate is
+    quietly steering the comparison the reader is shown."""
+    coords = _helix(6)
+    full = _write(tmp_path / "full.cif", coords, numbers=[1, 2, 3, 4, 5, 6])
+    moved = _helix(5, phase=0.3)
+    short = _write(tmp_path / "short.cif", moved, numbers=[1, 2, 3, 5, 6])
+    # the same five residues on both sides, so no bridge is needed at all
+    five = _write(tmp_path / "five.cif", coords[[0, 1, 2, 4, 5]],
+                  numbers=[1, 2, 3, 5, 6])
+
+    union = _conformer_stacks(full, [{"path": str(short), "label": "s"}],
+                              "union", "full")[4]
+    exact = _conformer_stacks(five, [{"path": str(short), "label": "s"}],
+                              "exact", "five")[4]
+    assert (union["conformers"][1]["rmsd_to_reference_A"]
+            == exact["conformers"][1]["rmsd_to_reference_A"])
+
+
+def test_union_leaves_the_reference_frame_its_own_names(tmp_path):
+    """REGRESSION. state_names[0] was the same list object the partner loop
+    appends to, so the reference frame's name list grew by the partner tail
+    twice and py2Dmol dropped names and types for that frame -- a warning on
+    stdout and a frame that cannot label its own residues."""
+    full = _write(tmp_path / "full.cif", _helix(6), numbers=[1, 2, 3, 4, 5, 6])
+    short = _write(tmp_path / "short.cif", _helix(5, phase=0.3),
+                   numbers=[1, 2, 3, 5, 6])
+
+    keys, names, _s, _l, _r, _f, state_names = _conformer_stacks(
+        full, [{"path": str(short), "label": "short"}], "union", "full")
+
+    names.append("SENTINEL")
+    assert len(state_names[0]) == len(keys)
+    assert "SENTINEL" not in state_names[0]
+
+
+def test_union_is_the_only_new_mode_and_a_bad_one_is_refused(tmp_path):
+    full = _write(tmp_path / "full.cif", _helix(6))
+    short = _write(tmp_path / "short.cif", _helix(6, phase=0.3))
+    with pytest.raises(ValueError, match="union"):
+        _conformer_stacks(full, [{"path": str(short), "label": "s"}],
+                          "nearest", "full")
+
+
+def test_an_altloc_on_a_backbone_atom_does_not_kill_the_trace(tmp_path):
+    """Biopython hands back an Entity, and `a or b` asks it for a truth value.
+
+    `Entity.__len__` is `len(self.selected_child)`, and on a DisorderedAtom
+    whose selected child is a plain Atom that raises `TypeError: object of
+    type 'Atom' has no len()`. Every crystal structure with an altloc at a CA
+    therefore died on the way into a morph, with a traceback that named
+    neither the file nor the residue. Found on PDB 2Y0Q / 2Y20 / 2Y21, the
+    Af1503 A291 variant series, while building a five-state gearbox morph.
+    """
+    from pathlib import Path
+
+    from Bio.PDB import Atom, Chain, Model, Residue, Structure
+    from Bio.PDB.mmcifio import MMCIFIO
+
+    from protein_inspector.renderer import _ca_trace
+
+    structure = Structure.Structure("fixture")
+    model = Model.Model(0)
+    chain = Chain.Chain("A")
+    for index in range(1, 6):
+        residue = Residue.Residue((" ", index, " "), "ALA", " ")
+        atom = Atom.Atom("CA", (float(index * 3), 0.0, 0.0), 0.0, 1.0, " ", "CA",
+                         index, element="C")
+        if index == 3:
+            # A disordered CA carrying one altloc -- the shape that threw.
+            atom.set_altloc("A")
+            disordered = Atom.DisorderedAtom("CA")
+            disordered.disordered_add(atom)
+            residue.add(disordered)
+        else:
+            residue.add(atom)
+        chain.add(residue)
+    model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    path = tmp_path / "altloc.cif"
+    io.save(str(path))
+
+    trace = _ca_trace(Path(str(path)))
+    assert len(trace) == 5
+    assert trace[("A", 3)][0] == "ALA"
