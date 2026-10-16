@@ -24,7 +24,7 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "protein-inspector-1.14"
+INSPECTOR_VERSION = "protein-inspector-1.14.0"
 MANIFEST_SCHEMA = "protein-inspector-manifest-1"
 UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
 UPSTREAM_REPOSITORY = "https://github.com/sokrypton/py2Dmol"
@@ -2430,8 +2430,8 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
         f' rev&nbsp;{UPSTREAM_REVISION[:7]} \u00b7 '
         f'<a href="{INSPECTOR_REPOSITORY}">Protein Inspector</a> '
         # ...the NUMBER, not the slug. INSPECTOR_VERSION is
-        # "protein-inspector-1.14", which after the link text read "Protein
-        # Inspector protein-inspector-1.14 by Tadas Kluonis". The full slug
+        # "protein-inspector-1.14.0", which after the link text read "Protein
+        # Inspector protein-inspector-1.14.0 by Tadas Kluonis". The full slug
         # still travels in the comment at the top of the file and in the
         # manifest, where it is an identifier rather than a label.
         f'{INSPECTOR_VERSION.removeprefix("protein-inspector-")}'

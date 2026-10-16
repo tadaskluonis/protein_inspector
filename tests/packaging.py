@@ -154,16 +154,22 @@ if not RAW_PACKAGE_DATA:
 # --- ONE VERSION, and setup.py reads it rather than repeating it ------------
 # It used to carry its own literal, which is a second number that has to agree
 # with the package's and can only be found not to in a built wheel. setup.py
-# greps py2Dmol/__init__.py for it now - so what this guards is that the grep
-# still finds something, and that nothing has quietly put a literal back.
-_init_src = open("py2Dmol/__init__.py").read()
+# greps renderer.py for INSPECTOR_VERSION now - so what this guards is that
+# the grep still finds something, and that nothing has quietly put a literal
+# back.
+#
+# IT USED TO READ py2Dmol/__init__.py, which is the inlined VIEWER's version
+# and not this distribution's. The two had drifted to 2.0.0 and 1.13.0, so
+# honouring that check meant publishing a major bump for a feature release.
+# The viewer keeps its own number; this reads the one in the bundles.
+_rend_src = open("protein_inspector/renderer.py").read()
 _setup_src = open("setup.py").read()
-_m = re.search(r'^__version__ = "([^"]+)"', _init_src, re.M)
+_m = re.search(r'^INSPECTOR_VERSION = "protein-inspector-([^"]+)"', _rend_src, re.M)
 if not _m:
-    bad.append("py2Dmol/__init__.py has no __version__ line - setup.py reads it"
-               " from there and will fail to build at all")
+    bad.append("protein_inspector/renderer.py has no INSPECTOR_VERSION line -"
+               " setup.py reads it from there and will fail to build at all")
 else:
-    print(f"version {_m.group(1)}, from py2Dmol/__init__.py")
+    print(f"version {_m.group(1)}, from protein_inspector/renderer.py")
     if re.search(r"version\s*=\s*['\"][0-9]", _setup_src):
         bad.append("setup.py has a literal version= again - two numbers that"
                    " must agree are two that can disagree, and the wheel is"
@@ -182,7 +188,14 @@ if "--wheel" in sys.argv:
     have, name = wheel_contents()
     print(f"built {name}")
     for res in sorted(opened):
-        if res not in have:
+        # ...BASENAMES ON BOTH SIDES. wheel_contents() discards the path and
+        # returns basenames, while the keys of `opened` keep the subdirectory
+        # viewer.py reads them from - "bundles/py2Dmol.notebook.min.js". So
+        # every resource living in a subdirectory compared unequal and was
+        # reported as missing from a wheel that in fact contained it, while
+        # viewer.html passed for the sole reason that it sits at the top.
+        # A check that cannot pass teaches people to ignore it.
+        if os.path.basename(res) not in have:
             bad.append(f"{res} is declared in setup.py but did not reach the wheel")
 
 for b in bad:

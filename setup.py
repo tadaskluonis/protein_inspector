@@ -5,12 +5,21 @@ from setuptools import setup, find_packages
 
 # ...read out of the package rather than retyped here. Importing it would pull
 # in numpy and IPython before they are installed, so this reads the line.
-_init = Path(__file__).parent.joinpath('py2Dmol', '__init__.py').read_text()
-VERSION = re.search(r'^__version__ = "([^"]+)"', _init, re.M).group(1)
+#
+# THE DISTRIBUTION'S OWN LINE, not py2Dmol's. The viewer inlined into every
+# bundle carries its own __version__ (2.0.0 as this is written) and moves on
+# its own schedule; this distribution has been on 1.x since 1.6.5 and PyPI
+# has the series to prove it. Reading the version off the viewer would have
+# turned a feature release into 1.13.0 -> 2.0.0, which tells every installer
+# that something broke. INSPECTOR_VERSION is stamped into every exported
+# bundle, so it is the number a reader can match against what they installed,
+# and that makes it the one worth being authoritative.
+_rend = Path(__file__).parent.joinpath('protein_inspector', 'renderer.py').read_text()
+VERSION = re.search(r'^INSPECTOR_VERSION = "protein-inspector-([^"]+)"', _rend, re.M).group(1)
 
 setup(
     name='protein-inspector',
-    version='1.13.0',
+    version=VERSION,
     # AUTHORSHIP OF THIS PACKAGE, not of the viewer it is built on. These
     # fields said 'sokrypton' / so3@mit.edu / the py2Dmol URL, which credited
     # generously but falsely: it implied Sergey Ovchinnikov wrote and endorsed

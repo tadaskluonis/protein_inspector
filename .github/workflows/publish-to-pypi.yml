@@ -36,6 +36,26 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
+      - name: The built version must match the release tag
+        # setup.py carries a literal version= string that a human has to
+        # remember to bump, so a release can be tagged v1.14.0 while the wheel
+        # inside it still says 1.13.0. PyPI rejects that as a duplicate; the
+        # worse case is a bump to the wrong new number, because a version on
+        # PyPI cannot be reused or corrected afterwards. The tag is the number
+        # someone chose deliberately, so the tag is the reference and setup.py
+        # is what gets checked against it.
+        # workflow_dispatch has no tag to compare against, hence the guard.
+        if: github.event_name == 'release'
+        run: |
+          wheel=$(ls dist/*.whl)
+          built=$(basename "$wheel" | cut -d- -f2)
+          tag=${GITHUB_REF_NAME#v}
+          echo "wheel reports $built, release is tagged $GITHUB_REF_NAME"
+          if [ "$built" != "$tag" ]; then
+            echo "::error::setup.py built $built but the release is tagged $GITHUB_REF_NAME - bump version= in setup.py and recreate the release"
+            exit 1
+          fi
+
       - name: The wheel must contain the package, not only its dependencies
         # A build once produced a wheel that installed numpy, gemmi, biopython
         # and ipython and NO protein_inspector, with pip exiting 0 and the
