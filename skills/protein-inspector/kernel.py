@@ -14,6 +14,13 @@ import sys
 
 SEARCH_PATHS = ("~/code/protein-inspector", "~/protein-inspector")
 
+# THE OLDEST ENGINE THIS SKILL'S TEXT IS TRUE OF. SKILL.md documents layer
+# descriptions and partners that morph with the target, which 1.13.0 does not
+# have. Without a floor, `pip install protein-inspector` leaves an older release
+# in place (the requirement is "already satisfied") and the agent renders with
+# an engine that quietly ignores half of what it was told to pass.
+MIN_VERSION = (1, 14, 0)
+
 
 def inspector_engine(path=None):
     """Import the renderer, adding a local checkout to sys.path if needed."""
@@ -40,7 +47,30 @@ def inspector_engine(path=None):
             "`pip install protein-inspector` or point PROTEIN_INSPECTOR_HOME "
             "at a local checkout."
         ) from exc
+    have = engine_version(engine)
+    if have < MIN_VERSION:
+        raise ImportError(
+            "protein_inspector %s is older than this skill needs (%s). Run "
+            "`pip install -U \"protein-inspector>=%s\"` and restart the kernel "
+            "(an already-imported package stays the old one until then), or "
+            "point PROTEIN_INSPECTOR_HOME at a current checkout."
+            % (".".join(map(str, have)), ".".join(map(str, MIN_VERSION)),
+               ".".join(map(str, MIN_VERSION[:2])))
+        )
     return engine
+
+
+def engine_version(engine):
+    """(major, minor, patch) of an imported engine, read off INSPECTOR_VERSION.
+
+    That slug (`protein-inspector-1.14.0`) is what every bundle is stamped
+    with, so it is the number a reader can match against what they installed.
+    An engine with no readable version counts as (0, 0, 0): too old to trust.
+    """
+    import re
+    slug = str(getattr(engine, "INSPECTOR_VERSION", ""))
+    nums = [int(n) for n in re.findall(r"\d+", slug.rsplit("-", 1)[-1])][:3]
+    return tuple(nums) + (0,) * (3 - len(nums))
 
 
 def inspect_structure(*args, **kwargs):

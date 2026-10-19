@@ -37,8 +37,16 @@ thing they see is the thing you brought them for.
 ## Setup
 
 ```bash
-pip install protein-inspector
+pip install -U "protein-inspector>=1.14"
 ```
+
+**Always with `-U` and the version floor.** A bare `pip install protein-inspector`
+does nothing when any older release is already in the environment - pip reports
+the requirement satisfied and keeps it - and the old engine then lacks features
+this page describes (the layer `description`, partners that morph with the
+target). The kernel refuses an engine older than 1.14 and says so, rather than
+rendering with it; after upgrading, restart the kernel, because a package that
+was already imported stays the old one until then.
 
 Or set `PROTEIN_INSPECTOR_HOME` to a local checkout (`~/code/protein-inspector`
 is probed by default). `gemmi` is installed with it.
