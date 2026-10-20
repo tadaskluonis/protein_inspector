@@ -37,14 +37,16 @@ thing they see is the thing you brought them for.
 ## Setup
 
 ```bash
-pip install -U "protein-inspector>=1.14"
+pip install -U "protein-inspector>=1.14.0"
 ```
+
+This page describes **1.14.0**, the current release.
 
 **Always with `-U` and the version floor.** A bare `pip install protein-inspector`
 does nothing when any older release is already in the environment - pip reports
 the requirement satisfied and keeps it - and the old engine then lacks features
 this page describes (the layer `description`, partners that morph with the
-target). The kernel refuses an engine older than 1.14 and says so, rather than
+target). The kernel refuses an engine older than 1.14.0 and says so, rather than
 rendering with it; after upgrading, restart the kernel, because a package that
 was already imported stays the old one until then.
 
@@ -72,7 +74,11 @@ save_artifacts(files=[report["path"]], language="python")
 residue deserves its own caption. `"visible": False` keeps a layer in the
 legend but unchecked at open. Numbers are **author residue numbers** in
 the file, so renumber before rendering if your analysis speaks a different
-numbering. Later layers paint over earlier ones — order background first.
+numbering. A layer paints on the chain named by its own `"chain"` key, falling
+back to the top-level `chain=` and then to the first chain in file order — so to
+annotate a hetero-oligomer whose chains are numbered continuously, give each
+layer its `"chain"` rather than renumbering the file. Later layers paint over
+earlier ones — order background first.
 
 **Give every layer a `description`.** A layer name is a label, not an
 explanation: a reader who meets `AS1`, `connector`, `AS2` has three names and
@@ -94,7 +100,10 @@ self-explanatory (`"Catalytic residues"`) does not need one, and the glyph
 then correctly does not appear on that row.
 
 Always read `report["unmapped_residues"]`: residues absent from the model are
-skipped, and silently if you don't look.
+skipped, and silently if you don't look. On a morph read
+`report["morph"]["conformers"]` as well — it lists every state the page will
+draw, in order, each with its `rmsd_to_reference_A`; a state you did not ask for
+means the reference went in twice.
 
 ## What else it can do
 
@@ -135,7 +144,13 @@ selection is filtered to them, so `Select all` / `sel` / `Select around` in
 one state never reach another state's coordinates.
 
 `conformers=[{"path": ..., "label": ...}]`, any number, one named button each,
-and any state morphs straight to any other — not a fixed tour. Each button
+and any state morphs straight to any other — not a fixed tour. **The structure
+you pass positionally is already the first state**, so `conformers=` is the list
+of the OTHERS: passing that same file again gives two identical buttons, and
+because the duplicate carries no annotations its layer rows and `sel` do nothing
+— which reads as broken residue highlighting rather than as a duplicate.
+`reference_label=` names that first button, so wanting a meaningful name on it
+is not a reason to re-list the file. Each button
 carries the **Cα RMSD to the reference**, so the size of the change is on
 screen rather than guessed from the animation. Only the endpoints
 are stored; the page interpolates, so states are cheap — three conformations of
@@ -179,6 +194,11 @@ Two things for you to know, not to write a tab about:
   flanking residues it does model) and named `UNK` there, so the strip and the
   residue card say "no residue in this state" instead of naming one it does not
   have. Bridges are excluded from the superposition and from the reported RMSD.
+- **The fit is computed on the positions every state shares, and
+  `partner_chains` are excluded from that mapping.** So declaring the rest of an
+  assembly as partners superposes the morph on the target chain alone, and the
+  other chains swing around it. For a whole-assembly fit, pass those chains as
+  target and annotate per layer with `"chain"` instead.
   Read `report["morph"]["conformers"][i]["residues_dropped"]` and
   `["residues_bridged"]`: a dropped region is a hole in the comparison, a
   bridged one is a depiction, and either belongs in your context paragraph.

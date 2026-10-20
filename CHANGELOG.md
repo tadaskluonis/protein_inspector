@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Documentation
+
+**Four facts the skill never stated, each of which cost a caller a broken bundle.**
+The positional `structure` argument is already the morph's first state, so a caller
+who also lists it in `conformers=` silently gets two identical buttons -- and the
+duplicate carries no annotations, so its layer rows and `sel` do nothing and it
+reads as broken residue highlighting. `reference_label=` existed but was
+undocumented, which removed the main reason to re-list the file (wanting a name on
+the first button). The read-back instruction now also names
+`report["morph"]["conformers"]`, which lists every state in order with its
+`rmsd_to_reference_A` and would have shown the duplicate immediately. The per-layer
+`"chain"` key and its fallback (top-level `chain=`, then the first chain in file
+order) are documented, so a continuously-numbered hetero-oligomer is annotated by
+naming the chain instead of renumbering the file. And the morph's superposition
+basis is stated: the fit uses positions shared by every state and `partner_chains`
+are excluded from that mapping, so declaring the rest of an assembly as partners
+superposes on the target chain alone and the other chains swing around it.
+
+
 ### Added
 
 **A morph borrows a coarser ribbon for the length of the animation.** Reported
