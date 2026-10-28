@@ -19,7 +19,7 @@ SEARCH_PATHS = ("~/code/protein-inspector", "~/protein-inspector")
 # have. Without a floor, `pip install protein-inspector` leaves an older release
 # in place (the requirement is "already satisfied") and the agent renders with
 # an engine that quietly ignores half of what it was told to pass.
-MIN_VERSION = (1, 14, 0)
+MIN_VERSION = (1, 15, 0)
 
 
 def inspector_engine(path=None):
@@ -63,7 +63,7 @@ def inspector_engine(path=None):
 def engine_version(engine):
     """(major, minor, patch) of an imported engine, read off INSPECTOR_VERSION.
 
-    That slug (`protein-inspector-1.14.0`) is what every bundle is stamped
+    That slug (`protein-inspector-1.15.0`) is what every bundle is stamped
     with, so it is the number a reader can match against what they installed.
     An engine with no readable version counts as (0, 0, 0): too old to trust.
     """

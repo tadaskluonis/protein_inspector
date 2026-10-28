@@ -230,7 +230,7 @@ const layerPicks = state.layers.map((layer) => {
 });
 const aroundInput = {value: '5'};
 buttons['pinsp-around-a'] = aroundInput;
-for (const id of ['pinsp-around', 'pinsp-sc-on', 'pinsp-sc-off', 'pinsp-sel-clear',
+for (const id of ['pinsp-around', 'pinsp-sc', 'pinsp-hb', 'pinsp-sel-clear',
                   'pinsp-layers-select']) {
     const b = stubButton();
     b.disabled = false;
@@ -895,32 +895,38 @@ if (seqBody.cells.length > 9) {
     // --- side chains of the selection -------------------------------------
     buttons['pinsp-sel-clear'].click();
     seqBody.fire('mousedown', {target: seqBody.cells[6]});
-    renderer.sidechainCalls.length = 0;
-    const scOn = buttons['pinsp-sc-on'], scOff = buttons['pinsp-sc-off'];
-    const pressed = () => [scOn.getAttribute('aria-pressed'),
-                           scOff.getAttribute('aria-pressed')];
+    const sc = buttons['pinsp-sc'];
+    const pressed = () => sc.getAttribute('aria-pressed');
     report.sidechains = {
         stateSaysPresent: !!state.sidechains,
-        disabled: scOn.disabled,
+        disabled: sc.disabled,
+        // WHAT SELECTING ALONE DREW, read before the recorder is cleared:
+        // nothing may draw until the button is pressed, and this is the
+        // evidence rather than the absence of a later call.
+        selectionAloneCalls: renderer.sidechainCalls.slice(),
         pressed: pressed(),
     };
-    scOn.click();
+    renderer.sidechainCalls.length = 0;
+    sc.click();
     report.sidechains.afterShow = {calls: renderer.sidechainCalls.slice(),
         pressed: pressed()};
-    scOff.click();
+    // ONE LATCH, SO THE SECOND PRESS IS THE UNDRAW. The pair said what each
+    // press would do; this says what the picture IS, and pressing a lit button
+    // puts it back.
+    sc.click();
     report.sidechains.afterHide = {calls: renderer.sidechainCalls.slice(),
         pressed: pressed()};
-    // ...THE THIRD STATE. Draw one residue's side chain, then select it
-    // together with one that has none: the pair must fill NEITHER button,
-    // which is the state a single latch had to report as "off".
-    scOn.click();
+    // ...A SELECTION THAT DISAGREES. Draw one residue's side chain, then
+    // select it together with one that has none: the latch reads as off, which
+    // is what the third state of the old pair has become.
+    sc.click();
     seqBody.fire('mousedown', {target: seqBody.cells[7]});
     report.sidechains.mixedPressed = pressed();
     report.sidechains.mixedSelection = sel();
-    // ...and Show resolves a disagreeing selection in ONE press rather than
-    // flipping it to whichever state the majority was not in.
+    // ...and it is ABSOLUTE, so one press settles a disagreement by drawing
+    // all of them rather than flipping each residue.
     renderer.sidechainCalls.length = 0;
-    scOn.click();
+    sc.click();
     report.sidechains.afterResolve = {calls: renderer.sidechainCalls.slice(),
         pressed: pressed()};
     // ...and the per-residue state outlives the selection: dropping it must
@@ -928,7 +934,7 @@ if (seqBody.cells.length > 9) {
     buttons['pinsp-sel-clear'].click();
     report.sidechains.afterDeselect = {
         shown: renderer.shownSidechainSet ? renderer.shownSidechainSet().size : null,
-        readout: selOut.textContent, disabled: scOn.disabled, pressed: pressed()};
+        readout: selOut.textContent, disabled: sc.disabled, pressed: pressed()};
 
     // --- a click in the VIEWER -------------------------------------------
     // core/mol.js's mouseup handler calls setResidueSelection and nothing
@@ -982,10 +988,10 @@ if (seqBody.cells.length > 9) {
         // ...and the side-chain button then acts on the whole set.
         buttons['pinsp-layers-select'].click();
         renderer.sidechainCalls.length = 0;
-        buttons['pinsp-sc-on'].click();
+        buttons['pinsp-sc'].click();
         report.layerSelect.sidechainsForLayers =
             (renderer.sidechainCalls[0] || {}).positions || null;
-        buttons['pinsp-sc-off'].click();
+        buttons['pinsp-sc'].click();            // lit now, so this undraws
     }
 
     // --- the hover bridge -------------------------------------------------

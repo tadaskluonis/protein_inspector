@@ -127,7 +127,8 @@ def inspect_structure(structure, layers=None, out="inspection.html", chain=None,
                       morph_mapping="intersection", morph_steps=12,
                       partner_chains=None, partner_label="partners",
                       layers_on_partners="auto",
-                      highlight="color", display=None, extras=False):
+                      highlight="color", display=None, extras=False,
+                      interactions=None):
     """Render one self-contained annotated HTML bundle. Returns the render report.
 
     `conformers` is a list of {"path", "label"?, "partner_chains"?,
@@ -173,6 +174,7 @@ def inspect_structure(structure, layers=None, out="inspection.html", chain=None,
         layers_on_partners=layers_on_partners,
         morph_steps=morph_steps,
         extras=extras,
+        interactions=interactions,
     )
     report["path"] = report["artifacts"][0]["path"]
     report["unmapped_residues"] = missing

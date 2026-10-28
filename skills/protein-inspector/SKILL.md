@@ -37,16 +37,16 @@ thing they see is the thing you brought them for.
 ## Setup
 
 ```bash
-pip install -U "protein-inspector>=1.14.0"
+pip install -U "protein-inspector>=1.15.0"
 ```
 
-This page describes **1.14.0**, the current release.
+This page describes **1.15.0**, the current release.
 
 **Always with `-U` and the version floor.** A bare `pip install protein-inspector`
 does nothing when any older release is already in the environment - pip reports
 the requirement satisfied and keeps it - and the old engine then lacks features
 this page describes (the layer `description`, partners that morph with the
-target). The kernel refuses an engine older than 1.14.0 and says so, rather than
+target). The kernel refuses an engine older than 1.15.0 and says so, rather than
 rendering with it; after upgrading, restart the kernel, because a package that
 was already imported stays the old one until then.
 
@@ -265,13 +265,16 @@ The reader also gets a **sequence strip** under the picture, in the layer
 colours, and a clickable structure: a click selects a residue, `sel` on a
 layer row (or `Select` in the Layers header) selects a whole layer,
 `within N Å` + `Select around` grows a selection into its neighbourhood, and a
-`side chains` **Show / Hide** pair draws the selection's side chains — on a
-morph too, each state with its own rotamers. Selecting never changes what is
-drawn and never erases a previous selection: the strip adds, or subtracts when
-the drag begins on something already selected, and the pair is pressed
-afterwards. Nothing to pass for any of it — except
-`display={"sidechains": False}` if you would rather not carry the side-chain
-atoms (~8-14% of the bundle), which disables both halves.
+`Side chains` button draws the selection's side chains — on a morph too, each
+state with its own rotamers — and an `H-bonds` button dashes in the hydrogen
+bonds, with `Focus` lending the picture to one residue and its surroundings for
+as long as it is on. Selecting never changes what is drawn and never erases a
+previous selection: the strip adds, or subtracts when the drag begins on
+something already selected, and the buttons are pressed afterwards. Nothing to
+pass for any of it — except `display={"sidechains": False}` if you would rather
+not carry the side-chain atoms (~8-14% of the bundle), which disables the
+side-chain button and the bonds that need those atoms, or `interactions=False`
+to leave the hydrogen bonds out and keep everything else.
 
 `display={"detail": N}` sets cartoon subdivisions per residue, 2–8. A bundle
 defaults to **8** rather than py2Dmol's 4, because sampling is fixed rather

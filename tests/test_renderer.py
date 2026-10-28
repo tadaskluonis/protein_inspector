@@ -770,7 +770,12 @@ def test_every_export_retains_the_upstream_licence_and_credit(tmp_path):
     assert "THE BEER-WARE LICENSE" in text
     assert "Sergey Ovchinnikov" in text
     assert "https://github.com/sokrypton/py2Dmol" in text
-    assert "78c2d489d0b5c5d19accd9eeeef878c2868f5271" in text
+    # THE REVISION THE BUNDLE WAS BUILT FROM, read off the module rather
+    # than retyped: the literal went stale at the first vendor bump, which
+    # is a test that fails for the one reason it was not written to catch.
+    from protein_inspector.renderer import UPSTREAM_REVISION
+    assert len(UPSTREAM_REVISION) == 40
+    assert UPSTREAM_REVISION in text
     # Not only in a comment: a reader of the page can see who wrote the viewer.
     assert 'class="pinsp-credit"' in text
     assert "py2Dmol</a> by Sergey Ovchinnikov" in text
@@ -1307,28 +1312,30 @@ def test_the_side_chain_button_draws_exactly_the_selection(tmp_path):
     sc = report["sidechains"]
     assert sc["stateSaysPresent"] is True
     assert sc["disabled"] is False
-    # A PAIR, AND THREE STATES. `Show` fills when every selected residue
-    # draws, `Hide` when none does, NEITHER when they disagree -- the state a
-    # single latch could only render as "off", which is what made it say what
-    # it would do rather than what it had done (src/app/selection.js).
-    assert sc["pressed"] == ["false", "true"]                 # none drawn yet
+    # ONE LATCH, LIT WHEN IT IS ON. The pair said what each press WOULD do and
+    # needed three states to do it; the latch says what the picture IS, and the
+    # third state -- a selection where some residues draw and some do not --
+    # reads as off, which is exactly the press that resolves it.
+    assert sc["selectionAloneCalls"] == []          # selecting draws nothing
+    assert sc["pressed"] == "false"                 # none drawn yet
     assert sc["afterShow"]["calls"] == [{"on": True, "positions": [6]}]
-    assert sc["afterShow"]["pressed"] == ["true", "false"]
+    assert sc["afterShow"]["pressed"] == "true"
+    # Pressing it lit is the undraw: one control, both directions.
     assert sc["afterHide"]["calls"][-1] == {"on": False, "positions": [6]}
-    assert sc["afterHide"]["pressed"] == ["false", "true"]
-    # One residue drawing, one not: neither button is filled.
+    assert sc["afterHide"]["pressed"] == "false"
+    # One residue drawing, one not: the latch is not lit.
     assert sc["mixedSelection"] == [6, 7]
-    assert sc["mixedPressed"] == ["false", "false"]
-    # ...and the buttons are ABSOLUTE, so one press resolves a disagreement
-    # instead of flipping it to whichever state the majority was not in.
+    assert sc["mixedPressed"] == "false"
+    # ...and it is ABSOLUTE, so that one press draws BOTH rather than flipping
+    # each residue to the state it was not in.
     assert sc["afterResolve"]["calls"] == [{"on": True, "positions": [6, 7]}]
-    assert sc["afterResolve"]["pressed"] == ["true", "false"]
+    assert sc["afterResolve"]["pressed"] == "true"
     # THE PER-RESIDUE STATE OUTLIVES THE SELECTION. Dropping the selection
     # undraws nothing, and the bar says so rather than going blank.
     assert sc["afterDeselect"]["shown"] == 2
     assert "2 residues still drawing side chains" in sc["afterDeselect"]["readout"]
     assert sc["afterDeselect"]["disabled"] is True
-    assert sc["afterDeselect"]["pressed"] == ["false", "false"]
+    assert sc["afterDeselect"]["pressed"] == "false"
 
 
 def test_without_side_chain_atoms_the_button_explains_itself(tmp_path):
@@ -1573,7 +1580,7 @@ def test_a_conformer_frame_says_what_its_positions_are(tmp_path):
 
 
 def test_selecting_never_draws_a_side_chain(tmp_path):
-    """Nothing on the page draws a side chain except the Show/Hide pair -- and
+    """Nothing on the page draws a side chain except the Side chains button -- and
     py2Dmol's Focus button, which is in the bundle's own control bar, was the
     exception that made that untrue.
 
@@ -1586,18 +1593,29 @@ def test_selecting_never_draws_a_side_chain(tmp_path):
     letter in the strip, `sel` on a layer, `Select around`. Reported as
     selecting a residue showing its side chains before anyone asked.
 
-    Upstream already has the opt-out -- `focusOn`'s options carry `sidechains`
-    and `o.sidechains !== false` is the only gate on that block -- so the
-    camera half of the mode is kept and the drawn set is left to the one
-    control that is about the drawn set.
+    1.15.0 keeps the camera half AND the drawing: the mode is how a site gets
+    inspected, so it draws the neighbourhood for as long as it is on and puts
+    the reader's own set back when it ends. The rule that survives is narrower,
+    and is the one this test is named for -- a SELECTION draws nothing.
     """
     text = Path(_sequence_bundle(tmp_path)).read_text()
-    assert "o.sidechains=false" in text
+    # ...AND SINCE 1.15.0 THE MODE DRAWS AGAIN, ON PURPOSE. Focus is how a
+    # reader inspects a site, and a site is its surroundings: the neighbourhood
+    # comes out as sticks for as long as the mode is on. What was wrong was not
+    # that it drew, but that it OVERWROTE -- entering cleared every object's
+    # set and each click assigned the neighbourhood, so `Select all` + `Side
+    # chains` came back as five residues. The wrapper remembers the reader's
+    # set on the way in and re-applies it after every transition, so the two are
+    # a union; leaving restores it. The invariant that remains is the one this
+    # test was written for: a SELECTION still draws nothing (asserted from the
+    # harness above, sidechains.selectionAloneCalls), only the button and the
+    # mode do.
     assert "r._pinspFocusTamed" in text
+    assert "rememberBaseline" in text and "applyBaseline" in text
     # The wrap is on the renderer's own verbs, not a re-implementation of the
     # mode: a bundle should say one thing about Focus, not own a copy of it.
     assert "focusOn.call(r,sel,o)" in text
-    assert "enter.call(r)" in text
+    assert "enter.apply(r,arguments)" in text
 
 
 def test_detail_survives_the_style_switch_it_was_rendered_for(tmp_path):
@@ -2119,7 +2137,7 @@ def _tube_builder():
     if not path.exists():
         pytest.skip("source tree not present (installed without src/)")
     text = path.read_text(encoding="utf-8")
-    start = text.index("function buildTube(renderer, S) {")
+    start = text.index("function buildTube(renderer, S, plug) {")
     depth = 0
     end = start
     while True:
@@ -2133,7 +2151,9 @@ def _tube_builder():
     ctx = quickjs.Context()
     ctx.eval("""
         var gl = {}, tubeTouch = null, tubeClaim = null, tubeData = null;
-        var TUBE_FLOATS = 15, TUBE_AO_DENSITY = 0.1, window = {};
+        // SEVENTEEN since the vendor bump: upstream appends the two
+        // residue indices a segment spans, after the ball colours.
+        var TUBE_FLOATS = 17, TUBE_AO_DENSITY = 0.1, window = {};
         var captured = null;
         function activateTube(m) { captured = m; return m.count > 0; }
     """)

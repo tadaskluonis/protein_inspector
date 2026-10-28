@@ -2009,7 +2009,7 @@ its test suite is not shipped. To follow a citation, read it at the pinned
 revision recorded in `NOTICE`:
 
     git clone https://github.com/sokrypton/py2Dmol
-    git -C py2Dmol checkout 78c2d489d0b5c5d19accd9eeeef878c2868f5271
+    git -C py2Dmol checkout 3f9e851b61cc5c918c6aa6605a9ad235ab5d2896
 
 `tools/bundle.py` cross-checks `tests/lift.js` when it is present and skips the
 check when it is not, so the bundle still builds from `src/` without it.

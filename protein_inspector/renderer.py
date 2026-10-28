@@ -24,9 +24,9 @@ from Bio.PDB import MMCIFParser
 import py2Dmol
 
 
-INSPECTOR_VERSION = "protein-inspector-1.14.0"
+INSPECTOR_VERSION = "protein-inspector-1.15.0"
 MANIFEST_SCHEMA = "protein-inspector-manifest-1"
-UPSTREAM_REVISION = "78c2d489d0b5c5d19accd9eeeef878c2868f5271"
+UPSTREAM_REVISION = "3f9e851b61cc5c918c6aa6605a9ad235ab5d2896"
 UPSTREAM_REPOSITORY = "https://github.com/sokrypton/py2Dmol"
 # RETAINED IN EVERY EXPORT, because that is the whole of what the licence asks
 # and minification removes it. Each bundle carries ~1 MB of py2Dmol, and the
@@ -511,6 +511,34 @@ def _snapshot_png(path: Path, xy: np.ndarray, chains: list[str], size: int = 900
 
 
 def _html(viewer_html: str, state: dict[str, Any]) -> str:
+    # A HOST THAT OWNS THE LAYOUT SAYS SO ON THE CONTAINER. A bundle puts the
+    # viewer in a CSS grid cell and sizes it from `--pinsp-view`, so the box is
+    # the stage's, not the one `size=` asked for. Since the engine gained
+    # `data-autosize="css"` (src/parts/viewport.js), that is how a page claims
+    # it: the canvas is then measured from the container and followed by the
+    # ResizeObserver, instead of being built at config.display.size and left
+    # wider and taller than the cell it sits in - a picture off its centre,
+    # overflowing under the sequence strip. Inert on an engine that predates
+    # the attribute, which sizes the box from the inline style either way.
+    viewer_html = viewer_html.replace(
+        '<div id="canvasContainer"', '<div data-autosize="css" id="canvasContainer"', 1)
+
+    # THE HYDROGEN-BOND PAIR, and only when the bundle carries any. Same idiom
+    # as the side chains beside it -- two buttons with the state on their faces
+    # rather than one latch saying what it would do next. It is ONE question for
+    # the whole page: the dashes are not a property of the selection, so a
+    # reader turning them on does not then have to keep something selected to
+    # see them.
+    _inter_state = state.get("interactions") or {}
+    hbond_controls = ""
+    if _inter_state.get("drawn"):
+        _on = bool(_inter_state.get("shown_at_open"))
+        hbond_controls = (
+            '<button type="button" class="bp-btn" id="pinsp-hb" '
+            f'aria-pressed="{str(_on).lower()}" '
+            'title="Draw every hydrogen bond this bundle carries, as dashed '
+            'sticks">H-bonds</button>'
+        )
     payload = json.dumps(state, separators=(",", ":")).replace("</", "<\\/")
     # THE TWO ROWS THE HORIZONTAL SEAM SPLITS, seeded from what the caller
     # asked for rather than from a constant: --pinsp-view starts at the
@@ -619,16 +647,85 @@ def _html(viewer_html: str, state: dict[str, Any]) -> str:
         "max-width:none!important;margin:0!important;resize:none!important;"
         "height:100%!important;position:relative}"
         ".pinsp-stage #canvasContainer .resize-handle{display:none!important}"
+        # THE SLOT WRAPPERS, since the engine gained them (src/parts/slots.js).
+        # `makeSlot` wraps #canvasContainer in .py2dmol-slot > .py2dmol-slot-body
+        # and MOVES the box's inline width/height onto that body before it reads
+        # data-autosize - so the body is the size `size=` asked for (900x760),
+        # the view is 100% x 100% of IT, and the stage's own cell is ignored: a
+        # picture in the left 900px of a wider column, overflowing the row it was
+        # given. The stage owns the box here, so the wrappers are made to fill it
+        # and the drag knob - which belongs to a slot a reader cannot resize in a
+        # bundle - goes with them. Inert on an engine with no slots.
+        ".pinsp-stage .py2dmol-slot{display:block!important;width:auto!important;"
+        "max-width:none!important;height:100%!important;min-width:0;flex:1 1 auto}"
+        ".pinsp-stage .py2dmol-slot-body{width:auto!important;max-width:none!important;"
+        "height:100%!important;min-width:0;resize:none!important}"
+        ".pinsp-stage .py2dmol-slot-tabs,.pinsp-stage .py2dmol-slot-knob{display:none!important}"
         ".pinsp-stage #canvasContainer canvas{max-width:100%}"
         ".pinsp-stage #rightPanelContainer{position:absolute!important;top:10px;left:10px;"
         "z-index:5;width:336px;max-width:calc(100% - 20px);max-height:calc(100% - 20px);"
         "overflow-y:auto;background:rgba(255,255,255,.94);border:1px solid #e2e8f0;"
         "border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.14)}"
-        # THE LAYERS PANEL STAYS BESIDE THE STRUCTURE. Ticking a layer and
-        # watching the structure change is the whole interaction, and it does
-        # not survive the panel being pushed below the fold. It only stacks
-        # where a side-by-side would leave the canvas unusably narrow.
-        ".pinsp-stage[data-morph='1'] #controlsContainer{display:none!important}"
+        # ...AND IT FOLDS, because 336px of buttons over the top-left corner of
+        # the picture is a lot of furniture for controls a reader touches once.
+        # Folded it is a cog the size of a favicon, with Focus beside it -- the
+        # one control a bundle is read with; open it is the same panel at a size
+        # that admits it is an overlay rather than a sidebar. The toggle and the
+        # folded class are put on by the script below, so a page whose script
+        # did not run shows the panel rather than a stub.
+        ".pinsp-stage #rightPanelContainer{padding:5px}"
+        # 🔴 flex-direction:row EXPLICITLY. The panel upstream is a COLUMN, and a
+        # `display:flex` that does not say otherwise inherits that - the cog came
+        # out stacked on top of Focus in a tall little pill instead of beside it.
+        ".pinsp-stage #rightPanelContainer.pinsp-folded{width:auto;padding:4px;"
+        "display:flex;flex-direction:row;gap:4px;align-items:center;overflow:visible;"
+        "background:rgba(255,255,255,.88);box-shadow:0 2px 8px rgba(15,23,42,.10)}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded > .pinsp-ctrl-keep"
+        "{width:auto!important;flex:none}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded > *:not(.pinsp-ctrl-fold)"
+        "{display:none!important}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded > .pinsp-ctrl-keep"
+        "{display:block!important;margin:0;padding:0;border:none;background:none;"
+        "box-shadow:none}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded .pinsp-ctrl-keep "
+        "> *:not(.pinsp-ctrl-keep):not(#focusButton){display:none!important}"
+        # THE COG. A 24px square, the glyph drawn as SVG so it is the same mark
+        # on every platform rather than whatever the font has for a gear.
+        ".pinsp-ctrl-fold{display:grid;place-items:center;width:24px;height:24px;"
+        "padding:0;margin:0 0 0 auto;border:1px solid #e2e8f0;border-radius:6px;"
+        "background:#fff;color:#475569;cursor:pointer;flex:none}"
+        ".pinsp-ctrl-fold:hover{background:#f1f5f9;color:#0f172a}"
+        ".pinsp-ctrl-fold svg{display:block;width:14px;height:14px}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded .pinsp-ctrl-fold{margin:0}"
+        # COMPACT WHEN OPEN: the viewer's own buttons are sized for a notebook
+        # page, and over a picture they only have to be legible and hittable.
+        ".pinsp-stage #rightPanelContainer:not(.pinsp-folded){width:auto;"
+        "min-width:216px;max-width:260px}"
+        ".pinsp-stage #rightPanelContainer .control-group{gap:4px}"
+        ".pinsp-stage #rightPanelContainer .btn-row{gap:4px;margin:0 0 4px}"
+        ".pinsp-stage #rightPanelContainer .controlButton{font:11px/1 system-ui,sans-serif;"
+        "padding:5px 4px;min-height:0;min-width:0;border-radius:6px}"
+        ".pinsp-stage #rightPanelContainer .toggle-item{gap:4px;margin:0;"
+        "font:11px/1.2 system-ui,sans-serif}"
+        ".pinsp-stage #rightPanelContainer #objectSelect{font:11px system-ui,sans-serif;"
+        "padding:3px 4px;max-width:150px}"
+        ".pinsp-stage #rightPanelContainer .btn-row.auto{grid-template-columns:repeat(3,1fr)}"
+        # ROTATE IS A LABEL WRAPPING A CHECKBOX, not a button, so it needs to be
+        # told to centre its own contents or its word sits proud of the box the
+        # other five sit inside.
+        ".pinsp-stage #rightPanelContainer .btn-toggle{display:flex;align-items:center;"
+        "justify-content:center;gap:3px;white-space:nowrap;overflow:hidden}"
+        ".pinsp-stage #rightPanelContainer .btn-toggle input{width:10px;height:10px;margin:0;"
+        "flex:none}"
+        # FOLDED IS ONE ROW, so the wrappers Focus is carried in give up their
+        # own spacing while it is the only thing out.
+        ".pinsp-stage #rightPanelContainer.pinsp-folded{padding:3px}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded .pinsp-ctrl-keep{gap:0}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded .btn-row{margin:0;display:block;gap:0}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded .control-group{gap:0;display:block}"
+        ".pinsp-stage #rightPanelContainer.pinsp-folded #focusButton{width:auto;"
+        "padding:4px 8px}"
+".pinsp-stage[data-morph='1'] #controlsContainer{display:none!important}"
         "@media (max-width:820px){.protein-inspector{grid-template-columns:minmax(0,1fr);"
         "grid-template-rows:var(--pinsp-view,760px) auto 11px var(--pinsp-seq,152px)}"
         ".pinsp-split{display:none}.pinsp-panel{max-height:60vh;margin-top:12px}"
@@ -1019,7 +1116,7 @@ var AA1={ALA:'A',ARG:'R',ASN:'N',ASP:'D',CYS:'C',GLU:'E',GLN:'Q',GLY:'G',HIS:'H'
 var SEQ_MAX=12000;
 var seqBody=null,seqCells=[],seqRuns=[],seqBuilt=false,seqAnchor=-1,
     seqDragging=false,seqHoverAt=-1,seqAddr={},
-    aroundBtn=null,aroundInput=null,scOn=null,scOff=null,selClearBtn=null,
+    aroundBtn=null,aroundInput=null,scBtn=null,selClearBtn=null,hbBtn=null,
     selAllBtn=null,selOut=null,
     seqMode='add',seqBase=null;
 function setList(set){var out=[];if(set&&set.forEach)set.forEach(function(v){out.push(v);});
@@ -1250,15 +1347,83 @@ function scStateOf(list){
   for(var i=0;i<list.length;i++)if(set.has(list[i]))hit++;
   if(!hit)return false;
   return hit===list.length?true:null;}
+// --- hydrogen bonds -------------------------------------------------------
+// ONE QUESTION FOR THE WHOLE PAGE. The dashes are not a property of the
+// selection: a reader who wants to see hydrogen bonding wants it while they
+// turn the structure, not only while something stays selected. So the plugin
+// reads one flag and this pair sets it; no selection, no focus, no layer is
+// consulted. `render` is enough to repaint, and the plugin folds the flag into
+// its key, so the GPU painter rebuilds its mesh rather than redrawing the old one.
+function setHbonds(on){
+  window.__pinspHbonds=!!on;
+  var r=renderer();
+  if(r&&typeof r.render==='function')r.render('hydrogen bonds');
+  syncHbonds();}
+function syncHbonds(){
+  if(hbBtn)hbBtn.setAttribute('aria-pressed',String(window.__pinspHbonds===true));}
 // ABSOLUTE, NOT A TOGGLE. The button says which state to put the selection in,
 // so a mixed selection resolves to that state in one press instead of flipping
 // to whichever one the majority happened not to be in.
+// THE VIEWER'S OWN CONTROL BAR, FOLDED AWAY. Orient / Focus / Rotate / Style /
+// Clip / Capture and the Object dropdown are py2Dmol's, they sit over the
+// top-left of the picture, and at 336px wide they cover a corner of the
+// structure for the whole session. A reader reaches for them occasionally and
+// looks at the structure continuously, so the panel starts folded: one small
+// button, which opens it and closes it again.
+//
+// The panel itself is upstream's markup and is left exactly as it is - this
+// adds a button and a class, so a build whose panel has a different id simply
+// does not fold and nothing else changes.
+function foldControls(){
+  var panel=document.getElementById('rightPanelContainer');
+  if(!panel||panel.querySelector('.pinsp-ctrl-fold'))return;
+  var btn=document.createElement('button');
+  btn.type='button';btn.className='pinsp-ctrl-fold';
+  var COG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    +' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    +'<circle cx="12" cy="12" r="3"></circle>'
+    +'<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06'
+    +'a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09'
+    +'A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83'
+    +'l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09'
+    +'A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83'
+    +'l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09'
+    +'a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83'
+    +'l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09'
+    +'a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+  var CROSS='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    +' stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>';
+  var sync=function(){
+    var folded=panel.classList.contains('pinsp-folded');
+    btn.innerHTML=folded?COG:CROSS;
+    btn.setAttribute('aria-expanded',String(!folded));
+    btn.setAttribute('aria-label',folded?'Show the viewer controls':'Hide the viewer controls');
+    btn.title=folded?'Orient, Rotate, Style, Clip, Capture':'Hide these';};
+  btn.addEventListener('click',function(){
+    panel.classList.toggle('pinsp-folded');sync();});
+  panel.insertBefore(btn,panel.firstChild);
+  // ...and the ancestors of the Focus button are marked so the fold lets that
+  // one through. Nothing is moved: the button keeps the handler ui.js gave it.
+  var keep=document.getElementById('focusButton');
+  while(keep&&keep!==panel&&keep.parentElement){
+    if(keep.parentElement===panel)keep.parentElement=keep.parentElement;
+    keep=keep.parentElement;
+    if(keep&&keep!==panel)keep.classList.add('pinsp-ctrl-keep');}
+  panel.classList.add('pinsp-folded');
+  sync();}
+function focusRadius(){
+  var n=Number(s.focus_radius);
+  return (isFinite(n)&&n>0)?n:8;}
 function setSidechains(on){
   var r=renderer(),list=setList(currentSelection());
   if(!r||!list.length||typeof r.showSidechains!=='function')return;
   try{if(on)r.showSidechains({positions:list});
     else r.hideSidechains({positions:list});}
   catch(err){if(selOut)selOut.textContent=String((err&&err.message)||err);}
+  // THE BUTTON IS THE READER SPEAKING, inside the mode as much as outside it,
+  // so what it just said becomes the set the mode has to respect.
+  rememberBaseline();
+  if(window.__pinspHbondsFocus)focusBonds();
   syncSelTools();}
 // EVERYTHING ON SCREEN, which is the selection the side-chain pair is most
 // often wanted for: draw them all, then hide the ones you do not want. It
@@ -1289,20 +1454,21 @@ function syncSelTools(){
   if(selOut)selOut.textContent=describeSelection(list);
   if(aroundBtn)aroundBtn.disabled=!(list.length&&r&&typeof r.residuesWithin==='function');
   if(selClearBtn)selClearBtn.disabled=!list.length;
-  if(scOn&&scOff){
+  if(scBtn){
     var able=!!s.sidechains&&!!r&&typeof r.showSidechains==='function',
-        // Nothing selected fills NEITHER, like a disagreeing selection: there
-        // is no answer to "are these drawn" when there are no these.
+        // LIT ONLY WHEN EVERY SELECTED RESIDUE DRAWS. A selection that
+        // disagrees reads as off, and one press settles it by drawing all of
+        // them -- the same answer the Show button gave, from the state the
+        // button is already showing.
         state=(able&&list.length)?scStateOf(list):null;
-    scOn.disabled=scOff.disabled=!(able&&list.length);
-    scOn.setAttribute('aria-pressed',String(state===true));
-    scOff.setAttribute('aria-pressed',String(state===false));
+    scBtn.disabled=!(able&&list.length);
+    scBtn.setAttribute('aria-pressed',String(state===true));
     var why=able?(list.length
         ?(state===null?'These residues disagree \u2014 Show draws all of them'
                       :'Draw the selected residues\u2019 side chains')
         :'Select residues first; what is already drawn stays drawn')
       :'This bundle carries no side-chain atoms';
-    scOn.title=why;scOff.title=why;}}
+    scBtn.title=why;}}
 // DETAIL SURVIVES A STYLE SWITCH.
 //
 // `display={"detail": N}` seeds config.rendering.detail, and the constructor
@@ -1470,52 +1636,103 @@ function foldStylePanel(){
 // to stop being one.
 //
 // Nothing on this page draws a side chain except the Show/Hide pair -- but
-// py2Dmol's Focus button, which is in the bundle's own control bar, is a MODE
-// that redefines what a selection means. `enterFocusMode` clears every
-// object's `sidechains` on the way in ("side chains they turned on by hand
-// look like ones focus drew"), and `focusOn` then ASSIGNS the set from the
-// neighbourhood of whatever was picked, writing every object on screen. It is
-// wrapped around setResidueSelection rather than subscribed to it, so with the
-// mode latched EVERY selection draws atoms: a click in the picture, a letter in
-// the strip, `sel` on a layer, `Select around`. Which is exactly the
-// complaint -- selecting a residue showed its side chains before anyone asked.
+// FOCUS IS A WAY TO LOOK, NOT A WAY TO EDIT. py2Dmol's Focus button is a MODE:
+// `enterFocusMode` remembers every object's side-chain set and clears it,
+// `focusOn` then draws the side chains of the neighbourhood around whatever was
+// picked, and leaving -- the button again, or a click on the background --
+// restores what was remembered. That is exactly the behaviour wanted here, so
+// the mode's own side-chain handling is left alone: inside it you see the
+// residue you picked and its surroundings as sticks, and when you come out the
+// picture goes back to whatever the Side chains button had drawn, untouched.
 //
-// Upstream already has the opt-out: focusOn's options carry `sidechains`, and
-// `o.sidechains !== false` is the only gate on that whole block. So the camera
-// half of the mode is kept -- it still flies to what you picked and clips to
-// it, which is what the button is for -- and the drawn set is left to the one
-// control that is about the drawn set. The snapshot/restore on the way in and
-// out is neutered the same way: with nothing of its own to put back, there is
-// nothing for it to overwrite.
-//
-// Wrapped, not re-implemented: the mode is upstream's and this says one thing
-// about it.
+// WHAT IS ADDED IS THE BONDS. The hydrogen bonds of the residues on screen are
+// the reason to be in the mode at all, so they are drawn for the focused set
+// whatever the H-bonds button says, and they stop when the mode does. The set
+// is read back from the renderer AFTER the focus has written it.
+// WHOSE BONDS: THE RESIDUE THE READER CLICKED, and nothing else. The
+// set published to the plugin is the renderer's own residueSelection -- the
+// residue the click (or shift-click) picked -- and a bond draws when EITHER of
+// its ends is in it. Nothing selected, nothing forced: the button answers.
+// WHICH RESIDUES ARE DRAWING SIDE CHAINS RIGHT NOW, in merged indices. Read off
+// the materialised atoms rather than off `obj.sidechains`, because that is the
+// set the picture was actually built from: sidechainMap is keyed by the
+// appended atom and names the residue that owns it, so it cannot disagree with
+// what is on screen, in any numbering, for any object.
+function drawnResidueSet(){
+  var r=renderer(),out=new Set();
+  if(!r)return out;
+  if(r.sidechainMap&&r.sidechainMap.forEach)
+    r.sidechainMap.forEach(function(e){
+      if(e&&e.owner!==undefined)out.add(e.owner);});
+  if(!out.size){
+    var s=scShownSet();
+    if(s&&s.forEach)s.forEach(function(i){out.add(i);});}
+  return out;}
+// THE READER'S OWN SET, WHICH THE MODE BORROWS THE PICTURE FROM BUT DOES NOT
+// OWN. `Select all` + `Side chains` is a statement about the whole structure;
+// entering focus used to drop it on the floor (enterFocusMode clears every
+// object's set) and each click then ASSIGNED the neighbourhood, so a reader who
+// had asked for everything got five residues back. This is what they asked for,
+// re-applied after every transition the mode makes - showSidechains APPENDS, so
+// the neighbourhood and the baseline end up as the union rather than one
+// replacing the other.
+var scBaseline=null;
+function rememberBaseline(){scBaseline=drawnResidueSet();}
+function applyBaseline(){
+  var r=renderer();
+  if(!r||!scBaseline||!scBaseline.size||typeof r.showSidechains!=='function')return;
+  try{r.showSidechains({positions:setList(scBaseline)});}catch(e){}}
+function focusBonds(){
+  var r=renderer();if(!r)return;
+  var out=[];
+  // ONLY WHAT THE READER CLICKED. The neighbourhood's side chains are still
+  // drawn - that is what the mode is for - but they do not bring their own
+  // bonds with them: every residue in an 8 A ball put twenty-odd dashes on
+  // screen and buried the one bond the click was asking about.
+  if(r.residueSelection&&r.residueSelection.forEach)
+    r.residueSelection.forEach(function(i){out.push(i);});
+  window.__pinspHbondsFocus=out.length?{active:true,set:out}:null;
+  if(typeof r.render==='function')r.render('focus hydrogen bonds');}
+function focusBondsOff(){
+  if(!window.__pinspHbondsFocus)return;
+  window.__pinspHbondsFocus=null;
+  var r=renderer();
+  if(r&&typeof r.render==='function')r.render('focus hydrogen bonds off');}
 function tameFocus(){
   var r=renderer();if(!r||r._pinspFocusTamed)return false;
   if(typeof r.focusOn!=='function')return true;   // a build without the part
   r._pinspFocusTamed=true;
   var focusOn=r.focusOn;
   r.focusOn=function(sel,opts){
+    // THE RADIUS IS THE BUNDLE'S, not the viewer's 5 A, unless a caller names
+    // one: the mode is how a reader inspects a site, and a site is more than
+    // the residues touching one of its atoms.
     var o={};if(opts)for(var k in opts)if(Object.prototype.hasOwnProperty.call(opts,k))o[k]=opts[k];
-    o.sidechains=false;
-    return focusOn.call(r,sel,o);};
-  // ...AND THE WIPE ON THE WAY IN. enterFocusMode drops every object's set
-  // before the first click, so pressing the button undrew side chains the
-  // reader had asked for. Put them back: the mode has no side-chain business
-  // of its own any more, so there is nothing legitimate in that clearing.
+    if(!(o.cutoff>0))o.cutoff=focusRadius();
+    var out=focusOn.call(r,sel,o);
+    applyBaseline();
+    focusBonds();
+    return out;};
   if(typeof r.enterFocusMode==='function'){
     var enter=r.enterFocusMode;
     r.enterFocusMode=function(){
-      var keep={},data=r.objectsData||{},name;
-      for(name in data)if(data[name]&&data[name].sidechains)
-        keep[name]=new Set(data[name].sidechains);
-      var out=enter.call(r),restored=false;
-      for(name in keep)if(data[name]){data[name].sidechains=keep[name];restored=true;}
-      if(restored){
-        if(r._invalidateSegmentCache)r._invalidateSegmentCache();
-        if(r.reloadDrawn)r.reloadDrawn(true);
-        r.render('Protein Inspector focus keeps the side chains');}
+      // ...REMEMBERED BEFORE THE MODE CLEARS IT, and put straight back.
+      rememberBaseline();
+      var out=enter.apply(r,arguments);
+      applyBaseline();
+      focusBonds();
       return out;};}
+  // BOTH DOORS OUT. A click on the background calls clearFocus, the button
+  // calls exitFocusMode, and either one ends the mode's loan of the picture:
+  // the side chains are put back by upstream's own restore, and the bonds stop
+  // being forced, which drops them to whatever the button says -- off, unless
+  // the reader turned them on themselves.
+  if(typeof r.clearFocus==='function'){
+    var clear=r.clearFocus;
+    r.clearFocus=function(){var out=clear.apply(r,arguments);applyBaseline();focusBondsOff();return out;};}
+  if(typeof r.exitFocusMode==='function'){
+    var exit=r.exitFocusMode;
+    r.exitFocusMode=function(){var out=exit.apply(r,arguments);applyBaseline();focusBondsOff();return out;};}
   return true;}
 function enableClicks(){
   var r=renderer();if(!r)return false;
@@ -1529,13 +1746,18 @@ function enableClicks(){
   seqBody=document.getElementById('pinsp-seqbody');
   aroundBtn=document.getElementById('pinsp-around');
   aroundInput=document.getElementById('pinsp-around-a');
-  scOn=document.getElementById('pinsp-sc-on');
-  scOff=document.getElementById('pinsp-sc-off');
+  scBtn=document.getElementById('pinsp-sc');
   selClearBtn=document.getElementById('pinsp-sel-clear');
   selOut=document.getElementById('pinsp-sel');
   if(aroundBtn)aroundBtn.addEventListener('click',selectAround);
-  if(scOn)scOn.addEventListener('click',function(){setSidechains(true);});
-  if(scOff)scOff.addEventListener('click',function(){setSidechains(false);});
+  if(scBtn)scBtn.addEventListener('click',function(){
+    setSidechains(scStateOf(setList(currentSelection()))!==true);});
+  foldControls();
+  hbBtn=document.getElementById('pinsp-hb');
+  if(hbBtn){
+    window.__pinspHbonds=hbBtn.getAttribute('aria-pressed')==='true';
+    hbBtn.addEventListener('click',function(){setHbonds(window.__pinspHbonds!==true);});
+    syncHbonds();}
   if(selClearBtn)selClearBtn.addEventListener('click',clearDetails);
   selAllBtn=document.getElementById('pinsp-sel-all');
   if(selAllBtn)selAllBtn.addEventListener('click',selectEverything);
@@ -2497,13 +2719,15 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
         # only render that as "off", so it said what it would do and left the
         # reader to work out what it had done. `Show` fills when every selected
         # residue draws, `Hide` when none does, neither when they disagree.
-        '<span class="bp-muted">side chains</span>'
-        '<span class="pinsp-pair" role="group" aria-label="Side chains of the selection">'
-        '<button type="button" class="bp-btn pinsp-sw" id="pinsp-sc-on" disabled '
-        'aria-pressed="false">Show</button>'
-        '<button type="button" class="bp-btn pinsp-sw" id="pinsp-sc-off" disabled '
-        'aria-pressed="false">Hide</button>'
-        '</span>'
+        # ONE LATCH, LIT WHEN IT IS ON. The pair said what each press WOULD do;
+        # a latch says what the picture IS, which is the question a reader
+        # actually has when they look at the bar. The third state a pair was for
+        # -- a selection where some residues draw and some do not -- is an
+        # unlit button whose press draws all of them, which is the same
+        # resolution the pair gave and one control instead of two.
+        '<button type="button" class="bp-btn" id="pinsp-sc" disabled '
+        'aria-pressed="false">Side chains</button>'
+        f'{hbond_controls}'
         '<button type="button" class="bp-btn" id="pinsp-sel-all" '
         'title="Select every residue on screen in this conformation">'
         'Select all</button>'
@@ -2528,6 +2752,104 @@ var tries=0;(function wait(){var ok=syncVisibleLayers(),seqOk=false,foldOk=foldS
         f'{panel}</body></html>'
     )
 
+
+# --- the one place that knows what this engine version offers -----------------
+# Capability probes, not a version number: a bundle built against an engine
+# without these features renders without them and says so, rather than raising.
+
+def _viewer_extras(options: dict[str, Any]) -> dict[str, Any]:
+    """py2Dmol.view kwargs this engine actually accepts."""
+    import inspect as _inspect
+    takes = _inspect.signature(py2Dmol.view.__init__).parameters
+    out: dict[str, Any] = {}
+    if "chain_palette" in takes:
+        out["chain_palette"] = options.get("chain_palette", "greys")
+    return out
+
+
+_HBOND_PLUGIN = Path(__file__).with_name("resources") / "hbonds.plugin.js"
+
+
+def _attach_interactions(viewer: Any, spec: Any, states: list[Path]) -> dict[str, Any]:
+    """Hydrogen bonds as dashed sticks, drawn in the vicinity of the focus.
+
+    `spec` is True for the defaults or a dict of them: `max_dist`, `min_angle`,
+    `include_water`, `mode` ("auto" follows the focus and the selection, "all"
+    draws every bond), `dash`, `gap`, `width`, `color`.
+
+    One payload per state, bound to that state's frame, so each conformation
+    carries its own bonds and the animation between two of them carries none -
+    an interpolated backbone is a depiction, and a hydrogen bond measured on it
+    would be a claim about a structure that was never observed.
+    """
+    # ON UNLESS REFUSED. A reader who can be shown a hydrogen bond should be
+    # given the button, and an author should not have to know the feature
+    # exists to ship it - so `interactions=False` is the way out and the only
+    # reason a bundle this engine can draw carries no payload. Measured cost on
+    # 1UBQ: 23 bonds, 3.2 kB of JSON, about 42 bytes a residue.
+    if spec is False:
+        return {"drawn": False, "reason": "switched off"}
+    if not hasattr(py2Dmol, "register_plugin") or not hasattr(viewer, "add_plugin"):
+        return {"drawn": False, "reason":
+                "this py2Dmol build has no plugin registry - interactions need a"
+                " revision that carries src/parts/plugins.js"}
+    from . import interactions as _inter
+
+    opts = dict(spec) if isinstance(spec, dict) else {}
+    detect = {k: opts.pop(k) for k in ("max_dist", "min_angle", "include_water", "chains")
+              if k in opts}
+    # BACKBONE TO BACKBONE IS THE SECONDARY STRUCTURE, AND THE CARTOON ALREADY
+    # DRAWS IT. A helix's i to i+4 ladder and a sheet's rungs are what the
+    # ribbon IS, so dashing them over it adds a second, denser drawing of
+    # something the reader can already see - and buries the bonds they cannot
+    # (a side chain to a backbone carbonyl, a pair of side chains). Pass
+    # {"backbone_backbone": True} to put them back.
+    keep_bb = bool(opts.pop("backbone_backbone", False))
+    colour = opts.pop("color", None)
+    colours = {k: colour for k in ("bb", "mixed", "sc")} if colour else None
+
+    # OFF AT OPEN. The dashes are an answer to a question the reader has not
+    # asked yet, and a structure that opens wearing all of them is a thicket.
+    # `interactions={"shown": True}` opens with them on.
+    opts.setdefault("shown", False)
+    # DETECTED BEFORE ANYTHING IS REGISTERED, because a structure the detector
+    # cannot read is not a failed render: the bonds are on by default now, so a
+    # file that trips gemmi here would otherwise take down a bundle for a
+    # feature its author never asked for. The reason travels in the report,
+    # which is where every other "we could not" in this module goes.
+    detected: list[list[dict[str, Any]]] = []
+    for path in states:
+        try:
+            bonds = _inter.find_hbonds(path, **detect)
+        except Exception as err:            # noqa: BLE001 - any read failure
+            return {"drawn": False, "reason": f"detection failed: {err}"}
+        if not keep_bb:
+            bonds = [b for b in bonds if b["kind"] != "bb"]
+        detected.append(bonds)
+    # ...AND THE PLUGIN ITSELF IS A PACKAGED FILE, read the same way: a wheel
+    # whose package_data forgot it would otherwise fail on the first bundle
+    # rather than on the one that asked for bonds.
+    try:
+        py2Dmol.register_plugin("hbonds", _HBOND_PLUGIN.read_text(encoding="utf-8"),
+                                version="3")
+    except OSError as err:
+        return {"drawn": False, "reason": f"plugin resource unreadable: {err}"}
+    per_state, total = [], 0
+    for i, path in enumerate(states):
+        bonds = detected[i]
+        payload = _inter.as_payload(bonds, colors=colours)
+        viewer.add_plugin("hbonds", payload,
+                          frame=(i if len(states) > 1 else None),
+                          options=opts or None)
+        per_state.append({"state": i, "source": str(path), "n_bonds": len(bonds),
+                          "kinds": {k: sum(1 for b in bonds if b["kind"] == k)
+                                    for k in ("bb", "mixed", "sc")}})
+        total += len(bonds)
+    return {"drawn": True, "n_bonds": total, "states": per_state,
+            "backbone_backbone": keep_bb,
+            "shown_at_open": bool(opts.get("shown", False))}
+
+
 def render_inspection_bundle(
     *,
     mmcif_path: str,
@@ -2545,6 +2867,7 @@ def render_inspection_bundle(
     morph_reference_label: str = "reference",
     morph_to: list[dict[str, Any]] | None = None,
     morph_steps: int = 12,
+    interactions: Any = None,
 ) -> dict[str, Any]:
     """Render ONE self-contained HTML bundle (plus, on request, audit files).
 
@@ -2574,7 +2897,7 @@ def render_inspection_bundle(
     base = _safe_output(root, output_name)
     options = dict(display_options or {})
     allowed_options = {"width", "height", "style", "color", "background", "chain_palette",
-                       "sidechains", "gpu", "detail"}
+                       "sidechains", "gpu", "detail", "focus_radius"}
     unknown_options = set(options) - allowed_options
     if unknown_options:
         raise ValueError(f"unsupported display options: {sorted(unknown_options)}")
@@ -2587,7 +2910,7 @@ def render_inspection_bundle(
         # hue stays free for the annotation layers. Recoloured from the viewer's
         # own Style panel rather than from a bespoke control in the side panel.
         color=options.get("color", "chain"),
-        chain_palette=options.get("chain_palette", "greys"),
+        **_viewer_extras(options),
         bg=options.get("background", "white"),
         # THE GPU PAINTER, BECAUSE THE BUNDLE ALREADY CARRIES IT.
         #
@@ -2930,6 +3253,12 @@ def render_inspection_bundle(
         "highlight": highlight,
         "base_color": manifest.get("base_color", BASE_COLOR),
         "base_mode": manifest.get("base_mode", "chain"),
+        # HOW FAR THE FOCUS REACHES. py2Dmol's own default is 5 A
+        # (focusCutoffA in src/parts/focus.js), chosen to match its
+        # Find-interactions cutoff; a bundle is read residue by residue and
+        # wants more of the neighbourhood than that, so this opens wider and
+        # `display={"focus_radius": N}` sets it.
+        "focus_radius": float((display_options or {}).get("focus_radius", 8.0)),
         "schema_version": "protein-inspector-state-1",
         "inspector_version": INSPECTOR_VERSION,
         "upstream_revision": UPSTREAM_REVISION,
@@ -2942,6 +3271,10 @@ def render_inspection_bundle(
         "partners": partner_state,
         "viewer": {"config": viewer.config, "objects": viewer.objects},
     }
+    interaction_report = _attach_interactions(
+        viewer, interactions,
+        [source] + [Path(c["path"]) for c in (conformers or [])])
+    state["interactions"] = interaction_report
     html_path = base.with_suffix(".html")
     state_path = base.with_suffix(".viewer.json")
     svg_path = base.with_suffix(".svg")
@@ -2972,6 +3305,7 @@ def render_inspection_bundle(
         "annotation_count": len(state["annotations"]),
         "about_tabs": [item["title"] for item in state.get("about") or []],
         "morph": morph_report,
+        "interactions": interaction_report,
         "partners": ({"labels": partner_state.get("labels"),
                       "chains": sorted(partner_state["owner"]),
                       "painted": partner_state.get("painted")}

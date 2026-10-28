@@ -62,6 +62,11 @@ setup(
     # stay loose because viewer.py adds them only when the config asks.
     # tests/packaging.py checks this against what viewer.py actually reads.
     package_data={
+        # The inspector's own resources, read the way viewer.py reads
+        # py2Dmol's: by name, out of the installed package.
+        'protein_inspector': [
+            'resources/*.js',
+        ],
         'py2Dmol': [
             'resources/viewer.html',
             # ...the NOTEBOOK bundle only. The glob that was here also shipped

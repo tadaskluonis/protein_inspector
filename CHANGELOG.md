@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+## 1.15.0
+
+### Added
+
+**Hydrogen bonds, as dashed sticks the reader can switch on.** Detected with
+gemmi at render time (3.5 A between heavy atoms, donor-direction angle at least
+100 degrees) and shipped as explicit donor/acceptor coordinates, one payload per
+morph state - so an interpolated backbone carries no bond, because a bond
+measured on a depiction is a claim about a structure nobody observed. They are
+drawn through upstream py2Dmol's plugin primitives rather than a DOM overlay,
+which is what the engine bump below is for: dashes sort with the cartoon and
+land in the PNG and SVG exports. Backbone-to-backbone bonds are left out by
+default - a helix's i to i-4 ladder is what the ribbon already draws, and
+dashing it over the cartoon buries the bonds a reader cannot otherwise see.
+`interactions={"backbone_backbone": True}` puts them back,
+`interactions={"shown": True}` opens with the dashes already on, and
+`interactions=False` leaves the feature out of the bundle.
+
+**Focus mode lends the picture back instead of taking it.** Entering it used to
+clear every object's side-chain set, and each click then ASSIGNED the
+neighbourhood - so a reader who had pressed `Select all` + `Side chains` got
+five residues back, and their own view was gone when they left. The reader's set
+is remembered on entry and re-applied after every transition the mode makes, so
+the neighbourhood and the baseline end up as a union rather than one replacing
+the other. While the mode is on, the hydrogen bonds of the residue that was
+CLICKED are dashed in whatever the H-bonds button says - only that residue's,
+not every residue in the radius, which put twenty-odd dashes on screen and
+buried the one the click was asking about - and leaving returns both the side
+chains and the bonds to what the buttons say. The radius is the bundle's
+`display={"focus_radius": N}`, 8 A by default, rather than the viewer's 5 A.
+
+### Fixed
+
+**Element colours on side-chain sticks in TUBE style, on the GPU path.**
+core/mol.js works out a two-colour pair for every bond between two different
+elements; the cartoon mesh cuts the stick at its midpoint for it and the 2D tube
+pass strokes two halves, but the GPU capsule builder coloured each capsule from
+the segment's single colour. Tube is the style an exported bundle opens in and
+WebGL2 takes the frame, so every side-chain nitrogen, oxygen and sulphur came
+out the backbone's colour exactly where a reader looks first. buildTube now
+emits two collinear capsules butt-cut at the midpoint, sized by a count of
+half-coloured segments rather than a doubled buffer, with the joint ball at a
+shared atom taking the colour of the half that touches it. colourKeyOf folds the
+halves table into its digest as well: without it the instance buffer's cache key
+matched after element colouring was switched on and the rebuild was skipped, so
+nothing on screen changed.
+
+**The plugin resource ships.** setup.py's package_data named only the py2Dmol
+package, and there is no MANIFEST.in, so hbonds.plugin.js was in the repo and
+not in the wheel.
+
+### Changed
+
+**The vendored py2Dmol moves from 78c2d48 to 3f9e851** - 148 commits, which is where
+src/parts/plugins.js and its primitive API live. The local chain palette, the
+per-chain swatch row and the element-halves work are carried forward onto it.
+The notebook bundle grows from 499,657 to 677,575 bytes, and that is what every
+bundle built by this release carries. Hosts that own their own layout now have
+to mark the canvas container `data-autosize="css"` or the new viewport code
+sizes it to the slot body instead; the inspector's page does.
+
+
 ### Documentation
 
 **Four facts the skill never stated, each of which cost a caller a broken bundle.**
