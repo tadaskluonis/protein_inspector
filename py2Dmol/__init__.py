@@ -3,5 +3,5 @@
 # that can disagree, and the wheel is where you find out.
 __version__ = "2.0.0"
 
-from .viewer import view
+from .viewer import view, register_plugin
 from .grid import Grid, grid, show_grid

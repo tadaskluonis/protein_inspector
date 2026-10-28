@@ -44,10 +44,22 @@ function detectRedundantFields(frames) {
     return redundant;
 }
 
-function saveViewerState() {
+/**
+ * Everything the page is showing, as the object a session file holds.
+ *
+ * 🔴 SPLIT OUT OF saveViewerState, WHICH BUILT THIS AND IMMEDIATELY DOWNLOADED
+ * IT. A caller that wants the state for anything else - storing it, sending
+ * it, diffing two of them - had no way to get at it, and the only alternative
+ * was to intercept URL.createObjectURL and read the blob back out of a
+ * download that was never wanted. The download is one caller of this now.
+ *
+ * Returns null when there is nothing to save, so a caller can tell "no viewer"
+ * from "an empty one".
+ */
+function buildViewerState() {
     if (!viewerApi || !viewerApi.renderer) {
         setStatus("Error: No viewer data to save.", true);
-        return;
+        return null;
     }
 
     const renderer = viewerApi.renderer;
@@ -112,6 +124,50 @@ function saveViewerState() {
                             row.map(val => Math.round(val * 10) / 10)
                         );
                     }
+                }
+
+                // 🔴 AND EVERY OTHER MAP, AND THE RESIDUE COUNT. This
+                // builder names each frame field one by one, so a field it
+                // does not name is a field it throws away - the same shape
+                // of fault as viewer.py's light_frame and parts/ui.js's
+                // static loader, both of which dropped `align` this way.
+                // Without this a saved session came back with the PAE alone
+                // and every other map gone, and `pae_n` missing turned a
+                // resampled matrix's residue count into its CELL count, so
+                // a box dragged on the reloaded plot selected the wrong
+                // residues.
+                if (frame.pae_n) frameData.pae_n = frame.pae_n;
+                if (frame.maps && typeof frame.maps === 'object') {
+                    const savedMaps = {};
+                    for (const key of Object.keys(frame.maps)) {
+                        const m = frame.maps[key];
+                        const raw = (m && m.data !== undefined) ? m.data : m;
+                        // base64 stays a string - it is already the compact
+                        // form and re-expanding it would triple the file.
+                        let data = null;
+                        if (typeof raw === 'string') data = raw;
+                        else if (raw instanceof Uint8Array) data = Array.from(raw);
+                        else if (Array.isArray(raw)) data = raw;
+                        if (!data) continue;
+                        const entry = { data };
+                        // 🔴 `chains` IS A SELF-DESCRIPTION LIKE THE REST, AND
+                        // LEAVING IT OFF THIS LIST IS THE BLEED COMING BACK. A
+                        // map states the chain layout ITS OWN matrix was built
+                        // for; dropped here, the reload falls back to
+                        // `renderer.chains`, which belongs to whatever is DRAWN
+                        // - so a saved session reopened beside a different
+                        // structure rules another fold's boundaries across this
+                        // matrix, which is the fault the field exists to fix.
+                        for (const f of ['n', 'vmin', 'vmax', 'colors',
+                                         'xlabel', 'ylabel', 'per_unit',
+                                         'chains']) {
+                            if (m && m[f] !== undefined && m[f] !== null) {
+                                entry[f] = m[f];
+                            }
+                        }
+                        savedMaps[key] = entry;
+                    }
+                    if (Object.keys(savedMaps).length) frameData.maps = savedMaps;
                 }
 
                 // SIDE CHAINS - the WHOLE table, so a reloaded session can turn
@@ -329,7 +385,9 @@ function saveViewerState() {
                 selectionsByObject[objectName] = {
                     positions: Array.from(objectData.visibilityState.positions),
                     chains: Array.from(objectData.visibilityState.chains),
-                    pae_boxes: objectData.visibilityState.paeBoxes.map(box => ({ ...box })),
+                    // The saved key stays `pae_boxes`: it is the session FILE FORMAT,
+                    // and a reader with sessions on disk must keep loading them.
+                    pae_boxes: objectData.visibilityState.heatmapBoxes.map(box => ({ ...box })),
                     selection_mode: objectData.visibilityState.visibilityMode
                 };
             }
@@ -387,35 +445,49 @@ function saveViewerState() {
             viewer_state: viewerState,
             selections_by_object: selectionsByObject
         };
+        // ...AND THE PLUGINS' PAYLOADS, at the top level where Python's save_state
+        // writes them, and only when there are any (parts/plugins.js).
+        const plugins = window.py2dmolPlugins && window.py2dmolPlugins.snapshot
+            ? window.py2dmolPlugins.snapshot(renderer) : null;
+        if (plugins) stateData.plugins = plugins;
 
-        // Create filename with timestamp
-        const now = new Date();
-        const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
-        const jsonFilename = `py2dmol_state_${timestamp}.json`;
-
-        // NOT PRETTY-PRINTED. Two-space indentation on a session file is
-        // between two and four times the payload, and nothing reads these by
-        // hand: the app parses them back, and at this size no editor opens one
-        // anyway. Measured on 7Y7A - 305,004 positions, 1,065,107 side-chain
-        // rows - the indentation alone was 153 MB of a 212 MB file.
-        const jsonString = JSON.stringify(stateData);
-
-        // Download JSON file
-        const blob = new Blob([jsonString], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = jsonFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        setStatus(`State saved to ${jsonFilename}`);
+        return stateData;
     } catch (e) {
-        console.error("Failed to save state:", e);
+        console.error("Failed to build state:", e);
         setStatus(`Error saving state: ${e.message}`, true);
+        return null;
     }
+}
+
+/** The session as a file, which is what the Save button wants. */
+function saveViewerState() {
+    const stateData = buildViewerState();
+    if (!stateData) return;
+
+    // Create filename with timestamp
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const jsonFilename = `py2dmol_state_${timestamp}.json`;
+
+    // NOT PRETTY-PRINTED. Two-space indentation on a session file is
+    // between two and four times the payload, and nothing reads these by
+    // hand: the app parses them back, and at this size no editor opens one
+    // anyway. Measured on 7Y7A - 305,004 positions, 1,065,107 side-chain
+    // rows - the indentation alone was 153 MB of a 212 MB file.
+    const jsonString = JSON.stringify(stateData);
+
+    // Download JSON file
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = jsonFilename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setStatus(`State saved to ${jsonFilename}`);
 }
 
 // ============================================================================
@@ -425,17 +497,38 @@ function saveViewerState() {
 // The renderer automatically detects if setStatus() is available (index.html) 
 // or uses console.log/alert (viewer.html)
 
-async function loadViewerState(stateData) {
+/**
+ * A SAVED SESSION, OVER WHAT IS ON SCREEN OR BESIDE IT.
+ *
+ * 🔴 `append` IS THE WHOLE OF THE SECOND MODE, AND IT IS THE OBJECTS ONLY.
+ * A session records a viewer as well as its objects - the camera, the shown
+ * set, the slab, the colour mode, the panels - and putting those back is
+ * right when the file REPLACES what is here and wrong when it joins it: a
+ * reader who asks to see an old fold beside the current one has not asked
+ * to be moved to the camera it was saved from. So an appended load brings
+ * the objects and leaves the viewer alone, which is what dropping a file
+ * already does.
+ *
+ * 🔴 AND A NAME THAT IS TAKEN IS RENAMED, not merged into. `addObject` keeps
+ * the frames of an object that already has them, so a session whose object
+ * is called `fold` landing on a page that already has a `fold` would append
+ * its frames to the wrong trajectory and show one structure turning into
+ * another. Renaming is the only answer that cannot silently corrupt the one
+ * already there; the map from old name to new is applied to everything in
+ * the file that names an object.
+ */
+async function loadViewerState(stateData, options = {}) {
     if (!viewerApi || !viewerApi.renderer) {
         setStatus("Error: Viewer not initialized.", true);
         return;
     }
 
     const renderer = viewerApi.renderer;
+    const append = !!options.append;
 
     try {
-        // Clear existing objects
-        renderer.clearAllObjects();
+        // Clear existing objects - unless this session is joining them.
+        if (!append) renderer.clearAllObjects();
 
         // Ensure viewer container is visible
         const viewerContainer = document.getElementById('viewer-container');
@@ -444,8 +537,28 @@ async function loadViewerState(stateData) {
         if (topPanelContainer) topPanelContainer.style.display = 'block';
 
         // Restore objects
+        // ...under names nothing on screen is already using. Empty when the
+        // load is a replace, because the page has just been cleared.
+        const renamed = new Map();
+        if (append) {
+            const taken = new Set(Object.keys(renderer.objectsData || {}));
+            for (const objData of stateData.objects || []) {
+                if (!objData || !objData.name || !taken.has(objData.name)) {
+                    if (objData && objData.name) taken.add(objData.name);
+                    continue;
+                }
+                let suffix = 2;
+                while (taken.has(`${objData.name}_${suffix}`)) suffix += 1;
+                const fresh = `${objData.name}_${suffix}`;
+                renamed.set(objData.name, fresh);
+                taken.add(fresh);
+            }
+        }
+        const nameOf = (name) => renamed.get(name) || name;
         if (stateData.objects && Array.isArray(stateData.objects) && stateData.objects.length > 0) {
-            for (const objData of stateData.objects) {
+            for (const original of stateData.objects) {
+                const objData = renamed.has(original && original.name)
+                    ? { ...original, name: renamed.get(original.name) } : original;
                 if (!objData.name || !objData.frames || !Array.isArray(objData.frames) || objData.frames.length === 0) {
                     console.warn("Skipping invalid object in state file:", objData);
                     continue;
@@ -482,6 +595,11 @@ async function loadViewerState(stateData) {
                         position_types: frameData.position_types || objPositionTypes,  // undefined if both missing
                         plddts: frameData.plddts,  // undefined if missing (will use inheritance or default)
                         pae: frameData.pae,  // undefined if missing (will use inheritance or default)
+                        // ...and its residue count, and every other map. See
+                        // the save side: a field this rebuild does not name
+                        // is a field the reload throws away.
+                        pae_n: frameData.pae_n,
+                        maps: frameData.maps,
                         scatter: frameData.scatter,  // undefined if missing (will use inheritance or default)
                         position_names: frameData.position_names,  // undefined if missing (will default)
                         position_elements: frameData.position_elements,
@@ -614,10 +732,14 @@ async function loadViewerState(stateData) {
                     ylim: stateData.config.scatter.ylim || null
                 };
             }
-            if (stateData.config.pae) {
-                window.viewerConfig.pae = {
-                    enabled: stateData.config.pae.enabled !== false,
-                    size: stateData.config.pae.size || 300
+            // Either spelling: a session saved before the rename says
+            // `pae`, and one saved after says `heatmap`. Restored under the
+            // name the app's own config uses.
+            const savedHeatmap = stateData.config.heatmap || stateData.config.pae;
+            if (savedHeatmap) {
+                window.viewerConfig.heatmap = {
+                    enabled: savedHeatmap.enabled !== false,
+                    size: savedHeatmap.size || 300
                 };
             }
             // Other config sections can be restored here if needed
@@ -692,19 +814,44 @@ async function loadViewerState(stateData) {
             // ...the viewer's own contacts, before the frames are built: they
             // become segments inside setCoords, so setting them afterwards
             // stores them correctly and draws nothing until the next reload.
+            // ...under the names they were given, when this session joined
+            // objects already here: a contact names both ends by ADDRESS
+            // (`{object, chain, residue}`), so a renamed object leaves both
+            // ends pointing at something that is not on the page.
             if (Array.isArray(vs.cross_contacts)) {
-                renderer.crossContacts = vs.cross_contacts;
+                renderer.crossContacts = renamed.size === 0 ? vs.cross_contacts
+                    : vs.cross_contacts.map((c) => {
+                        const end = (e) => (e && e.object && renamed.has(e.object))
+                            ? { ...e, object: renamed.get(e.object) } : e;
+                        return { ...c, a: end(c.a), b: end(c.b),
+                                 from: end(c.from), to: end(c.to) };
+                    });
+            }
+
+            // ...the PLUGINS' payloads, which are the viewer's: a replacing load
+            // replaces them (a file with none leaves none), an append adds the
+            // file's beside what is here, following any object it renamed.
+            if (window.py2dmolPlugins && window.py2dmolPlugins.restore
+                && (stateData.plugins || !append)) {
+                window.py2dmolPlugins.restore(renderer, stateData.plugins || null,
+                    { replace: !append, rename: renamed });
             }
 
             // Set current object first (before setting frame)
-            if (vs.current_object_name && renderer.objectsData[vs.current_object_name]) {
-                renderer.currentObjectName = vs.current_object_name;
+            // ...under the name it was given on the way in, when this session
+            // joined objects that were already here. An APPEND lands on the
+            // object it brought: a reader who asks for an old fold wants to be
+            // editing it, and the one that was here is a click away in the
+            // picker - which py2Dmol shows the moment there are two.
+            const savedCurrent = nameOf(vs.current_object_name);
+            if (savedCurrent && renderer.objectsData[savedCurrent]) {
+                renderer.currentObjectName = savedCurrent;
                 if (renderer.objectSelect) {
-                    renderer.objectSelect.value = vs.current_object_name;
+                    renderer.objectSelect.value = savedCurrent;
                 }
             } else if (stateData.objects && stateData.objects.length > 0) {
                 // Fallback to first object if saved object doesn't exist
-                const firstObjName = stateData.objects[0].name;
+                const firstObjName = nameOf(stateData.objects[0].name);
                 renderer.currentObjectName = firstObjName;
                 if (renderer.objectSelect) {
                     renderer.objectSelect.value = firstObjName;
@@ -712,12 +859,17 @@ async function loadViewerState(stateData) {
             }
 
             // Restore rotation
-            if (vs.rotation_matrix && Array.isArray(vs.rotation_matrix)) {
+            // 🔴 THE CAMERA IS NOT THE OBJECT'S, SO AN APPEND LEAVES IT.
+            // Bringing an old fold in beside the current one and moving the
+            // reader to the angle it was saved from throws away where they
+            // were looking - which a dropped FILE does not do either. The
+            // rotation, the zoom, the centre and the extent are the four.
+            if (!append && vs.rotation_matrix && Array.isArray(vs.rotation_matrix)) {
                 renderer.viewerState.rotation = vs.rotation_matrix;
             }
 
             // Restore zoom
-            if (typeof vs.zoom === 'number') {
+            if (!append && typeof vs.zoom === 'number') {
                 renderer.viewerState.zoom = vs.zoom;
             }
 
@@ -743,7 +895,7 @@ async function loadViewerState(stateData) {
             }
 
             // Restore center (from orient to selection)
-            if (vs.center !== undefined && vs.center !== null) {
+            if (!append && vs.center !== undefined && vs.center !== null) {
                 renderer.viewerState.center = vs.center;
             }
 
@@ -755,7 +907,7 @@ async function loadViewerState(stateData) {
             // restored session cannot end up with a size from the file and a
             // shape from whatever was on screen.
             const savedAspect = vs.extent_aspect || vs.extentAspect;
-            if (typeof vs.extent === 'number' && vs.extent > 0) {
+            if (!append && typeof vs.extent === 'number' && vs.extent > 0) {
                 setViewSpan(renderer.viewerState,
                     halfSpanOf(vs.extent, savedAspect));
             }
@@ -960,7 +1112,7 @@ async function loadViewerState(stateData) {
                         renderer.objectsData[objectName].visibilityState = {
                             positions: new Set(),
                             chains: new Set(),
-                            paeBoxes: [],
+                            heatmapBoxes: [],
                             visibilityMode: 'default'
                         };
                     }
@@ -974,7 +1126,7 @@ async function loadViewerState(stateData) {
                     renderer.objectsData[objectName].visibilityState = {
                         positions: positions,
                         chains: new Set(ss.chains || []),
-                        paeBoxes: ss.pae_boxes || [],
+                        heatmapBoxes: ss.pae_boxes || [],
                         visibilityMode: ss.selection_mode || 'default'
                     };
                 }
@@ -987,7 +1139,7 @@ async function loadViewerState(stateData) {
             try {
                 // Ensure we have a valid current object
                 if (!renderer.currentObjectName && stateData.objects && stateData.objects.length > 0) {
-                    const firstObjName = stateData.objects[0].name;
+                    const firstObjName = nameOf(stateData.objects[0].name);
                     renderer.currentObjectName = firstObjName;
                     if (renderer.objectSelect) {
                         renderer.objectSelect.value = firstObjName;
@@ -1022,7 +1174,26 @@ async function loadViewerState(stateData) {
                         // ...INCLUDING AN EMPTY ONE, which is every object
                         // switched off. Null - the default - is not written at
                         // all, so an older session restores as it always did.
-                        const shownSaved = stateData.viewer_state
+                        // 🔴 AND null NEEDS NO RESTORING BECAUSE THE CLEAR AT
+                        // THE TOP OF THIS FUNCTION LEAVES THE RESTING STATE.
+                        // That is a dependency, so it is written down: this
+                        // used to accumulate instead, because clearAllObjects
+                        // left an empty SET - which is Multi, on, with every
+                        // object switched off - and addObject joins each new
+                        // object to a set when there is one. A session whose
+                        // reader never pressed Multi therefore came back with
+                        // every object merged. The fix is in clearAllObjects;
+                        // `tests/save_multi.py` asserts that a Clear All
+                        // leaves the Multi button OFF, which is what keeps
+                        // this line honest. Calling setShownObjects(null) here
+                        // as well was measured as a no-op and is not here.
+                        // ...and NOT ON AN APPEND, where it is the page's
+                        // own answer: the shown set is the VIEWER's, like the
+                        // camera and the slab above, and a session saved with
+                        // Multi on would switch it on for a page that never
+                        // asked - naming its own objects, so what the reader
+                        // was looking at goes off screen.
+                        const shownSaved = !append && stateData.viewer_state
                             && stateData.viewer_state.shown_objects;
                         if (Array.isArray(shownSaved) && renderer.setShownObjects) {
                             renderer.setShownObjects(shownSaved);
@@ -1036,7 +1207,13 @@ async function loadViewerState(stateData) {
                         // shown set is applied the centre and extent from the
                         // file are long gone. They are cheap to put back, and
                         // this is the one place that knows they are the answer.
-                        const savedView = stateData.viewer_state;
+                        // ...and not on an APPEND, where the page's own
+                        // framing is what the reader is looking through. The
+                        // object landed on still brings its OWN camera, which
+                        // is what switching to any object does; what must not
+                        // happen is the whole viewer being re-framed around a
+                        // file that came to join it.
+                        const savedView = append ? null : stateData.viewer_state;
                         if (savedView) {
                             if (savedView.center) {
                                 renderer.viewerState.center = savedView.center;
@@ -1057,8 +1234,8 @@ async function loadViewerState(stateData) {
                         // it off the object this loop happens to have ended on
                         // put another object's matrix in the panel the moment
                         // a restored session drew more than one.
-                        if (window.PAE && window.PAE.syncToDrawn) {
-                            window.PAE.syncToDrawn(renderer);
+                        if (window.Heatmap && window.Heatmap.syncToDrawn) {
+                            window.Heatmap.syncToDrawn(renderer);
                         }
 
                         // Update scatter visibility for current object

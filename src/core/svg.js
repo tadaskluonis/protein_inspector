@@ -164,6 +164,22 @@ SimpleCanvas2SVG.prototype.clearRect = function () {
     // Ignore - we add white background in SVG
 };
 
+// XML 1.0 forbids C0 controls (but tab, LF, CR), U+FFFE / U+FFFF and an unpaired surrogate: one of them in
+// a message (a plugin's error text can carry anything the plugin was handed) would make the whole file
+// unreadable, so they are dropped from every text this context writes.
+const XML_BAD = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+function xmlSafe(text) { return String(text).replace(XML_BAD, ''); }
+
+/**
+ * A COMMENT IN THE FILE. An export that could not draw something - a plugin over
+ * its budget - has no badge to show it on, so it says so in the text of the
+ * file it writes. `--` is not allowed inside an XML comment and `>` ends
+ * nothing in one, but both are flattened so no message can make the file invalid.
+ */
+SimpleCanvas2SVG.prototype.comment = function (text) {
+    this.operations.push({ type: 'comment', text: xmlSafe(text).replace(/-{2,}/g, '-').replace(/[<>]/g, ' ') });
+};
+
 // Stub methods (not used in rendering)
 SimpleCanvas2SVG.prototype.save = function () { };
 SimpleCanvas2SVG.prototype.restore = function () { };
@@ -222,7 +238,9 @@ SimpleCanvas2SVG.prototype.getSerializedSvg = function () {
         ? '' : ' opacity="' + Math.max(0, op.alpha).toFixed(3) + '"');
     for (let i = 0; i < this.operations.length; i++) {
         const op = this.operations[i];
-        if (op.type === 'rect') {
+        if (op.type === 'comment') {
+            body += '  <!-- ' + op.text + ' -->\n';
+        } else if (op.type === 'rect') {
             body += '  <rect x="' + op.x + '" y="' + op.y + '" width="' + op.width
                 + '" height="' + op.height + '" fill="'
                 + paintRef(op.fillStyle, gradDefs, gradIndex) + '"' + op_(op) + '/>\n';

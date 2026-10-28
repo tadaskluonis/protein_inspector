@@ -28,6 +28,22 @@ function parsePDB(text) {
     // Parse CONECT records for explicit bonds
     const conectMap = new Map(); // atom serial -> [bonded atom serials]
 
+    // 🔴 SSBOND, WHICH IS THE PDB'S _struct_conn disulf. Shaped exactly like a
+    // CIF struct_conn row so both formats reach convertParsedToFrameData by one
+    // path and resolve by one rule - see the disulf branch there.
+    //
+    // A PDB has no label/auth split: its residue number IS what atomIdToIndex
+    // is keyed by, so these need no id gymnastics. That is the whole reason
+    // this is worth having beyond parity - a multi-model PDB is what every
+    // trajectory in tests/ is, and without SSBOND none of them can declare a
+    // disulfide at all, so the renderer falls back to a 2.5 A distance and the
+    // count moves frame to frame. Measured on _traj_3ptb.pdb before this: four
+    // distinct values in six frames.
+    //
+    // Columns are the format's, 1-based and inclusive: chainID1 16, seqNum1
+    // 18-21, chainID2 30, seqNum2 32-35.
+    const structConn = [];
+
     let atomCount = 0;
     let modresCount = 0;
 
@@ -43,12 +59,41 @@ function parsePDB(text) {
             }
         }
 
+        if (line.startsWith('SSBOND')) {
+            const chain1 = line.substring(15, 16).trim();
+            const seq1 = parseInt(line.substring(17, 21).trim(), 10);
+            const chain2 = line.substring(29, 30).trim();
+            const seq2 = parseInt(line.substring(31, 35).trim(), 10);
+            if (chain1 && chain2 && Number.isFinite(seq1) && Number.isFinite(seq2)) {
+                structConn.push({
+                    chain1, seq1, atom1: 'SG',
+                    chain2, seq2, atom2: 'SG',
+                    type: 'disulf',
+                });
+            }
+        }
+
         if (line.startsWith('CONECT')) {
-            // CONECT format: serial (columns 6-11), bonded atoms (columns 12-16, 17-21, 22-26, 27-31, etc.)
+            // CONECT is fixed-width: the record name in columns 1-6, this
+            // atom's serial in 7-11, and up to FOUR partners in 12-16, 17-21,
+            // 22-26 and 27-31. Zero-based that is 6..11, then 11..16 and every
+            // five after it.
+            //
+            // 🔴 THE PARTNERS STARTED AT 12, ONE COLUMN LATE, and `trim()` hid
+            // it for nine thousand nine hundred and ninety-nine atoms. A field
+            // is RIGHT-justified, so a serial of four digits or fewer sits at
+            // 12..16 with a space in front and reading 12..17 gives the same
+            // number with a space after it. At five digits there is no padding
+            // left: `12346` written at 11..16 is read as `23461` - the leading
+            // digit of the serial dropped and the first digit of the NEXT
+            // partner picked up. What comes back is a bond to an atom that is
+            // usually not there (dropped in silence) and occasionally is
+            // (drawn between the wrong two atoms). Every structure past 9,999
+            // atoms, which is most of the ones that carry CONECT at all.
             const serial = parseInt(line.substring(6, 11).trim());
             const bonded = [];
             for (let i = 0; i < 4; i++) {
-                const startCol = 12 + (i * 5);
+                const startCol = 11 + (i * 5);
                 const bondedSerial = parseInt(line.substring(startCol, startCol + 5).trim());
                 if (!isNaN(bondedSerial)) {
                     bonded.push(bondedSerial);
@@ -105,7 +150,7 @@ function parsePDB(text) {
         models.push(currentModelAtoms);
     }
 
-    return { models, modresMap, conectMap };
+    return { models, modresMap, conectMap, structConn };
 }
 
 /**
@@ -120,6 +165,11 @@ const CIF_LOOPS_READ = [
     '_struct_conn.',
     '_chem_comp.',
     '_chem_comp_bond.',
+    // ONE ROW PER MONOMER OF EACH POLYMER ENTITY, which is the cheapest exact
+    // count of how long a polymer is - and the atom scanner needs that BEFORE
+    // it reads a row, to know whether it may throw the row away. See
+    // smallEntities below.
+    '_entity_poly_seq.',
     '_pdbx_struct_assembly_gen.',
     '_pdbx_struct_oper_list.',
 ];
@@ -152,12 +202,13 @@ const PARSE_SLICE_BYTES = 12 << 20;
 
 function* parseCIFSteps(text) {
 
-    // THE FIVE LOOPS ANYONE ACTUALLY READS.
+    // THE SIX LOOPS ANYONE ACTUALLY READS.
     //
-    // Three are read below - struct_conn for explicit bonds, chem_comp for
-    // modified-residue detection, chem_comp_bond for ligand connectivity - and
-    // two more by extractCIFBiounitOperations, which is handed these same loops
-    // as `cachedLoops` rather than re-walking the file. Nothing else consumes
+    // Four are read below - struct_conn for explicit bonds, chem_comp for
+    // modified-residue detection, chem_comp_bond for ligand connectivity, and
+    // entity_poly_seq for how long each polymer is - and two more by
+    // extractCIFBiounitOperations, which is handed these same loops as
+    // `cachedLoops` rather than re-walking the file. Nothing else consumes
     // parseCIF's `loops` (cachedLoops in src/app/main.js is its only reader).
     const loops = parseMinimalCIF_light(text, CIF_LOOPS_READ);
 
@@ -221,6 +272,14 @@ function* parseCIFSteps(text) {
                 const seq2 = getCol(row, ccol_ptnr2_label_seq_id, ccol_ptnr2_auth_seq_id);
                 const atom2 = row[ccol_ptnr2_label_atom_id];
 
+                // 🔴 THE AUTH IDS AS WELL, because atomIdToIndex is keyed by
+                // them and getCol above prefers LABEL. For a ligand the two
+                // agree by accident - its label_seq_id is '.', so getCol falls
+                // through to auth - and for a polymer residue they do not:
+                // 3PTB's first disulfide is label_seq_id 7 and auth_seq_id 22.
+                // That is why six disulf records resolved to zero bonds, and
+                // the comment in core/mol.js blaming "no SG to look up" was
+                // only half the reason.
                 if (chain1 && atom1 && chain2 && atom2) {
                     structConn.push({
                         chain1, seq1: parseInt(seq1), atom1,
@@ -307,6 +366,41 @@ function* parseCIFSteps(text) {
         }
     }
 
+    // ====================================================================
+    // WHICH POLYMER ENTITIES ARE SHORT ENOUGH TO KEEP WHOLE
+    //
+    // The atom scanner below throws away a standard residue's N, C and O
+    // because only its CA ever reaches `coords` - 38.6% of a capsid's rows,
+    // abandoned before they are even tokenised. That premise stops being true
+    // for a peptide short enough to be drawn as a LIGAND, where every atom is
+    // a position: 1A09's inhibitor came out with its glutamate holding CA and
+    // a side chain and no backbone at all, detached from the residue before it.
+    //
+    // 🔴 AND THIS GATE IS DELIBERATELY LOOSER THAN THE RULE IT SERVES. The
+    // classifier's rule counts PROTEIN residues in a chain; an entity carries
+    // its caps and any other hetero monomer beside them, so 1A09's two-residue
+    // peptide is a four-monomer entity. This decides only what is KEPT, never
+    // what is drawn - keeping a handful of atoms for a tiny entity costs
+    // nothing, and being too tight here is the one failure that is invisible
+    // until a molecule is missing its middle.
+    const SMALL_ENTITY_MONOMERS = 8;
+    const smallEntities = new Set();
+    {
+        const epsL = getLoop('_entity_poly_seq.entity_id');
+        if (epsL) {
+            const c = epsL[0], rows = epsL[1];
+            const ei = c.indexOf('_entity_poly_seq.entity_id');
+            const per = new Map();
+            if (ei >= 0) {
+                for (const r of rows) {
+                    const id = r[ei];
+                    if (id !== undefined) per.set(id, (per.get(id) || 0) + 1);
+                }
+            }
+            for (const [id, n] of per) if (n <= SMALL_ENTITY_MONOMERS) smallEntities.add(id);
+        }
+    }
+
     const modelMap = new Map();
     const lines = text.split('\n');
 
@@ -349,6 +443,13 @@ function* parseCIFSteps(text) {
     const idxB = headerMap['_atom_site.B_iso_or_equiv'];
     const idxElement = headerMap['_atom_site.type_symbol'];
     const idxModelID = modelIDKey ? headerMap[modelIDKey] : -1;
+    // ...and which entity a row belongs to, read ONLY where some entity is
+    // small enough for the answer to change anything. On every other file the
+    // index stays -1, the scanner stops at the column it always stopped at,
+    // and nothing below this costs a thing.
+    const idxEntity = smallEntities.size
+        ? (headerMap['_atom_site.label_entity_id'] !== undefined
+            ? headerMap['_atom_site.label_entity_id'] : -1) : -1;
 
     // Parse data - optimized for performance
     // A row only has to reach the columns we actually read. Requiring the full
@@ -361,7 +462,8 @@ function* parseCIFSteps(text) {
     // substrings on 4UG0 and dropped them all. The mask says which column
     // indices matter, and readCIFCols slices those and counts past the others.
     const wantIdx = [idxRecord, idxAtomName, idxResName, idxChain, idxResSeq,
-        headerMap['_atom_site.auth_seq_id'], idxX, idxY, idxZ, idxB, idxElement, idxModelID];
+        headerMap['_atom_site.auth_seq_id'], idxX, idxY, idxZ, idxB, idxElement, idxModelID,
+        idxEntity];
     let maxWanted = -1;
     for (const w of wantIdx) if (w >= 0 && w > maxWanted) maxWanted = w;
     // A STANDARD RESIDUE'S N, C AND O ARE READ BY NOTHING, so they are never
@@ -381,14 +483,17 @@ function* parseCIFSteps(text) {
     // fact and does not license it: reconstruction says where a KNOWN residue's
     // backbone is; the classifier asks whether an unknown residue is one.
     const dropAfter = (idxAtomName >= 0 && idxResName >= 0)
-        ? Math.max(idxAtomName, idxResName) + 1 : -1;
+        ? Math.max(idxAtomName, idxResName, idxEntity) + 1 : -1;
     //   - ...EXCEPT PROLINE'S N, which its side chain closes a ring through.
     //     Dropped with the rest, a proline draws as a three-atom arm hanging
     //     off the CA rather than as the pyrrolidine it is. One atom per
     //     proline, and prolines are about a twentieth of a structure.
     const dropTest = (out) => DROPPABLE_BACKBONE.has(out[idxAtomName])
         && STANDARD_AMINO_ACIDS.has(out[idxResName])
-        && SIDECHAIN_KEEP_BACKBONE[out[idxResName]] !== out[idxAtomName];
+        && SIDECHAIN_KEEP_BACKBONE[out[idxResName]] !== out[idxAtomName]
+        //   - ...AND EXCEPT IN A SHORT POLYMER, every atom of which can become
+        //     a position. See smallEntities.
+        && !(idxEntity >= 0 && smallEntities.has(out[idxEntity]));
     const wantMask = new Uint8Array(maxWanted + 1);
     for (const w of wantIdx) if (w >= 0) wantMask[w] = 1;
     // reused across rows; a column is only read when it is < nCols, and every
@@ -894,10 +999,32 @@ function resolveChainNucleicTypes(allResidues) {
  * came from is long gone. Being able to enable a residue later is most of the
  * point of the control.
  *
- * What is dropped is `names` and `elements`. Nothing reads them to draw - they
- * exist so the connectivity table can be applied at capture, which has already
- * happened by now - and they are a third of the bytes. Coefficients round to
- * 0.01 A, which is far finer than a side chain drawn a few pixels wide.
+ * What is dropped is `names`. Nothing reads them to draw - they exist so the
+ * connectivity table can be applied at capture, which has already happened by
+ * now. Coefficients round to 0.01 A, which is far finer than a side chain
+ * drawn a few pixels wide.
+ *
+ * 🔴 `elements` WAS DROPPED WITH THEM AND IT HAS TWO READERS, so a reloaded
+ * session drew every side chain in one flat colour. `_materialiseSidechains`
+ * fills BOTH the positions' element column and `sidechainMap.el` from this
+ * array - the first is what colours an atom, the second what colours the far
+ * half of a mixed bond - so an empty one is oxygen without its red and
+ * nitrogen without its blue, on every side chain at once. Reported exactly
+ * that way. Measured on 3PTB: 744 side-chain atoms carry an element (566 C,
+ * 100 O, 64 N, 14 S) and a reload had 0.
+ *
+ * The comment this replaces said "nothing reads them to draw", and
+ * `core/mol.js` carried the matching claim that the colour comes from
+ * `sidechainMap.el` "which is where it always came from" - true, and that
+ * field is filled from THIS array, so dropping it emptied both. A saved table
+ * carries what the drawing reads; that is the whole rule, and it is the same
+ * one the frame builders in this project keep breaking one field at a time.
+ *
+ * It travels as ONE STRING, comma-joined. An element is one or two characters
+ * and a JSON array spends four bytes a slot on quotes and commas: measured on
+ * 3PTB's 744 atoms, 3.0 KB as an array against 1.5 KB joined, beside 15 KB of
+ * coefficients for the same atoms. A reader splits it back; an array is still
+ * accepted, because a session written by any other version may carry one.
  *
  * Cost on 1TIM: 56 KB against 11 KB of coordinates, per frame. That ratio is
  * the price of the feature; it was 145 KB before this trimming.
@@ -917,6 +1044,8 @@ function trimSidechainTable(sc) {
         coef,
         bonds: Array.from(sc.bonds),
         toBackbone: Array.from(sc.toBackbone || []),
+        // what an atom IS, which is what colours it - see the note above
+        elements: Array.from(sc.elements || []).join(','),
         // dropped here once and proline's ring went back to diving into the
         // ribbon: this IS the table the renderer reads
         onBackbone: Array.from(sc.onBackbone || []),
@@ -939,7 +1068,15 @@ function reviveSidechainTable(raw) {
         // absent in a saved table: nothing reads them to draw, and they were
         // dropped to save the bytes - see trimSidechainTable
         names: raw.names || [],
-        elements: raw.elements || [],
+        // ...and the elements are NOT among those, whatever a session written
+        // before this says. A string is the form trimSidechainTable writes; an
+        // array is accepted because another version may have written one, and
+        // an OLD session has neither - it reloads exactly as it did, with no
+        // element colours on its side chains, because the bytes are not there
+        // to give back.
+        elements: typeof raw.elements === 'string'
+            ? (raw.elements.length ? raw.elements.split(',') : [])
+            : (raw.elements || []),
         onBackbone: new Uint8Array(raw.onBackbone || []),
     };
 }
@@ -1371,6 +1508,23 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     const atomSerialToIndex = new Map();
     // Also map chain:seq:atomName to index for CIF struct_conn resolution
     const atomIdToIndex = new Map();
+    // 🔴 AND THE POLYMER HALF OF IT ONLY WHEN SOMETHING WILL ASK. Three things
+    // read this map: struct_conn, which needs a POLYMER residue's CA or C4';
+    // the chem_comp bond pass, which walks multiAtomResidues and so only ever
+    // asks about LIGAND atoms; and extractLigandBondsFromAtoms, which drops
+    // every hit whose position is not of type 'L'. CONECT does not read it at
+    // all - it resolves through atomSerialToIndex.
+    //
+    // So on a file with no struct_conn the polymer entries are written and
+    // never read. Measured on 1M4X: 2,081,520 sets, ZERO gets - two million
+    // template literals and two million Map inserts, and the strings and the
+    // map together are a couple of hundred megabytes of a load whose garbage
+    // collector share is 11.6%.
+    //
+    // The ligand branch always writes, because it is the branch the other two
+    // readers need and there are few of them. The condition is known before
+    // the loop starts, which is what makes this a skip rather than a cache.
+    const wantPolymerIds = !!(structConn && structConn.length > 0);
     // the residues that contribute more than one position - see the ligand
     // branch below, and the chem_comp_bond pass that consumes this
     const multiAtomResidues = [];
@@ -1384,6 +1538,15 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // is still there for the atoms that don't - a residue interrupted and
     // resumed later in the file lands back in its own group, exactly as
     // before.
+    //
+    // 🔴 AND CUTTING THE RUN OUT IN ONE SLICE IS NOT WORTH WHAT IT COSTS TO
+    // READ. A residue's atoms are the run that identified it, so `atoms.slice`
+    // could size the list exactly instead of letting five pushes reallocate a
+    // fresh `[]` twice - 2,081,520 times on an expanded capsid. Measured, over
+    // three loads an arm: 2534 / 2685 / 2685 ms against 2486 / 2632 / 2639, a
+    // consistent 48 ms of a 6.5 s load. It needs a run-start index, a dirty
+    // flag for a water skipped in the middle of a run, a close-out at every
+    // boundary and one at the end - and it gets 2%. Left as a push.
     let runChain = null, runSeq = null, runName = null, runResidue = null;
     for (const atom of atoms) {
         if (atom.resName === 'HOH') continue;
@@ -1443,6 +1606,63 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     // draw path unless a residue is actually selected - see buildSidechainTable.
     yield 0.45;
     const sidechainEntries = [];
+
+    // ====================================================================
+    // A PEPTIDE TOO SHORT TO HAVE A SHAPE IS DRAWN AS WHAT IT IS: A LIGAND
+    //
+    // A cartoon is a statement about SECONDARY STRUCTURE, and two residues
+    // have none - what it draws is one segment between two alpha carbons,
+    // which says nothing a reader wanted to know and throws away every atom
+    // that did. 1A09's inhibitor is the case: the file annotates
+    // ACE-PTH-GLU-DIP as a polymer entity, so the two residues in the middle
+    // that look like amino acids took the CA branch and the phosphotyrosine
+    // ring - the entire point of the molecule - was not drawn at all, while
+    // the ACE and DIP caps either side of it were, being HETATM. Half a
+    // ligand, cut down the middle by a rule about polymers.
+    //
+    // 🔴 THE ENTITY ANNOTATION CANNOT ANSWER THIS, which is why the rule is a
+    // length. 1A09 declares `2 polymer man 'ACE-FORMYL PHOSPHOTYR-GLU-(N,N-
+    // DIPENTYL AMINE)'` - the file means it, and it is right: chemically that
+    // IS a polymer. It is just not one a ribbon can say anything about.
+    //
+    // 🔴 AND PROTEIN ONLY. A two-nucleotide RNA is not the same case: a
+    // nucleotide carries its own base plate and reads perfectly well one at a
+    // time, and 1CWP's encapsidated fragments (chains A, B and C, of 4, 2 and
+    // 4) would lose their plates and their trace for nothing.
+    //
+    // 🔴 AND NOT IN PAE MODE. `includeAllResidues` exists to map a matrix onto
+    // residues one for one; demoting a residue to a handful of atoms there
+    // changes the count the matrix is indexed by.
+    //
+    // Two, because that is where "no shape to describe" stops being arguable:
+    // three residues is a turn, and the threshold should refuse the cases it
+    // cannot justify rather than the ones it can. Over the repo's structures
+    // it reclassifies exactly 1A09's chains B and D.
+    const SHORT_PEPTIDE_MAX = 2;
+    // WHICH RESIDUES ARE PROTEIN, ASKED ONCE. The loop below needs the answer
+    // per residue anyway and the count needs it per chain first, so it is
+    // computed here and read there - the same number of isRealAminoAcid calls
+    // as before, which matters because that one walks a residue's neighbours
+    // and this file already records it being asked 313,000 times for nothing.
+    const isProt = new Uint8Array(allResidues.length);
+    const shortPeptideChains = new Set();
+    {
+        const protPerChain = new Map();
+        for (let idx = 0; idx < allResidues.length; idx++) {
+            const r = allResidues[idx];
+            const yes = includeAllResidues
+                ? isRealAminoAcid(r, modresMap, chemCompMap, null, -1)
+                : isRealAminoAcid(r, modresMap, chemCompMap, allResidues, idx);
+            isProt[idx] = yes ? 1 : 0;
+            if (yes) protPerChain.set(r.chain, (protPerChain.get(r.chain) || 0) + 1);
+        }
+        if (!includeAllResidues) {
+            for (const [chain, n] of protPerChain) {
+                if (n <= SHORT_PEPTIDE_MAX) shortPeptideChains.add(chain);
+            }
+        }
+    }
+
     const CONVERT_SLICE_RESIDUES = 60000;
     for (let idx = 0; idx < allResidues.length; idx++) {
         if (idx > 0 && idx % CONVERT_SLICE_RESIDUES === 0) {
@@ -1453,15 +1673,55 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
         // Use unified classification functions
         // If includeAllResidues is true, skip connectivity checks (for PAE mapping)
         // Otherwise, use connectivity checks (for normal filtering)
-        let is_protein, nucleicType;
-        if (includeAllResidues) {
-            // For PAE mapping: include all residues, skip connectivity checks
-            is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, null, -1);
-            nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, null, -1);
-        } else {
-            // Normal mode: use connectivity checks
-            is_protein = isRealAminoAcid(residue, modresMap, chemCompMap, allResidues, idx);
-            nucleicType = isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, idx);
+        // 🔴 AND THE NUCLEIC QUESTION IS ONLY ASKED WHERE THE PROTEIN ANSWER
+        // WAS NO. The branches below take protein first, so a residue that is
+        // protein never reads this - and asking costs a name lookup, an atom
+        // scan for the 2' oxygen, and a connectivity walk over the neighbours.
+        // It was asked for every residue in the file: 313,000 times on a
+        // capsid with no nucleic acid anywhere in it. isRealNucleicAcid is a
+        // pure function of the residue and its neighbours, so not asking is
+        // the same answer.
+        // ...the protein answer is the one computed above, so that the count
+        // this loop's short-peptide rule reads and the branch it takes cannot
+        // come from two different questions.
+        const is_protein = !!isProt[idx];
+        // A SHORT PEPTIDE IS STILL PROTEIN; it is just drawn as a ligand. Kept
+        // as two facts rather than one because the nucleic question below is
+        // asked only where the PROTEIN answer was no, and a demoted residue
+        // must not start paying for a check whose answer is already known.
+        //
+        // 🔴 AND IT IS DEMOTED ONLY IF ITS BACKBONE IS ACTUALLY THERE, which is
+        // the precondition rather than a proxy for one. The mmCIF scanner drops
+        // a STANDARD residue's N, C and O before anything knows what chain it is
+        // in, and spares them only where the file DECLARED a short entity
+        // (see smallEntities) - so on a hand-written mmCIF with no
+        // entity_poly_seq the atoms are already gone by the time we get here.
+        // Demoting anyway is how the first version of this produced a glutamate
+        // holding a CA and a side chain and no backbone, detached from the
+        // residue before it, with six atoms where two were expected and every
+        // count-based check passing.
+        //
+        // Asking the residue is better than keeping the scanner's rule and this
+        // one in step, which is two answers to one question and the fault this
+        // file records a dozen of. It is also right on every path for its own
+        // reason: a PDB file drops nothing, so a short peptide there is drawn
+        // whole whether or not anything declared an entity.
+        const hasBackbone = () => {
+            let n = false, c = false;
+            for (const a of residue.atoms) {
+                if (a.atomName === 'N') n = true;
+                else if (a.atomName === 'C') c = true;
+                if (n && c) return true;
+            }
+            return false;
+        };
+        const shortPeptide = is_protein && shortPeptideChains.has(residue.chain)
+            && hasBackbone();
+        let nucleicType = null;
+        if (!is_protein) {
+            nucleicType = includeAllResidues
+                ? isRealNucleicAcid(residue, modresMap, chemCompMap, null, -1)
+                : isRealNucleicAcid(residue, modresMap, chemCompMap, allResidues, idx);
         }
         // Whether it IS a nucleotide is per residue; which KIND it is falls
         // back to the chain when the residue itself gave no evidence. A
@@ -1472,7 +1732,7 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
             nucleicType = chainNucleic.get(residue.chain);
         }
 
-        if (is_protein) {
+        if (is_protein && !shortPeptide) {
             // Use cached CA atom instead of .find()
             const ca = residue.caAtom || residue.atoms.find(a => a.atomName === 'CA');
             if (ca) {
@@ -1487,9 +1747,12 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
 
                 // Map serial/ID to new index
                 if (ca.serial !== undefined) atomSerialToIndex.set(ca.serial, newIndex);
-                // Map ID for CIF resolution
-                const idKey = `${ca.chain}:${ca.resSeq}:${ca.atomName}`;
-                atomIdToIndex.set(idKey, newIndex);
+                // Map ID for CIF resolution - polymer, so only when
+                // struct_conn will ask. See wantPolymerIds.
+                if (wantPolymerIds) {
+                    atomIdToIndex.set(`${ca.chain}:${ca.resSeq}:${ca.atomName}`,
+                        newIndex);
+                }
             }
         } else if (nucleicType) {
             // Use cached C4' atom instead of .find()
@@ -1512,11 +1775,14 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
 
                 // Map serial/ID to new index
                 if (c4_atom.serial !== undefined) atomSerialToIndex.set(c4_atom.serial, newIndex);
-                // Map ID for CIF resolution
-                const idKey = `${c4_atom.chain}:${c4_atom.resSeq}:${c4_atom.atomName}`;
-                atomIdToIndex.set(idKey, newIndex);
+                // Map ID for CIF resolution - polymer, as above.
+                if (wantPolymerIds) {
+                    atomIdToIndex.set(
+                        `${c4_atom.chain}:${c4_atom.resSeq}:${c4_atom.atomName}`,
+                        newIndex);
+                }
             }
-        } else if (includeAllResidues || residue.record === 'HETATM') {
+        } else if (shortPeptide || includeAllResidues || residue.record === 'HETATM') {
             // If includeAllResidues is true, include everything (even unclassified residues)
             // Otherwise, only include HETATM records as ligands
             // For ligands or unclassified residues, use all non-H atoms (like Python code)
@@ -1579,12 +1845,65 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     }
 
     // 2. Process CIF _struct_conn records
+    const disulfideResidues = [];
+    let disulfUnresolved = 0;
+    // [resA, resB, atomA, atomB] - a declared covalent bond that could not be
+    // resolved as a pair of POSITIONS, kept by residue and atom name so
+    // _materialiseSidechains can bond it once the atoms exist. An empty atom
+    // name means the position itself is the atom, which is what a ligand's is.
+    // Indices first, so remapIndexPairs renumbers it across a copy for free -
+    // the same shape `contacts` has.
+    const covalentLinks = [];
     if (structConn && structConn.length > 0) {
         const processedBonds = new Set();
 
         for (const conn of structConn) {
             const key1 = `${conn.chain1}:${conn.seq1}:${conn.atom1}`;
             const key2 = `${conn.chain2}:${conn.seq2}:${conn.atom2}`;
+
+            // 🔴 A DISULFIDE IS KEPT AS A PAIR OF RESIDUES, because as a pair of
+            // ATOMS it is always dropped. The record names chain:seq:SG and a
+            // protein residue contributes exactly one position - its CA - so
+            // the lookup below finds nothing and the bond disappears in
+            // silence: measured on 3PTB, six disulf records in and zero bonds
+            // out. The renderer then re-derives them from a 2.5 A distance
+            // over every SG pair, every time side chains are materialised,
+            // which on a MOVING structure is not stable - on a 0.45 A
+            // breathing trajectory of 3PTB the count took four distinct values
+            // in six frames, and the segment list moved with it.
+            //
+            // The residue pair is the durable form: it is what the file
+            // actually asserts, it does not depend on which atoms happen to be
+            // materialised this frame, and it cannot move when the geometry
+            // does. Resolved through CA, which is the position a protein
+            // residue always has.
+            if (conn.type === 'disulf') {
+                // THE SAME IDS THE ATOM LOOKUP BELOW USES, which are the ones
+                // getCol returns - label where the file has them. atomIdToIndex
+                // is keyed the same way (measured on 3PTB: its CA keys run
+                // A:1:CA to A:223:CA, the label numbering, while auth runs
+                // 22 to 245), so resolving these against auth ids silently
+                // finds the WRONG residue rather than none - A:22:CA exists,
+                // it is simply a different residue.
+                //
+                // Only the ATOM NAME changes: the record names SG and a protein
+                // residue's one position is its CA. That is the whole of why
+                // six disulf records resolved to nothing.
+                const r1 = atomIdToIndex.get(`${conn.chain1}:${conn.seq1}:CA`);
+                const r2 = atomIdToIndex.get(`${conn.chain2}:${conn.seq2}:CA`);
+                // 🔴 AND BOTH ENDS MUST BE A CYSTEINE. A disulfide that lands
+                // on anything else is a resolution that went wrong, not a bond
+                // - which is exactly what an auth/label mix-up produces, and
+                // this check is what caught it. Cheap, and it fails loudly
+                // instead of drawing a bond between two arbitrary residues.
+                const cys = (i) => residues[i] === 'CYS';
+                if (r1 !== undefined && r2 !== undefined && r1 !== r2
+                    && cys(r1) && cys(r2)) {
+                    disulfideResidues.push(r1 < r2 ? [r1, r2] : [r2, r1]);
+                } else {
+                    disulfUnresolved += 1;
+                }
+            }
 
             const idx1 = atomIdToIndex.get(key1);
             const idx2 = atomIdToIndex.get(key2);
@@ -1597,6 +1916,45 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
                     bonds.push([minIdx, maxIdx]);
                     processedBonds.add(bondKey);
                 }
+                continue;
+            }
+
+            // 🔴 AND A `covale` WHOSE PROTEIN END IS A SIDE-CHAIN ATOM IS THE
+            // SAME FAULT THE DISULFIDE BRANCH ABOVE EXISTS FOR, one step wider.
+            // The record names chain:seq:SG and a protein residue contributes
+            // exactly one position - its CA - so the lookup above finds nothing
+            // and a real covalent bond to a ligand disappears in silence.
+            // Reported on 1A09, where CYS 188's SG is bonded to the inhibitor
+            // peptide's CF at 1.803 A and no stick was drawn; the same records
+            // are how a c-type cytochrome's haem is attached (1BBH: four
+            // thioether bonds to two cysteines per chain, all four dropped) and
+            // how a phycobilin is attached to its apoprotein (1BJP, four more).
+            //
+            // A side-chain atom is not a position until its side chain is
+            // MATERIALISED, so the durable form is the one the disulfides
+            // already use: the residue, plus the name of the atom within it.
+            // _materialiseSidechains resolves the pair against the atoms that
+            // exist this frame, which is also what makes "only if both ends are
+            // shown" fall out for free.
+            //
+            // THROUGH CA, AND SO PROTEIN ONLY. A nucleotide's one position is
+            // its C4', and every `covale` row a nucleic file writes is the
+            // O3'-P phosphodiester backbone the trace already draws - 25 rows
+            // each on 1EHZ and 4TNA. Resolving those through C4' would stitch a
+            // second, wrong backbone over the real one, so they are left alone.
+            const endOf = (chain, seq, atom, idx) => {
+                // an end that IS a position - a ligand atom - needs no name
+                if (idx !== undefined) return [idx, ''];
+                const ca = atomIdToIndex.get(`${chain}:${seq}:CA`);
+                return ca === undefined ? null : [ca, atom];
+            };
+            if (conn.type !== 'covale') continue;
+            const e1 = endOf(conn.chain1, conn.seq1, conn.atom1, idx1);
+            const e2 = endOf(conn.chain2, conn.seq2, conn.atom2, idx2);
+            // ...and never a residue to itself: an intra-residue covale is the
+            // component's own connectivity, which _chem_comp_bond carries.
+            if (e1 && e2 && e1[0] !== e2[0]) {
+                covalentLinks.push([e1[0], e2[0], e1[1], e2[1]]);
             }
         }
     }
@@ -1675,6 +2033,17 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     if (bonds.length > 0) {
         result.bonds = bonds;
     }
+    // ...and what the FILE says is disulfide-bonded, by residue. Empty for a
+    // file that says nothing, which is what sends the renderer to its distance
+    // rule - see _materialiseSidechains.
+    // 🔴 ALL OF THEM OR NONE. _materialiseSidechains uses a declared set WHOLE
+    // - supplementing it from the geometry would put back the flicker it
+    // exists to remove - so a set that is missing one is worse than no set at
+    // all: it would silently stop drawing a real disulfide. If any row did not
+    // resolve, say nothing and let the distance rule do its job.
+    if (disulfideResidues.length > 0 && disulfUnresolved === 0) {
+        result.disulfideResidues = disulfideResidues;
+    }
 
     if (position_types.length > 0) {
         result.position_types = position_types;
@@ -1702,9 +2071,47 @@ function* convertParsedToFrameDataSteps(atoms, modresMap = null, chemCompMap = n
     }
 
     yield 0.75;
+    // WHAT THE SIDE-CHAIN TABLE COSTS, as `window.__sidechainMs`. It is a
+    // second of a capsid load and none of it is visible, so it is the kind of
+    // cost that has to be a number before it can be argued about. Accumulated
+    // rather than assigned: a session loads more than one thing.
+    const __scT0 = (typeof performance !== 'undefined') ? performance.now() : 0;
     const sidechains = buildSidechainTable(coords, sidechainEntries);
+    if (typeof window !== 'undefined' && typeof performance !== 'undefined') {
+        window.__sidechainMs = (window.__sidechainMs || 0) + (performance.now() - __scT0);
+    }
     if (sidechains) {
         result.sidechains = sidechains;
+    }
+
+    // 🔴 AND A LINK IS KEPT ONLY WHERE THE ATOM IT NAMES REALLY IS A
+    // SIDE-CHAIN ATOM, which is why this sits below the table rather than
+    // beside the loop that built the list. Two things fall out of asking, and
+    // both matter more than the check itself:
+    //
+    // A BACKBONE ATOM IS NOT IN THE TABLE, so an ordinary peptide bond written
+    // as a `covale` - `C(i)` to `N(i+1)`, which 1HVR writes four of and 1A09
+    // three - is dropped here rather than drawn as a stick over the ribbon that
+    // already draws it. The table keeps exactly one backbone atom on purpose,
+    // proline's ring-closing N, and that one IS a real attachment point: 1BJP's
+    // phycobilin is bonded to the N-terminal proline's nitrogen.
+    //
+    // AND A RESIDUE THAT RESOLVED TO THE WRONG PLACE ANSWERS NO. The disulf
+    // branch guards the same risk by requiring both ends to be cysteines - an
+    // auth/label seq mix-up finds a residue that exists and is simply a
+    // different one - and this is that check without a fixed residue name to
+    // compare against: an SG belongs to a cysteine, and asking the table is
+    // asking the structure rather than a table of my own.
+    if (covalentLinks.length > 0) {
+        const known = new Set();
+        if (sidechains) {
+            for (let k = 0; k < sidechains.pos.length; k++) {
+                known.add(sidechains.pos[k] + ':' + sidechains.names[k]);
+            }
+        }
+        const kept = covalentLinks.filter(([a, b, na, nb]) =>
+            (!na || known.has(a + ':' + na)) && (!nb || known.has(b + ':' + nb)));
+        if (kept.length) result.covalentLinks = kept;
     }
 
     return result;
@@ -1724,7 +2131,16 @@ function convertParsedToFrameData(...args) {
 async function convertParsedToFrameDataAsync(...args) {
     const it = convertParsedToFrameDataSteps(...args);
     for (;;) {
+        // WHAT THE CONVERSION ITSELF COSTS, as `window.__convertMs` - the sum
+        // of the slices and not the wall, because the wall includes whatever
+        // the browser did with the turn it was handed between them. It is the
+        // largest single item in a big load's profile, so it has to be a
+        // number that does not drift with the machine.
+        const __cvT0 = (typeof performance !== 'undefined') ? performance.now() : 0;
         const r = it.next();
+        if (typeof window !== 'undefined' && typeof performance !== 'undefined') {
+            window.__convertMs = (window.__convertMs || 0) + (performance.now() - __cvT0);
+        }
         if (r.done) return r.value;
         await yieldIfBusy();
     }
@@ -2729,6 +3145,8 @@ function extractBiounitOperations(text, isCIF, cachedLoops = null) {
  */
 function applyBiounitOperationsToAtoms(atoms, operations) {
     if (!operations || operations.length === 0) return atoms;
+    const __buT0 = (typeof performance !== 'undefined') ? performance.now() : 0;
+    try {
 
     // Get chains from operations, or use all chains if none specified
     let targetChains = new Set();
@@ -2745,25 +3163,59 @@ function applyBiounitOperationsToAtoms(atoms, operations) {
         });
     }
 
-    const out = [];
+    // WHICH ATOMS ARE COPIED IS DECIDED ONCE, NOT ONCE PER OPERATION. The test
+    // does not mention the operation, and a capsid runs sixty of them over the
+    // same atoms: that was sixty million set lookups to reach the same verdict
+    // sixty times about each atom.
+    const taking = (targetChains.size === 0)
+        ? atoms
+        : atoms.filter((a) => targetChains.has(a.chain));
+    if (!taking.length) return atoms;
+
+    const out = new Array(taking.length * operations.length);
+    let k = 0;
     for (const op of operations) {
-        for (const atom of atoms) {
-            if (targetChains.size === 0 || targetChains.has(atom.chain)) {
-                const transformed = {
-                    ...atom,
-                    x: op.R[0] * atom.x + op.R[1] * atom.y + op.R[2] * atom.z + op.t[0],
-                    y: op.R[3] * atom.x + op.R[4] * atom.y + op.R[5] * atom.z + op.t[1],
-                    z: op.R[6] * atom.x + op.R[7] * atom.y + op.R[8] * atom.z + op.t[2],
-                    chain: (op.id === '1') ?
-                        String(atom.chain || '') :
-                        (String(atom.chain || '') + '|' + op.id)
-                };
-                out.push(transformed);
+        const R = op.R, t = op.t;
+        const r0 = R[0], r1 = R[1], r2 = R[2];
+        const r3 = R[3], r4 = R[4], r5 = R[5];
+        const r6 = R[6], r7 = R[7], r8 = R[8];
+        const t0 = t[0], t1 = t[1], t2 = t[2];
+        // ...AND THE COPY'S CHAIN NAME IS BUILT ONCE PER CHAIN, not once per
+        // atom. It is a function of the chain and the operation alone, and a
+        // structure has a handful of chains and millions of atoms - so this was
+        // eight million string concatenations to produce sixty distinct
+        // strings, every one of them a fresh allocation for the collector to
+        // take back.
+        const plain = op.id === '1';
+        const named = new Map();
+        for (const atom of taking) {
+            const c0 = atom.chain;
+            let chain = named.get(c0);
+            if (chain === undefined) {
+                const base = String(c0 || '');
+                chain = plain ? base : (base + '|' + op.id);
+                named.set(c0, chain);
             }
+            const x = atom.x, y = atom.y, z = atom.z;
+            out[k++] = {
+                ...atom,
+                x: r0 * x + r1 * y + r2 * z + t0,
+                y: r3 * x + r4 * y + r5 * z + t1,
+                z: r6 * x + r7 * y + r8 * z + t2,
+                chain,
+            };
         }
     }
 
     return out.length > 0 ? out : atoms;
+    } finally {
+        // WHAT THE ASSEMBLY EXPANSION COSTS, as `window.__biounitMs`. It is a
+        // copy of every atom per operation, so it is the load's largest
+        // allocator and the collector's bill arrives elsewhere in the profile.
+        if (typeof window !== 'undefined' && typeof performance !== 'undefined') {
+            window.__biounitMs = (window.__biounitMs || 0) + (performance.now() - __buT0);
+        }
+    }
 }
 // ============================================================================
 // RESIDUE MAPPING UTILITIES

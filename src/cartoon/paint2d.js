@@ -23,6 +23,7 @@ const {
     BACK_INNER_SHADE, CEL_LEVELS, GRAIN_SCALE, HI_KNEE, INNER_SHADE,
     LIGAND_MODEL, LIGHT, LIGHT_AMB, LIGHT_DIFF, LIGHT_HI,
     LOOP_DIM, OUTLINE_CSS, PENCIL_STRENGTH, RICH_HI_KNEE, RICH_INNER_TINT,
+    richTintAmount,
     SHADE_W_FULL, SHADE_W_MIN, SHEET_EDGE_RGB, SKETCH_ALPHA, SKETCH_BANDS,
     SKETCH_CSS, SKETCH_ERASE_U, SKETCH_PX, SKETCH_UNDER, SKETCH_WOBBLE_PX,
     SS, WASH_BLEED_ALPHA, WASH_BLEED_PX, WASH_OFF_X, WASH_OFF_Y,
@@ -267,7 +268,7 @@ function paintPrims(S) {
             } else if (g.kind === 'line' && g.pts) {
                 // a run: every leg of it occludes
                 for (let j = 0; j + 1 < g.pts.length; j++) {
-                    cap2(g.pts[j], g.pts[j + 1], (g.w + outlineW) / 2 - 1);
+                    cap2(g.pts[j], g.pts[j + 1], (g.w + (g.noInk ? 0 : outlineW)) / 2 - 1);
                 }
             } else if (g.kind === 'joint') {
                 for (let k2 = 1; k2 + 1 < g.q.length; k2++) {
@@ -280,7 +281,7 @@ function paintPrims(S) {
                     tri2(g.q[0], g.q[k2], g.q[k2 + 1]);
                 }
             } else if (g.kind === 'dot' && g.pA) {
-                cap2(g.pA, g.pA, g.r + outlineW / 2 - 1);
+                cap2(g.pA, g.pA, g.r + (g.noInk ? 0 : outlineW / 2) - 1);
             }
         }
         const EPS2 = 0.15;
@@ -512,7 +513,11 @@ function paintPrims(S) {
         // stain, sat on the paper through the whole pencil phase as a
         // smudge in the middle of a drawing that had no colour in it yet.
         if (anim && (animWash <= 0 || chainU(g) > animWash)) continue;
-        const near = nearOf(g.z);
+        // A PLUGIN'S PRIM CAN LIE OUTSIDE THE STRUCTURE'S DEPTH SPAN, which is what
+        // nearOf normalises over: clamp it, as the GPU clamps near01, or a
+        // ball behind the structure extrapolates to paper-white and one in front
+        // past its own colour.
+        const near = g.plugin ? Math.min(1, Math.max(0, nearOf(g.z))) : nearOf(g.z);
         // export culling: a piece whose every sampled corner is clearly
         // behind other geometry paints nothing visible - skip it entirely
         if (exportHidden) {
@@ -617,7 +622,7 @@ function paintPrims(S) {
             // it to loops left helix and sheet edges shaded by a constant,
             // which is the discontinuity it exists to remove.
 
-            const paintSide = (A, B, outward) => {
+            const paintSide = (A, B, outward, cullWind = false) => {
                 // SHEET EDGES ARE WHITE in the Richardson convention: the
                 // arrow reads as a plate of white card with a coloured
                 // face, and the pale rim is what separates strands where
@@ -691,7 +696,9 @@ function paintPrims(S) {
                     const x1 = (A[ns - 1][0] + B[ns - 1][0]) / 2;
                     const y1 = (A[ns - 1][1] + B[ns - 1][1]) / 2;
                     const axL2 = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
-                    if (axL2 > 1) {
+                    // ...and it paints the strip WHOLE, so it cannot serve a
+                    // strip whose quads are culled one at a time.
+                    if (axL2 > 1 && !cullWind) {
                         const stops = [];
                         let prevOff = 0;
                         for (let s = 0; s < ns; s++) {
@@ -724,6 +731,41 @@ function paintPrims(S) {
                 }
                 const canGrad2 = !!ctx.createLinearGradient;
                 for (let s = 0; s + 1 < ns; s++) {
+                    // 🔴 AN ARROWHEAD'S SIDE STRIPS ARE CULLED QUAD BY QUAD.
+                    // oN describes a strip as a whole, which is right for a
+                    // plain slab whose two sides are parallel to n. A head is
+                    // not one: a barb's outer edge slants, so its outward is
+                    // part n and part tangent, and the BACK EDGE - the quad
+                    // between two stations at the same point with different
+                    // widths - faces along the tangent alone. Culled by oN a
+                    // whole strip went, and with it the white card edge of a
+                    // barb or half of the back edge: reported from three
+                    // angles as faces missing from the arrow, drawn as an
+                    // outline with nothing inside it.
+                    //
+                    // After projection a quad's WINDING is its facing, with no
+                    // normal needed, and it is per sub-quad - so the near edge
+                    // is kept and the far one dropped, which is what the strip
+                    // cull was for. Only arrow pieces pay for it.
+                    if (cullWind) {
+                        const ax = A[s][0]; const ay = A[s][1];
+                        const bx2 = A[s + 1][0]; const by2 = A[s + 1][1];
+                        const cx2 = B[s + 1][0]; const cy2 = B[s + 1][1];
+                        const dx2 = B[s][0]; const dy2 = B[s][1];
+                        // 🔴 TWO TRIANGLES, NOT ONE QUAD. A side strip of a
+                        // tapering head is a SADDLE - the ribbon twists along
+                        // it - so the four corners are not coplanar and one
+                        // winding over all four is not a facing at all:
+                        // measured on 6MRR 34-37, a 176x10 px quad reported an
+                        // |area| of 2,511 against the 1,760 it could have at
+                        // most, the two halves having cancelled the wrong way.
+                        // A quad is kept when EITHER half faces the reader,
+                        // which is what a twisted band needs and what the sum
+                        // cannot say.
+                        const t1 = (bx2 - ax) * (cy2 - ay) - (cx2 - ax) * (by2 - ay);
+                        const t2 = (cx2 - ax) * (dy2 - ay) - (dx2 - ax) * (cy2 - ay);
+                        if (t1 * outward >= 0 && t2 * outward >= 0) continue;
+                    }
                     let l0v = sideLumAt(s);
                     let l1v = sideLumAt(s + 1);
                     if (outward) {
@@ -877,22 +919,22 @@ function paintPrims(S) {
                 showTop = bSum >= 0;
                 showBot = !showTop;
             }
-            // ARROWHEAD BARB FACES. Backface culling assumes a surface's
-            // outward direction is +-n or +-b, which holds for a plain slab.
-            // A head breaks that: the barb step is a quad whose two stations
-            // sit at the SAME point with different widths, so it lies in the
-            // cross-section plane and its normal is the TANGENT - yet it
-            // rides in the TOP/BOTTOM strips and is culled by oB, which says
-            // nothing about whether it faces the viewer. Hence barb faces
-            // vanishing at some orientations.
-            //
-            // Only the two strips that carry it are forced. Forcing all four
-            // was tried and is worse: it keeps the FAR thickness band alive,
-            // and since those bands are white in this style, a twisted piece
-            // whose averaged sort key puts the band last paints a white
-            // stripe straight across the arrow's face. Side culling is what
-            // suppresses that, so it has to stay.
-            if (g.arrow) { showTop = true; showBot = true; }
+            // 🔴 ARROWHEAD FACES ARE CULLED LIKE ANY OTHER FACE NOW, and the
+            // special case that used to force them is gone. It read `if
+            // (g.arrow) { showTop = true; showBot = true; }`, on the reasoning
+            // that the barb step rode in the TOP/BOTTOM strips and was culled
+            // by oB, which says nothing about a face whose normal is the
+            // tangent. The reasoning was half right: the step's normal IS the
+            // tangent - but it rides in the SIDE strips, and those top/bottom
+            // quads are collinear, with no area to force. What the override did
+            // do was draw the arrow's BACK-facing broad face as well, and at
+            // orientations where the piece paints after the step, that face
+            // covered the step's wall: measured on 6MRR 34-37 seen from behind
+            // and below, the white back edge of the head came out as a teal
+            // sliver, 1,320 px off the GPU's picture against 281 without the
+            // override. The step is reached through the side strips now, by
+            // the winding cull in paintSide, so nothing is left for the
+            // override to rescue.
             // Terminal cross-section rim: the ORIGINAL piece-attached
             // understroke, drawn just before this piece's fills. Under
             // the fills it yields to everything painted later (loops at
@@ -1124,8 +1166,15 @@ function paintPrims(S) {
                 // sit AT zero half the time, so an inner colour on E would
                 // pick a side from sign noise and flicker under rotation.
                 const inward = (isTop ? kAvg : -kAvg) > 0;
+                // ...AND HOW MUCH THAT SIGN IS WORTH. A transition interval
+                // is classed H for its COLOUR and is half loop, so its
+                // concavity can cross zero inside one interval and the tint
+                // stepped across the ribbon in the loop leaving a helix. The
+                // ramp is in cartoon/geom.js beside the constant, with the
+                // measurement that set its two ends.
+                const kDec = richTintAmount(kAvg);
                 let fc = g.c;
-                if (inward) {
+                if (inward && kDec > 0) {
                     if (rich && g.ss === 'H' && !g.co) {
                         // no explicit two-tone in this palette: synthesise
                         // one by tinting toward white. NOT applied when the
@@ -1137,14 +1186,20 @@ function paintPrims(S) {
                         // is an instruction. Cached on the prim -
                         // paintFace runs per face per piece per frame, and
                         // g.c is fixed for the piece.
-                        fc = g._cIn || (g._cIn = tintWhite(g.c, RICH_INNER_TINT));
+                        fc = g._cIn || (g._cIn = tintWhite(g.c,
+                            RICH_INNER_TINT * kDec));
                     }
                 }
                 // A pale inner hue already reads as "inside", so ease off
                 // the inner shadow on exactly the faces that got one -
                 // otherwise the two encode the same fact twice and the
                 // lighter face is dragged back toward mud.
-                const iMul = (fc === g.c) ? 1 : BACK_INNER_SHADE;
+                // ...and the shadow eases off by exactly as much as the
+                // hue came on, so a partially tinted face is not shaded as
+                // though it were fully tinted (or fully shaded as though it
+                // were not): at kDec 0 this is 1, at 1 it is BACK_INNER_SHADE.
+                const iMul = (fc === g.c) ? 1
+                    : 1 - (1 - BACK_INNER_SHADE) * kDec;
                 if (cel) {
                     // quantized over each term's own full range: tone is
                     // the 0.72-1.0 facing ramp, lum spans the shadowed
@@ -1290,8 +1345,26 @@ function paintPrims(S) {
             const surfaces = [];
             if (showTop) surfaces.push([bAvg, () => paintFace(true)]);
             if (showBot) surfaces.push([-bAvg, () => paintFace(false)]);
-            if (showL) surfaces.push([nAvg, () => paintSide(Lp, Lm, 1)]);
-            if (showR) surfaces.push([-nAvg, () => paintSide(Rp, Rm, -1)]);
+            // An arrow's two strips are both offered, and each keeps only the
+            // quads that face the reader (paintSide, `cullWind`).
+            //
+            // 🔴 WHAT WAS TRIED AND TAKEN BACK OUT, measured against four
+            // views saved from 6MRR (tests/arrow_faces_2d.py): drawing the
+            // back edge as a separate surface, found by its two coincident
+            // stations and culled by the tangent. It fixed the views it was
+            // written for and, once the winding cull and the removal of the
+            // forced top/bottom faces were in, it changed nothing on any of
+            // them - switched off entirely they measured 68 / 183 / 166 / 199
+            // px against the GPU, with it 68 / 210 / 166 / 199. The winding
+            // already finds that quad; a second route to it was a second
+            // answer to one question.
+            const windSides = !!g.arrow && !flatSlab;
+            if (showL || windSides) {
+                surfaces.push([nAvg, () => paintSide(Lp, Lm, 1, windSides)]);
+            }
+            if (showR || windSides) {
+                surfaces.push([-nAvg, () => paintSide(Rp, Rm, -1, windSides)]);
+            }
             if (showCapStart) surfaces.push([-g.oT[0], () => {
                 ctx.fillStyle = capCol;
                 quad(Lp[0], Lm[0], Rm[0], Rp[0]);
@@ -1346,7 +1419,9 @@ function paintPrims(S) {
             strokeRound(g.pts, lw, g.c, near, LOOP_DIM, g.ext);
         } else if (g.kind === 'line') {
             const pts = g.pts.map((q2) => [q2[0], q2[1]]);
-            if (paintInkW || g.sel) {
+            // `noInk`: a plugin's stroke is its own colour and nothing else - no
+            // dark rim, and (in the occluder grids) no extra reach for one
+            if ((paintInkW && !g.noInk) || g.sel) {
                 const ink = g.sel ? SELECTION_INK_CSS : inkOf(g, near);
                 ctx.lineCap = 'butt';
                 ctx.strokeStyle = ink;
@@ -1374,7 +1449,7 @@ function paintPrims(S) {
             // below. Its edges are all shared with the legs' own faces, so
             // none of them is ever a silhouette and it carries no ink of
             // its own - it is simply the top of the joint.
-            const nearS = nearOf(g.z);
+            const nearS = g.plugin ? Math.min(1, Math.max(0, nearOf(g.z))) : nearOf(g.z);
             // Same material as the legs it bridges, so the same rule: no
             // facing wash. A joint lies between two sticks that keep their
             // full tone, and fading only this one toward the paper as the
@@ -1454,7 +1529,7 @@ function paintPrims(S) {
             ctx.fill();
             ctx.stroke();
         } else { // dot
-            if (paintInkW || g.sel) {
+            if ((paintInkW && !g.noInk) || g.sel) {
                 const ow = g.sel
                     ? Math.max(paintInkW, SELECTION_INK_WIDTH * 2) : paintInkW;
                 ctx.beginPath();
@@ -1787,7 +1862,8 @@ function paintPrims(S) {
                 // outline), shrunk by 1 like tubes so a bond touching the
                 // ribbon does not eat the ribbon's own edge.
                 for (let k2 = 0; k2 + 1 < g.pts.length; k2++) {
-                    addCapsule(g.pts[k2], g.pts[k2 + 1], (g.w + outlineW) / 2 - 1);
+                    addCapsule(g.pts[k2], g.pts[k2 + 1],
+                        (g.w + (g.noInk ? 0 : outlineW)) / 2 - 1);
                 }
             } else if (g.kind === 'joint') {
                 for (let k2 = 1; k2 + 1 < g.q.length; k2++) {
@@ -1800,7 +1876,7 @@ function paintPrims(S) {
                 addQuad(g.q, g.gs0);
             } else if (g.kind === 'dot' && g.pA) {
                 // lone-position dot: a capsule of zero length is a disc
-                addCapsule(g.pA, g.pA, g.r + outlineW / 2 - 1);
+                addCapsule(g.pA, g.pA, g.r + (g.noInk ? 0 : outlineW / 2) - 1);
             }
         }
         // Depth margin: big enough to ignore surfaces that merely abut

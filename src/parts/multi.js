@@ -66,12 +66,34 @@
          * Outside Multi it is what it has always been: the object on screen,
          * when that object has a matrix.
          */
-        paeObjectName() {
-            const P = (typeof window !== 'undefined') ? window.PAE : null;
+        heatmapObjectName() {
+            const P = (typeof window !== 'undefined') ? window.Heatmap : null;
             if (!P) return null;
             // the shown set is a Set in Multi and null in the ordinary mode -
             // see setShownObjects
-            if (this.shownObjects instanceof Set) return null;
+            //
+            // 🔴 A SET OF ONE IS NOT MULTI, AND REFUSING IT HID THE PANEL FROM
+            // A VIEWER SHOWING EXACTLY ONE OBJECT. The rule above is "the
+            // matrix belongs to one, so it waits until the viewer is back to
+            // one" - and a one-element set IS back to one, whether it got
+            // there by switching everything else off or by a host narrowing
+            // the set to the object it just opened. Any Set answering null
+            // made this depend on HOW the viewer arrived at one object rather
+            // than on whether it is showing one.
+            //
+            // It hid on a restored session and not on a live one, which is the
+            // shape that made it hard to see: `updateVisibility` runs when the
+            // panel is asked to change, so a page that showed the panel while
+            // the set was still null kept it on screen after the set became a
+            // Set - visible by inertia, with nothing to recompute it. Loading
+            // a session recomputes everything from nothing, and the panel that
+            // had been on screen all along did not come back.
+            if (this.shownObjects instanceof Set) {
+                if (this.shownObjects.size !== 1) return null;
+                const only = [...this.shownObjects][0];
+                const shown = this.objectsData ? this.objectsData[only] : null;
+                return (shown && P.hasData(shown)) ? only : null;
+            }
             const cur = this.currentObjectName;
             const o = cur && this.objectsData ? this.objectsData[cur] : null;
             return (o && P.hasData(o)) ? cur : null;
@@ -84,6 +106,109 @@
         objectStateToJSON(object) { return objectStateToJSON(object); },
 
         objectStateFromJSON(object, saved) { objectStateFromJSON(object, saved); },
+
+        /**
+         * HOW LONG THE TIMELINE IS, over everything on screen.
+         *
+         * 🔴 A FRAME INDEX IS NOT A SHARED CLOCK. Every object has its own
+         * frame count, and the play strip used to read the count of the object
+         * being EDITED - so switching which object you were working on
+         * silently rescaled the timeline, and a 100-frame trajectory beside a
+         * 20-frame one had no position past 19 to ask for. What is shared is a
+         * POSITION, and the longest object is what bounds it; each object
+         * turns that position into a frame of its own through
+         * _frameForObject.
+         *
+         * The object being edited counts even when nothing is drawn, because
+         * every eye can be switched off and the strip still governs it.
+         */
+        _timelineLength() {
+            let n = 0;
+            const count = (name) => {
+                const o = this.objectsData?.[name];
+                const k = (o && o.frames) ? o.frames.length : 0;
+                if (k > n) n = k;
+            };
+            for (const name of this.drawnObjects()) count(name);
+            if (this.currentObjectName) count(this.currentObjectName);
+            return n;
+        },
+
+        /**
+         * ONE TIMELINE POSITION -> ONE OBJECT'S OWN FRAME. The single
+         * translation, the way clipTo and orientTo are each one - the merge,
+         * the aligner, the single-object load and the array key all ask it, so
+         * they cannot disagree about which frame an object is showing.
+         *
+         * 🔴 THE THREE POLICIES ARE THREE DIFFERENT CLAIMS, and the default is
+         * the one that claims nothing:
+         *
+         *   hold    - the short object stops at its last frame. "There is no
+         *             more data." A static reference structure beside a
+         *             trajectory is one frame held, which is the commonest
+         *             multi-object case there is and exactly right.
+         *   loop    - t % n. Says the object is PERIODIC, which an MD run or a
+         *             folding path is not. Right for two independent
+         *             simulations played side by side and wrong everywhere
+         *             else.
+         *   stretch - the object's whole trajectory spread over the whole
+         *             timeline. Says the two objects are the SAME process
+         *             sampled at different rates - a 100-step morph against a
+         *             20-step run of the same fold - and invents a
+         *             correspondence between frames if they are not.
+         *
+         * So hold is the default: with equal counts all three are the identity,
+         * and hold is the only one that does not assert something about data it
+         * cannot see. The other two exist because both of their cases are real.
+         *
+         * 🔴 HOLD AND LOOP ARE IDEMPOTENT AND STRETCH IS NOT, which is why
+         * this is applied to a TIMELINE POSITION and never to a value that has
+         * already been through it. _loadFrameData is the one place that could
+         * be handed either, and every caller of it passes a position.
+         */
+        _frameForObject(name, t) {
+            const o = this.objectsData?.[name];
+            const n = (o && o.frames) ? o.frames.length : 0;
+            if (n <= 0) return -1;
+            if (n === 1) return 0;
+            const pos = Math.max(0, t | 0);
+            switch (o.framePolicy || 'hold') {
+                case 'loop':
+                    return pos % n;
+                case 'stretch': {
+                    const T = this._timelineLength();
+                    if (T <= 1) return 0;
+                    return Math.max(0, Math.min(n - 1,
+                        Math.round((pos * (n - 1)) / (T - 1))));
+                }
+                default:
+                    return Math.min(pos, n - 1);
+            }
+        },
+
+        /**
+         * WHAT THIS OBJECT DOES WHEN THE TIMELINE RUNS PAST ITS LAST FRAME.
+         * 'hold' (the default), 'loop' or 'stretch' - see _frameForObject.
+         *
+         * A verb rather than an assignment, because the answer changes what is
+         * in the coordinate array: the array key names each object's resolved
+         * frame, so the reload has to be asked for or the picture keeps the
+         * frame the old policy chose.
+         */
+        setFramePolicy(policy, object = null) {
+            const allowed = ['hold', 'loop', 'stretch'];
+            const p = String(policy || 'hold');
+            if (!allowed.includes(p)) {
+                throw new Error('setFramePolicy: policy must be one of '
+                    + allowed.join(', ') + ' - got "' + policy + '"');
+            }
+            const name = object || this.currentObjectName;
+            const o = this.objectsData?.[name];
+            if (!o) throw new Error('setFramePolicy: no object "' + name + '"');
+            o.framePolicy = p;
+            this.reloadDrawn();
+            this.updateUIControls();
+        },
 
         /**
          * WHAT THE COORDINATE ARRAY IS SUPPOSED TO HOLD, as a string.
@@ -111,11 +236,18 @@
             const ov = !!(this.overlayState && this.overlayState.enabled);
             const parts = [];
             for (const n of this.drawnObjects()) {
-                const o = this.objectsData[n];
-                const f = (n === this.currentObjectName)
-                    ? this.currentFrame
-                    : ((o && o.viewerState && o.viewerState.currentFrame) || 0);
-                parts.push(n + '#' + f);
+                // ...THROUGH THE ONE TRANSLATION, so this cannot disagree
+                // with what the merge actually loaded. It used to read each
+                // non-edited object's own saved frame, which is a different
+                // answer from _parkedFrameIndex's the moment the counts differ
+                // - and a key saying "no change" while the merge resolved a
+                // different frame is a picture that never rebuilds.
+                //
+                // Naming the RESOLVED frames rather than the position is also
+                // what makes the skip correct under hold: two positions past a
+                // short object's end resolve to the same frame, so there is
+                // genuinely nothing to rebuild.
+                parts.push(n + '#' + this._frameForObject(n, this.currentFrame));
             }
             const sc = this.shownSidechainSet ? this.shownSidechainSet() : null;
             return (ov ? 'overlay|' : 'frames|') + parts.join(',')
@@ -146,6 +278,40 @@
                 if (p) s += (((p.x + p.y * 3 + p.z * 7) * 1000) | 0) + ',';
             }
             return this._arrayKey() + '|' + n + ':' + s;
+        },
+
+        /**
+         * WHAT THE ARRAY HOLDS, WITHOUT WHERE IT IS - `_coordsKey` minus the
+         * frame and minus the coordinate samples.
+         *
+         * 🔴 WHAT USES IT: THE STATION FAST PATH'S SIGNATURE. cartoon/paintgl.js
+         * asks for the TOPOLOGICAL form of its mesh signature - the one that
+         * decides whether this frame's face list can be updated in place
+         * instead of rebuilt - and that question is about which residues these
+         * are and how they are connected, not about where they currently sit.
+         *
+         * 🔴 IT ALSO USED TO KEY THE SECONDARY-STRUCTURE CACHES, under Keep
+         * SSE, and that mode has been REMOVED. The claim it rested on is the
+         * reason: a FOLDING trajectory is the same objects, the same frame
+         * count and the same length with a different fold in every frame, and
+         * this key cannot tell that from an MD run - dropping exactly that
+         * information is what it is for. So it was the CALLER's promise about
+         * its own data, unverifiable from here, and pinning the assignment
+         * turned out not to be what paid anyway (see secCacheKey in
+         * cartoon/geom.js for the measurement).
+         *
+         * What it names: which objects are drawn, whether they are merged, how
+         * many side-chain atoms have been materialised into the array, and how
+         * long it is. Each of those changes the CONTENTS in a way a reused face
+         * list would be wrong about, and none of them is a frame.
+         */
+        _topologyKey() {
+            const ov = !!(this.overlayState && this.overlayState.enabled);
+            const sc = this.shownSidechainSet ? this.shownSidechainSet() : null;
+            const co = this.coords;
+            return (ov ? 'overlay|' : 'frames|') + this.drawnObjects().join(',')
+                + '|sc' + (sc ? sc.size : 0)
+                + '|' + (co ? co.length : 0);
         },
 
         /**
@@ -418,7 +584,16 @@
             ms.sourceFrames = merged.sourceFrames;
             ms.sourceAutoColors = merged.sourceAutoColors;
             ms.autoColor = merged.autoColor;
-            ms.stats = this._mergedStats(merged.coords);
+            // ...OVER EVERY FRAME, AND ONLY WHEN THE POINTS CHANGED. Measured
+            // from `merged.coords` - the current frame - the extent moved on
+            // every step, which breathed the camera and refused the station
+            // fast path (see _mergedStatsOfFrames). The walk is O(frames) so
+            // it is cached against what it was measured from, and a frame is
+            // deliberately not part of that key.
+            const statsKey = this._drawnStatsKey(names);
+            ms.stats = (ms.stats && ms.statsKey === statsKey)
+                ? ms.stats : this._mergedStatsOfFrames(names);
+            ms.statsKey = statsKey;
             // FRAME ON THE LOT WHEN SOMETHING NEW ARRIVES, and not otherwise.
             //
             // The camera has to move for an object it has never seen - a file
@@ -461,9 +636,9 @@
             this._applyMergedVisibility(merged, skipRender);
         },
 
-        /** Hand the PAE panel the matrix of whatever paeObjectName() names. */
+        /** Hand the heatmap panel the matrix of whatever heatmapObjectName() names. */
         _syncPaeToDrawn() {
-            if (window.PAE && window.PAE.syncToDrawn) window.PAE.syncToDrawn(this);
+            if (window.Heatmap && window.Heatmap.syncToDrawn) window.Heatmap.syncToDrawn(this);
         },
 
         /**
@@ -473,7 +648,7 @@
          * they have existed. It is exactly the moment the panel needs asking
          * again, so it is the sync.
          */
-        updatePAEContainerVisibility() {
+        updateHeatmapPanelVisibility() {
             this._syncPaeToDrawn();
         },
 
@@ -492,6 +667,72 @@
          * totalPositions, globalCenterSum - so every reader takes it in place
          * of one with no other change.
          */
+        /**
+         * 🔴 WHAT IS ON SCREEN IS MEASURED OVER EVERY FRAME, NOT THE ONE
+         * SHOWING - AND A FRAME STEP REBUILT THE WHOLE MESH BECAUSE OF IT.
+         *
+         * `_recomputeObjectStats` walks every frame of an object, so a single
+         * object's centre, extent and spread DO NOT DEPEND ON WHICH FRAME IS
+         * DRAWN. The merge measured the merged coordinate array instead - the
+         * current frame's - so with several objects drawn the extent moved a
+         * little on every step: 50.17 -> 50.65 -> 51.13 on a 20-frame NMR
+         * ensemble beside one static structure.
+         *
+         * Two things came of that, and the second is the expensive one:
+         *
+         *  - THE CAMERA BREATHED. The view scale divides by the extent, so a
+         *    trajectory grew and shrank as it played - the fault the "once,
+         *    not per frame" rule already refuses for `extentAspect`.
+         *  - THE STATION FAST PATH WAS REFUSED ON EVERY STEP. maxExtent is in
+         *    the mesh's TOPOLOGICAL signature, so a moving extent reads as
+         *    "this is different geometry": measured `builds=1 fast=0` and
+         *    8-14 ms a step against `builds=0 fast=1` and 5 ms for the same
+         *    trajectory drawn alone. The reason was printed by
+         *    stationDecline(): "the topological key moved at 10".
+         *
+         * So this is the same walk `_recomputeObjectStats` does, over the
+         * drawn objects rather than one - through `_resolvedFrame`, because an
+         * aligned object is drawn where the alignment put it and its stats
+         * have to say the same.
+         */
+        _mergedStatsOfFrames(names) {
+            const pts = [];
+            for (const name of (names || [])) {
+                const o = this.objectsData[name];
+                if (!o || !o.frames) continue;
+                for (let i = 0; i < o.frames.length; i++) {
+                    const fr = this._resolvedFrame(o, i);
+                    const co = fr && fr.coords;
+                    if (co) for (let k = 0; k < co.length; k++) pts.push(co[k]);
+                }
+            }
+            return this._mergedStats(pts);
+        },
+
+        /**
+         * WHAT THE DRAWN STATS WERE MEASURED FROM, so a frame step can reuse
+         * them and an edit cannot.
+         *
+         * 🔴 IT DELIBERATELY DOES NOT NAME THE FRAME. That is the whole point:
+         * the stats are over every frame, so the one showing must not be able
+         * to change them. What it does name is everything that changes the
+         * POINTS - which objects, how many frames and positions each has, its
+         * own extent (recomputed by every edit and every added frame), and
+         * where an alignment put it.
+         */
+        _drawnStatsKey(names) {
+            const parts = [];
+            for (const name of (names || [])) {
+                const o = this.objectsData[name] || {};
+                const t = o.alignTransform;
+                parts.push(name + ':' + (o.frames ? o.frames.length : 0)
+                    + ':' + (o.totalPositions || 0)
+                    + ':' + (o.maxExtent || 0)
+                    + ':' + (t && t.t ? t.t.join(',') : ''));
+            }
+            return parts.join('|');
+        },
+
         drawnStats() {
             const ms = this.multiState;
             if (ms && ms.enabled && ms.stats) return ms.stats;
@@ -675,7 +916,7 @@
          * describe the new array, and this is where it is brought up to date.
          *
          * IT USED TO GO THE OTHER WAY. The rebuild composed a mask from the
-         * records and pushed it back through setVisibility with `paeBoxes: []`
+         * records and pushed it back through setVisibility with `heatmapBoxes: []`
          * - which saved it into every object's record, wiping the boxes and
          * dropping the mode to default. A box drawn on a prediction survived
          * exactly until the next eye click.
@@ -691,9 +932,9 @@
             // object and the mask spans several
             vm.chains = new Set();
             // ...and the BOXES stay the current object's own, because that is
-            // whose matrix the panel is showing (see paeObjectName).
+            // whose matrix the panel is showing (see heatmapObjectName).
             const own = this.objectsData && this.objectsData[this.currentObjectName];
-            vm.paeBoxes = ((own && own.visibilityState && own.visibilityState.paeBoxes) || [])
+            vm.heatmapBoxes = ((own && own.visibilityState && own.visibilityState.heatmapBoxes) || [])
                 .map((b) => ({ ...b }));
             vm.visibilityMode = (this.visiblePositions === null) ? 'default' : 'explicit';
         },
@@ -808,9 +1049,9 @@
                         // of a merged mask means nothing per object - it is
                         // resolved into positions when the merge is built
                         chains: new Set(),
-                        paeBoxes: (nm === this.currentObjectName)
-                            ? vm.paeBoxes.map((b) => ({ ...b }))
-                            : ((o.visibilityState && o.visibilityState.paeBoxes) || []),
+                        heatmapBoxes: (nm === this.currentObjectName)
+                            ? vm.heatmapBoxes.map((b) => ({ ...b }))
+                            : ((o.visibilityState && o.visibilityState.heatmapBoxes) || []),
                         visibilityMode: vm.visibilityMode
                     };
                 }
@@ -820,7 +1061,7 @@
                 this.objectsData[this.currentObjectName].visibilityState = {
                     positions: new Set(vm.positions),
                     chains: new Set(vm.chains),
-                    paeBoxes: vm.paeBoxes.map((box) => ({ ...box })),
+                    heatmapBoxes: vm.heatmapBoxes.map((box) => ({ ...box })),
                     visibilityMode: vm.visibilityMode
                 };
             }
@@ -1328,6 +1569,21 @@
         localRangeOf(name) {
             const ms = this.multiState;
             const total = this._positionCount();
+            // 🔴 AND IT IS LENIENT ON PURPOSE, WHICH IS NOT THE SAME AS
+            // RIGHT. For any name at all, while nothing is merged, this
+            // answers with the whole array - so a selector naming an object
+            // that is not drawn addresses the one that is. That is how
+            // `showSidechains({object: '1UBQ', ...})` came to write onto 6MRR.
+            //
+            // Refusing here was tried and is WRONG AT THIS LEVEL: returning an
+            // empty window for a name that is not current broke five gates at
+            // once, because the load path resolves selectors - the clip, the
+            // focus - at moments when the object they name is not yet the
+            // current one, and "not current right now" is not the same
+            // question as "not this object". A caller that knows it is writing
+            // to ONE NAMED OBJECT can ask addressesObject and take
+            // objectPositions instead, which is what parts/sidechains.js does.
+            // Everything else keeps the behaviour it was built against.
             // A LONE OBJECT OWNS EVERYTHING, however long the array turns out
             // to be. Answering with a counted length instead means every path
             // that runs before the coordinates are in - the panel's, in
@@ -1342,6 +1598,117 @@
             };
         },
 
+        /**
+         * Is this object part of what the drawn arrays describe?
+         *
+         * The one question behind "does a selector naming it mean anything
+         * here". Merged: it is one of the sources. Not merged: it is the
+         * object being drawn, and nothing else is.
+         */
+        addressesObject(name) {
+            const ms = this.multiState;
+            return (ms && ms.enabled && ms.sourceNames)
+                ? ms.sourceNames.indexOf(name) >= 0
+                : name === this.currentObjectName;
+        },
+
+        /**
+         * A selector resolved inside ONE object's own numbering, from that
+         * object's own data - whether or not it is on screen.
+         *
+         * For the per-object sets: side chains, their colours, elements. Those
+         * are stored against the object in its own indices and are read back
+         * through ownerOf, so they never needed the drawn arrays - the only
+         * reason they went through positionsFor is that it was the only
+         * resolver there was, and it answers in the DRAWN array's space.
+         *
+         * 🔴 THE SPATIAL AND RELATIVE KEYS ARE REFUSED HERE, LOUDLY. `near` is
+         * a search over the drawn coordinates and `not` is the complement of a
+         * drawn set; neither means anything for an object that is not on
+         * screen, and answering "nothing" for them would be a wrong answer
+         * rather than an empty one.
+         */
+        objectPositions(name, sel) {
+            const object = this.objectsData ? this.objectsData[name] : null;
+            if (!object) return new Set();
+            const frames = object.frames || [];
+            const f0 = frames[0] || {};
+            const n = (f0.coords || []).length;
+            const out = new Set();
+            if (sel === undefined || sel === null || sel === 'all') {
+                for (let i = 0; i < n; i += 1) out.add(i);
+                return out;
+            }
+            if (typeof sel === 'string') sel = { chain: sel };
+            else if (Array.isArray(sel) || sel instanceof Set) sel = { positions: sel };
+            if (typeof sel !== 'object') {
+                throw new Error('py2Dmol: a selector is a chain id, a list of'
+                    + ' positions, or an object - got ' + typeof sel);
+            }
+            // A TYPO MUST NOT SELECT EVERYTHING - the same rule positionsFor
+            // states and for the same reason: {chian: 'B'} matches no key,
+            // narrows nothing, and would quietly mean the whole object.
+            if (typeof SELECTOR_KEYS !== 'undefined') {
+                for (const k of Object.keys(sel)) {
+                    if (!SELECTOR_KEYS.includes(k)) {
+                        throw new Error('py2Dmol: unknown selector key '
+                            + JSON.stringify(k) + ' - expected '
+                            + SELECTOR_KEYS.join(', '));
+                    }
+                }
+            }
+            for (const k of ['near', 'not']) {
+                if (sel[k] !== undefined) {
+                    throw new Error(`py2Dmol: ${JSON.stringify(k)} needs the object`
+                        + ` on screen - ${JSON.stringify(name)} is not drawn`);
+                }
+            }
+            if (sel.positions || sel.range) {
+                const push = (i) => { if (i >= 0 && i < n) out.add(i); };
+                if (sel.positions) for (const i of sel.positions) push(i);
+                if (sel.range) {
+                    for (let i = sel.range[0]; i < sel.range[1]; i += 1) push(i);
+                }
+            } else {
+                for (let i = 0; i < n; i += 1) out.add(i);
+            }
+            // ...AND THE FIELD FILTERS, from the object's OWN frame. A frame
+            // that omits one inherits it, so the first frame carrying it is
+            // the answer - the same rule the renderer applies when it draws.
+            //
+            // 🔴 A FRAME IS SNAKE_CASE AND THE RENDERER'S ARRAYS ARE NOT. The
+            // stored frame carries `residue_numbers` and `position_types`; the
+            // renderer's own arrays, which positionsFor reads, are
+            // `residueNumbers` and `positionTypes`. Written against the
+            // renderer's spelling, this threw "carries no residue numbers" at
+            // an object that carries them - a wrong answer wearing an error
+            // message. Both spellings are tried, because a frame that came in
+            // through a different door may use either.
+            const field = (...keys) => {
+                for (const f of frames) {
+                    if (!f) continue;
+                    for (const k of keys) if (f[k]) return f[k];
+                }
+                return null;
+            };
+            const narrow = (keys, want, label) => {
+                if (want === undefined) return;
+                const arr = field(...keys);
+                if (!arr) {
+                    throw new Error(`py2Dmol: ${JSON.stringify(name)} carries no`
+                        + ` ${label}, so a selector cannot narrow by it`);
+                }
+                const set = new Set([].concat(want));
+                for (const i of [...out]) if (!set.has(arr[i])) out.delete(i);
+            };
+            narrow(['chains'], sel.chain, 'chains');
+            narrow(['residue_numbers', 'residueNumbers'], sel.residues,
+                'residue numbers');
+            narrow(['position_types', 'positionTypes'], sel.type,
+                'position types');
+            return out;
+        },
+
         /** Forget the merge, without touching what is loaded. */
         _dropMergeState() {
             const ms = this.multiState;
@@ -1354,6 +1721,11 @@
             ms.sourceAutoColors = null;
             ms.autoColor = null;
             ms.stats = null;
+            // ...and what they were measured from, beside them: the guard
+            // reads the stats first so a null one already forces the walk, but
+            // a key outliving its stats is the kind of pair this file has
+            // scars from.
+            ms.statsKey = null;
             this._sourceGroupsCache = null;
             this._mergedSetCache = null;
             this._mergedLigCache = null;

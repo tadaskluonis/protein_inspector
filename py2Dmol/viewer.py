@@ -66,7 +66,16 @@ DEFAULT_CONFIG = {
         "mode": "auto",
         "colorblind": False
     },
-    "pae": {
+    # The residue x residue heatmap panel. It draws the PAE and whatever
+    # else a frame's `maps` carries; `pae=True` is the same switch under its
+    # old name, and normalizeConfig in core/mol.js accepts either.
+    "heatmap": {
+        "enabled": False,
+        "size": 300
+    },
+    # The confidence trace, one column per residue of the drawn frame. Off by
+    # default like the heatmap: it adds a tab, which is a layout change.
+    "plddt": {
         "enabled": False,
         "size": 300
     },
@@ -75,6 +84,14 @@ DEFAULT_CONFIG = {
         "size": 300
     },
     "overlay": {
+        "enabled": False
+    },
+    # THE SELECTION PANEL, AND THE CLICK THAT FILLS IT - one key, off by
+    # default. Both used to be the website's alone, because the panel was two
+    # hundred lines of markup in index.html; parts/panel.js builds it for every
+    # shell now, so a notebook can have it. Off unless asked, because turning
+    # it on changes what a click DOES in every existing notebook.
+    "selection": {
         "enabled": False
     },
     "cutoffs": {
@@ -163,9 +180,19 @@ def _nest_config(**flat):
     if flat.get("chain_palette") is not None:
         config["color"]["chain_palette"] = flat["chain_palette"]
     
-    # PAE
-    if "pae" in flat: config["pae"]["enabled"] = flat["pae"]
-    if "pae_size" in flat: config["pae"]["size"] = flat["pae_size"]
+    # The heatmap panel, under either name. `pae=` came first and is what
+    # every notebook that exists passes, so it is accepted and NOT warned
+    # about - a rename whose old spelling still works is the whole point.
+    if "pae" in flat: config["heatmap"]["enabled"] = flat["pae"]
+    if "pae_size" in flat: config["heatmap"]["size"] = flat["pae_size"]
+    if flat.get("heatmap") is not None:
+        config["heatmap"]["enabled"] = flat["heatmap"]
+    if flat.get("heatmap_size") is not None:
+        config["heatmap"]["size"] = flat["heatmap_size"]
+    if flat.get("plddt") is not None:
+        config["plddt"]["enabled"] = flat["plddt"]
+    if flat.get("plddt_size") is not None:
+        config["plddt"]["size"] = flat["plddt_size"]
 
     # Scatter
     if "scatter" in flat:
@@ -182,6 +209,9 @@ def _nest_config(**flat):
 
     # Overlay
     if "overlay" in flat: config["overlay"]["enabled"] = flat["overlay"]
+
+    # Selection: the panel and the click, one key
+    if "selection" in flat: config["selection"]["enabled"] = flat["selection"]
 
     # ...AND SEVERAL OBJECTS, which is a different question. Carried as a plain
     # top-level flag and resolved to a list of names in _display_viewer, where
@@ -214,6 +244,84 @@ import gemmi
 import uuid
 import os
 import urllib.request
+
+
+# --- PLUGINS (docs/PLUGINS.md) ---------------------------------------------
+#
+# A plugin is JavaScript that draws things that are not residues, and a payload
+# Python hands it. The payload lives on the VIEWER (view._plugins), never on an
+# object: save_state writes objects through a whitelist, so a per-object key is
+# dropped on the way out - tests/plugin_state.py keeps that as a control.
+#
+# TRUST. A plugin's source is INLINE SCRIPT in the HTML the reader opens, which
+# is exactly what the core is. There is no sandbox and no sandbox is promised:
+# open a page with a plugin only as you would open one with any other script.
+
+# Plugins that ship inside py2Dmol itself, so load_state does not call their
+# payloads "unknown". None yet.
+_BUILTIN_PLUGINS = frozenset()
+
+# name -> (JavaScript source, version), for plugins registered in THIS process.
+_PLUGIN_SOURCES = {}
+
+_PLUGIN_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$')
+
+
+def _check_plugin_name(name):
+    if not isinstance(name, str) or not _PLUGIN_NAME.match(name):
+        raise ValueError(
+            "plugin name %r: use letters, digits, '.', '_' or '-' (at most 64,"
+            " starting with a letter or digit) - it becomes an HTML attribute"
+            " and a key in the state file" % (name,))
+    return name
+
+
+def register_plugin(name, js_source, version=None):
+    """Register an external plugin's JavaScript, to be inlined into every page
+    whose viewer carries a payload for ``name`` (see ``view.add_plugin``).
+
+    The source must register itself with ``window.py2dmolPlugins``, in a way
+    that works whether it runs before or after the viewer library (the
+    notebook loads them in either order)::
+
+        (function () {
+          var P = window.py2dmolPlugins = window.py2dmolPlugins || {list: [], pending: []};
+          var def = {name: "mine", version: "1", apiVersion: 1, prims: function (ctx) { ... }};
+          if (P.register) P.register(def); else P.pending.push(def);
+        })();
+
+    THE SOURCE IS INLINED INTO A ``<script>`` ELEMENT, so two sequences cannot
+    appear in it and are REFUSED with ValueError rather than escaped: escaping
+    ``</script`` or ``<!--`` is only safe inside a string, and this function
+    cannot know where in your code it is. Write ``"<\\/script>"`` or
+    ``"<" + "!--"`` if you need the text.
+
+    Trust model: plugin JavaScript is inline script in an HTML page the reader
+    opens, exactly like the core - there is no sandbox.
+
+    Args:
+        name (str): the plugin's name; the key payloads are stored under.
+        js_source (str): the JavaScript.
+        version (str, optional): recorded with the source, for your own use.
+    """
+    _check_plugin_name(name)
+    if not isinstance(js_source, str):
+        raise TypeError("register_plugin: js_source must be str, not %s"
+                        % type(js_source).__name__)
+    low = js_source.lower()
+    for bad in ('</script', '<!--'):
+        if bad in low:
+            raise ValueError(
+                "register_plugin(%r): the source contains %r, which would end or"
+                " confuse the <script> element it is inlined into. It cannot be"
+                " escaped safely without knowing where in the code it is - write"
+                " it so it does not appear literally (\"<\\/script>\","
+                " \"<\" + \"!--\")." % (name, bad))
+    _PLUGIN_SOURCES[name] = (js_source, version)
+
+
+def _known_plugin_names():
+    return set(_PLUGIN_SOURCES) | set(_BUILTIN_PLUGINS)
 
 
 # NO best_view HERE ANY MORE. It ran an SVD with numpy on every first frame and
@@ -484,6 +592,37 @@ _LENT_WHERE = None
 _BUNDLE_KEYS = {}
 
 
+def _missing_library_js(head):
+    """Say it, when the renderer is not there. See view.to_html.
+
+    🔴 A PAGE WITH NO LIBRARY DRAWS ITS CHROME AND NOTHING ELSE, which is the
+    worst shape a failure can take: buttons, a play bar, an object menu and an
+    empty box, so the reader believes the structure failed rather than the
+    page. `onerror` on the <script> is not enough for it either - it fires for
+    a 404 and not for a file that loaded and is the wrong thing, and a
+    document.write from it lands in a document the parser has moved past.
+
+    So this asks the only question that matters, at the end of the body where
+    the answer is settled: is `initializePy2DmolViewer` a function. It runs on
+    the inline path too, where it can only ever be silent.
+    """
+    if not head:
+        return ''
+    return ("<script>if(typeof initializePy2DmolViewer!=='function'){"
+            "document.body.insertAdjacentHTML('afterbegin',"
+            + json.dumps(
+                '<p style="font:14px/1.6 system-ui,sans-serif;color:#b91c1c;'
+                'margin:12px;padding:10px;border:1px solid #fca5a5;'
+                'border-radius:8px;background:#fef2f2">'
+                '<b>py2Dmol could not load its renderer.</b><br>'
+                'This page was exported with <code>bundle=&quot;external&quot;</code> '
+                'and the script it names is not reachable. The name carries the '
+                'bundle&#39;s content hash, so a rebuilt library is a missing file '
+                'rather than a wrong drawing: put that file beside this one, or '
+                're-export the page.</p>')
+            + ");}</script>\n")
+
+
 def _cell_identity():
     """(cell id, execution count) of the cell running now, or None.
 
@@ -503,6 +642,20 @@ def _cell_identity():
         return (cell, getattr(shell, 'execution_count', None))
     except Exception:
         return None
+
+
+# THE ONE NAME FOR THE NOTEBOOK BUNDLE. _display_viewer had it typed in and
+# so did the export path, which is two places for a string that must agree:
+# save_html names its external file after a hash of THIS bundle, and a viewer
+# inlining a different one would ship a page whose library is not the library
+# its name claims.
+_EXPORT_BUNDLE = "bundles/py2Dmol.notebook.min.js"
+
+
+def _html_escape(text):
+    """For the <title> only - everything else on the page is JSON or markup."""
+    return (str(text).replace('&', '&amp;').replace('<', '&lt;')
+            .replace('>', '&gt;'))
 
 
 def _share_key(bundle):
@@ -557,7 +710,86 @@ FRAME_INHERITED = (
 FRAME_SEND_NONE = frozenset({"plddts"})
 # ALWAYS: a property of the frame itself, sent whenever it is set. `align` is
 # the REQUEST to superpose, which the browser acts on - see addFrame.
-FRAME_ALWAYS = ("pae", "pae_n", "color", "align", "allow_reflection")
+FRAME_ALWAYS = ("pae", "pae_n", "maps", "color", "align", "allow_reflection")
+
+# ============================================================================
+# RESIDUE x RESIDUE MAPS
+# ============================================================================
+# The panel draws an N x N matrix over residues, one BYTE per cell, and PAE is
+# one of them. `per_unit` is the codec - `byte = round(value * per_unit)`,
+# clamped to 0-255 - so a map's storage domain is `0 .. 255 / per_unit`: PAE
+# is 8 bytes an Angstrom (0-31.875 A) and a probability is 255, which is 0-1
+# exactly.
+#
+# 🔴 AND THE LIMITS TRAVEL WITH THE DATA. panels/heatmap.js has this table too,
+# because it also holds the ramp and the label - but the CODEC is the one part
+# the two ends must agree on to the bit, and two tables that must agree are
+# two tables that can disagree. The browser uses the vmin/vmax that ARRIVED
+# and falls back to its own only for a map some other caller wrote by hand.
+MAP_LIMITS = {"pae": (0.0, 255.0 / 8.0), "contact": (0.0, 1.0)}
+MAP_LIMITS_DEFAULT = (0.0, 1.0)   # a probability, which most of them are
+
+
+# ============================================================================
+# THE SLOT LAYOUT, AS ONE SHAPE: {"views": [...], "count": n or None}
+# ----------------------------------------------------------------------------
+# A viewer is an ordered list of slots (src/parts/slots.js) and this is the
+# standing choice about them: which view each one shows, and how many there
+# are. Two questions, two fields, deliberately - they were ONE field for a
+# release (`small: "none"` meant both "slot 2 shows nothing" and "there is no
+# slot 2"), and a caller naming the first box kept accidentally answering the
+# second.
+#
+# 🔴 AND THE FIRST VERSION'S SHAPE STILL ARRIVES HERE. `{"big": ..., "small":
+# ...}` is in every session file and every notebook saved before the numbers,
+# and it is what load_state hands back; `small` False or "none" is `count: 1`.
+# Read, never written: what goes out is the list.
+def _normalize_slots(spec):
+    if spec is None:
+        return None
+    if isinstance(spec, dict) and ("views" in spec or "count" in spec):
+        return {"views": list(spec.get("views") or []),
+                "count": spec.get("count")}
+    if isinstance(spec, dict):
+        views, count = [], None
+        for i, key in enumerate(("big", "small")):
+            v = spec.get(key)
+            if v is False or v == "none":
+                count = i
+                views.append(None)
+            else:
+                views.append(v)
+        while views and views[-1] is None:
+            views.pop()
+        return {"views": views, "count": count}
+    if isinstance(spec, (list, tuple)):
+        return {"views": list(spec), "count": None}
+    return {"views": [spec], "count": None}
+
+
+def _map_cap(config):
+    box = config.get("heatmap") or config.get("pae") or {}
+    return max(int(box.get("size") or 300), 256)
+
+
+def _encode_map(matrix, vmin, vmax, cap):
+    """One matrix as (base64 of its bytes, how many RESIDUES it covers).
+
+    Scaled and base64'd for the reason spelled out at the PAE call site, and
+    resampled to `cap` for the reason spelled out beside it - the panel draws
+    an n x n image into a box of `pae.size` pixels, so past that the browser
+    was discarding the detail on every frame anyway. The residue count is the
+    size BEFORE the resample, because a box dragged on the plot is a range of
+    residues and the two stop being the same number.
+    """
+    arr = np.asarray(matrix, dtype=float)
+    span = (vmax - vmin) or 1.0
+    scaled = np.clip(np.round((arr - vmin) / span * 255.0),
+                     0, 255).astype(np.uint8)
+    n = int(scaled.shape[0])
+    if n > cap:
+        scaled = _downsample_square(scaled, cap)
+    return base64.b64encode(scaled.flatten().tobytes()).decode('ascii'), n
 
 
 _SIDECHAIN_BACKBONE = frozenset(('N', 'CA', 'C', 'O', 'OXT'))
@@ -648,9 +880,11 @@ class view:
         color="auto", colorblind=False, ss_palette=None, chain_palette=None, style="tube", preset=None, smooth=None, thickness=None, sheet_flat=None, pencil=None, arrows=True, base_plates=None, detail=4, fade=0, highlight=None, outline_tint=None,
         shadow=True, shade=None, shadow_strength=0.5,
         outline=None, width=None, ortho=0.5, gpu=True, bg=None, rotate=False, autoplay=False,
-        pae=False, pae_size=300, scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
-        sidechains=False,
-        persistence=True, id=None, cutoffs=None,
+        heatmap=None, heatmap_size=300, pae=None, pae_size=None,
+        plddt=None, plddt_size=300,
+        scatter=None, scatter_size=300, overlay=False, multi=False, cyclic=True,
+        sidechains=False, selection=False,
+        persistence=True, id=None, cutoffs=None, slots=None,
     ):
         """
         Initialize a py2Dmol viewer.
@@ -717,10 +951,27 @@ class view:
             ortho (float): Orthographic projection strength 0-1. Default 0.5.
             rotate (bool): Auto-rotate the structure. Default False.
             autoplay (bool): Auto-play animation on load. Default False.
-            pae (bool): Enable PAE (Predicted Aligned Error) visualization. Default False.
-            pae_size (int): PAE plot size in pixels. Default 300.
+            heatmap (bool): show the residue x residue heatmap panel - the
+                PAE and any other map a frame carries. Default False.
+            heatmap (bool | str): show the heatmap panel (PAE, contact, ...).
+                True puts it BESIDE the structure; **"tab"** puts it on a tab
+                over a single viewer instead, which is the same picture in
+                half the width -- every view is on the tab strip either way.
+            heatmap_size (int): what a MAP is, in pixels - the panel outside a
+                slot, and how far a wider matrix is resampled on the way over.
+                Default 300. It is NOT the size of the second box: every slot
+                is the size this viewer asked for (`size`), and each can be
+                dragged from its own corner. Raise it for a big viewer, where
+                a 300-cell matrix is drawn up to a larger box.
+            pae (bool): the old name for `heatmap`; still accepted.
+            pae_size (int): the old name for `heatmap_size`; still accepted.
             scatter (bool/dict): Enable scatter plot. Default None.
             scatter_size (int): Scatter plot size in pixels. Default 300.
+            slots (int): how many boxes the viewer has - 1 puts every view on
+                the tab strip over the one box, 2 is the structure with a
+                panel beside it. Default 2, or 1 when the panel was asked for
+                as a tab (`heatmap="tab"`). Which view goes in which is
+                `set_slots`.
             overlay (bool): Enable overlay mode (show all frames simultaneously). Default False.
             multi (bool): Draw every object at once rather than one at a time.
                 Default False. `overlay` is about FRAMES of one object; this is
@@ -728,6 +979,25 @@ class view:
                 both on screen, the camera widened to take them both in. The
                 same thing the website's Multi button does. See show_objects()
                 for naming a subset.
+            selection (bool): Show the selection panel, and let a click on the
+                canvas pick a residue. Default False.
+
+                ONE KEY FOR BOTH, because they are one decision: the panel is
+                what shows, acts on and clears a selection, and a click that
+                makes one with none of those available is worse than no click -
+                which is why picking has always been off in a notebook.
+
+                What the panel gives you is the website's: colour (a PyMOL
+                palette, or a scheme, on the main chain and the side chains
+                separately), Show/Hide per part, element colours, base plates,
+                a secondary-structure override, contacts between a pair, Find
+                interactions, and Copy / Cut / Delete. Every one of those is a
+                verb the library already had; until now only index.html could
+                reach them.
+
+                It costs about 44 KB in the payload, which a notebook pays once
+                per document rather than once per viewer.
+
             sidechains (bool): Carry each residue's side-chain atoms, so they
                 can be drawn and so Focus can measure side chain to side chain
                 rather than trace to trace. Default False.
@@ -767,11 +1037,43 @@ class view:
                             table the file parser uses. Give a number and that
                             number is used for every pair, as it always was.
         """
-        # Normalize pae_size: if tuple/list, use first value; otherwise use as-is
-        if isinstance(pae_size, (tuple, list)) and len(pae_size) > 0:
-            pae_size = int(pae_size[0])
+        # THE OLD SPELLINGS FOLD INTO THE NEW ONES HERE, once, so everything
+        # below this line deals with `heatmap` alone. `pae`/`pae_size`
+        # default to None precisely so that "not passed" can be told from
+        # "passed as False/300" - without that, `pae=False` would silently
+        # switch off a panel that `heatmap=True` had just asked for.
+        if pae is not None:
+            heatmap = pae
+        if pae_size is not None:
+            heatmap_size = pae_size
+
+        # 🔴 AND "tab" IS HOW YOU ASK FOR ONE BOX, because it is the word on
+        # the control and it sits in the argument the caller is already
+        # writing. `slots=1` says the same thing and nobody guesses it: a
+        # reader thinks "put the heatmap on a tab", not "give me one slot".
+        # A misspelling raises rather than quietly drawing the other layout.
+        # Did the caller say anything about the panel? `None` on both means no,
+        # and that is what lets the answer be settled at show() time instead.
+        self._heatmap_asked = heatmap is not None or pae is not None
+        self._slots_asked = slots is not None
+        tabbed = False
+        for _name, _v in (("heatmap", heatmap), ("pae", pae)):
+            if isinstance(_v, str):
+                if _v.lower() not in ("tab", "tabs"):
+                    raise ValueError(
+                        f'{_name} takes True, False, or "tab" for one box with'
+                        f' the panel on a tab - not {_v!r}')
+                tabbed = True
+        if tabbed:
+            heatmap = True
+        if slots is None:
+            slots = 1 if tabbed else 2
+
+        # Normalize heatmap_size: if tuple/list, use first value; else as-is
+        if isinstance(heatmap_size, (tuple, list)) and len(heatmap_size) > 0:
+            heatmap_size = int(heatmap_size[0])
         else:
-            pae_size = int(pae_size)
+            heatmap_size = int(heatmap_size)
 
         # Normalize scatter_size: if tuple/list, use first value; otherwise use as-is
         if isinstance(scatter_size, (tuple, list)) and len(scatter_size) > 0:
@@ -932,11 +1234,19 @@ class view:
             bg=bg,
             rotate=rotate,
             autoplay=autoplay,
-            pae=pae,
-            pae_size=pae_size,
+            heatmap=heatmap,
+            heatmap_size=heatmap_size,
+            # 🔴 NAMED HERE OR THROWN AWAY. `_nest_config` is called with
+            # explicit keywords, so a parameter this call does not name is
+            # a parameter the viewer never hears about - the same shape as
+            # `align`, `maps` and the per-atom columns, each of which was
+            # a working feature that did nothing on one path.
+            plddt=plddt,
+            plddt_size=plddt_size,
             scatter=scatter,
             scatter_size=scatter_size,
             overlay=overlay,
+            selection=selection,
             multi=multi,
             cyclic=cyclic,
             cutoffs=cutoffs,
@@ -999,6 +1309,35 @@ class view:
         # the slab is: it is the camera and the drawing, not any one object.
         self._focus = None
         self._sent_focus = False
+        # ...AND WHICH VIEW IS IN WHICH SLOT - the structure, a map, the
+        # scatter plot, one per numbered slot (src/parts/slots.js). A standing
+        # choice, so it is state and diffed like the slab rather than queued
+        # like orient().
+        # 🔴 `slots=1` IS ONE BOX, AND IT IS NOT THE DEFAULT - MEASURED.
+        # A second box is a concept this API should not make a reader hold:
+        # every view is on the tab strip over the first one, so another
+        # box is a second copy of that strip and doubles a width the caller
+        # just declared (view(size=(420, 420)) with a map is 840px of viewer
+        # without being asked). It was tried as the default and reverted:
+        # a parked panel releases its decoded matrix by design, so
+        # view(pae=True) came up with the structure alone and the PAE a tab
+        # away - which is the picture that flag exists to draw.
+        # tests/minimal_input.py said so in one line, both ways round.
+        #
+        # So it is a word you add when one box is what you want, which is
+        # what a notebook cell with its own size usually wants.
+        # A COUNT, and nothing else - which view goes where is set_slots.
+        # Two is what every shell we ship provides (the canvas box and the
+        # panel box); the ceiling is theirs rather than this file's, so the
+        # message names it.
+        if not isinstance(slots, int) or isinstance(slots, bool) or slots < 1:
+            raise ValueError(f"slots is how many boxes you want, 1 or more"
+                             f" - not {slots!r}")
+        if slots > 2:
+            raise ValueError(f"slots must be 1 or 2: the shells ship two boxes"
+                             f" (the canvas and the panel), not {slots}")
+        self._slots = None if slots == 2 else {"views": [], "count": slots}
+        self._sent_slots = False
         # ...AND WHICH RESIDUES SHOW THEIR SIDE CHAINS, as an ordered list of
         # requests rather than a resolved set. show/hide are RELATIVE verbs -
         # they add to and subtract from what is drawn now - so the state is
@@ -1008,6 +1347,16 @@ class view:
         # comes back with the same side chains out.
         self._sidechains = []
         self._sent_sidechains = 0
+        # ...AND THE PLUGINS' PAYLOADS, keyed by plugin name. VIEWER-level, never
+        # on an object: see the note above register_plugin. {} for a viewer that
+        # uses none, and then nothing about plugins is written anywhere.
+        self._plugins = {}
+        # ...and what of them the PAGE has: the payloads as last sent, and the
+        # plugins whose JavaScript is on it. The live path sends the difference,
+        # so an option changed after show() reaches the viewer without re-sending
+        # a payload that may be a whole isosurface.
+        self._sent_plugins = {}
+        self._sent_plugin_sources = {}
         # ...AND WHETHER THE PAYLOAD CARRIES SIDE-CHAIN ATOMS. Read by
         # _parse_model, the only thing that can collect them, and a VIEWER-wide
         # setting rather than a per-load one: the table is per FRAME with no
@@ -1116,7 +1465,7 @@ class view:
 
         if self._pae is not None:
             # SCALED TO 0-255 (x8), then BASE64. The scaling is the panel's own
-            # storage - panels/pae.js keeps a Uint8Array at 1/8 A and its colour
+            # storage - panels/heatmap.js keeps a Uint8Array at 1/8 A and its colour
             # map divides by 8 - and it was chosen against a list of floats,
             # which it does beat. Against JSON TEXT it is the wrong way round:
             # multiplying by eight costs a DIGIT PER VALUE, and a PAE is N^2 of
@@ -1135,25 +1484,46 @@ class view:
             # to be walked. The three forms setData already took - a nested
             # list of floats, a flat list of scaled ints, a Uint8Array - all
             # still work, so an older payload still draws.
-            scaled_pae = np.clip(np.round(self._pae * 8), 0, 255).astype(np.uint8)
-            # ...AND NO MORE RESOLUTION THAN THE PANEL CAN SHOW. The matrix is
-            # drawn by scaling an n x n image into a canvas of `pae.size` px
-            # (300 by default) - so for anything bigger the browser is already
-            # throwing the detail away on every frame, and a 837-row matrix in
-            # a 300px panel gives each residue 0.36 of a pixel. Doing the
-            # resample once, in Python, is the same picture for an eighth of
-            # the bytes: 912 KB of base64 becomes 120.
-            #
-            # THE TRUE SIZE TRAVELS WITH IT. `n` was the matrix side AND the
-            # residue count, and the panel used it for both - a box dragged on
-            # the plot is a range of RESIDUES handed to setVisibility. Send
-            # pae_n and the two stop being the same number.
-            payload["pae_n"] = int(scaled_pae.shape[0])
-            cap = max(int((self.config.get("pae") or {}).get("size") or 300), 256)
-            if scaled_pae.shape[0] > cap:
-                scaled_pae = _downsample_square(scaled_pae, cap)
-            payload["pae"] = base64.b64encode(
-                scaled_pae.flatten().tobytes()).decode('ascii')
+            cap = _map_cap(self.config)
+            payload["pae"], payload["pae_n"] = _encode_map(
+                self._pae, *MAP_LIMITS["pae"], cap)
+
+        # ...and every OTHER map of the same shape. Same codec, same cap, and
+        # each carries the per_unit it was encoded with - see MAP_PER_UNIT.
+        if self._maps:
+            cap = _map_cap(self.config)
+            packed = {}
+            for key, (m, opts) in self._maps.items():
+                if m is None:
+                    continue
+                lo, hi = MAP_LIMITS.get(key, MAP_LIMITS_DEFAULT)
+                if opts.get("vmin") is not None:
+                    lo = float(opts["vmin"])
+                if opts.get("vmax") is not None:
+                    hi = float(opts["vmax"])
+                data, n = _encode_map(m, lo, hi, cap)
+                entry = {"data": data, "n": n, "vmin": lo, "vmax": hi}
+                # ...and what it should LOOK like, which the panel cannot
+                # guess: colour stops and the name on its tab. Sent only when
+                # asked for, so a map that says nothing takes the built-in
+                # scale for its key (or the generic grey for a key the panel
+                # has never heard of).
+                if opts.get("colors"):
+                    entry["colors"] = opts["colors"]
+                for ax in ("xlabel", "ylabel"):
+                    if opts.get(ax) is not None:
+                        entry[ax] = str(opts[ax])
+                # ...and the chain layout the MATRIX was built for, which is a
+                # different question from the one the drawn structure answers:
+                # a map can be on screen beside an object of another length.
+                # Per RESIDUE, like `chains` itself - the panel crosses to
+                # cells with residueToCell, so a resampled matrix still rules
+                # its boundaries in the right places.
+                if opts.get("chains"):
+                    entry["chains"] = [str(c) for c in opts["chains"]]
+                packed[key] = entry
+            if packed:
+                payload["maps"] = packed
 
         if self._scatter is not None:
             payload["scatter"] = self._scatter  # Already in [x, y] format
@@ -1175,7 +1545,7 @@ class view:
 
         return payload
 
-    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_elements=None, sidechain_atoms=None):
+    def _update(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None, align=True, position_names=None, residue_numbers=None, atom_types=None, allow_reflection=False, position_elements=None, sidechain_atoms=None, maps=None):
       """
       Updates the internal state with new data. Coordinates are kept in original space.
       The viewing angle is chosen in the browser, not here.
@@ -1228,6 +1598,57 @@ class view:
               self._pae = None
       else:
           self._pae = None
+
+      # ...and every other residue x residue map, by name. Same shape as the
+      # PAE and the same panel draws them; `maps={"contact": m}` is the door.
+      # A map whose name is `pae` is the PAE - one field, not two, so the two
+      # spellings cannot disagree about which matrix is on the PAE tab.
+      if maps:
+          normalized = {}
+          for key, m in maps.items():
+              if m is None:
+                  continue
+              # A MAP MAY DESCRIBE ITSELF. matplotlib's vocabulary, because
+              # that is where this library's readers live:
+              #
+              #   {"data": m, "vmin": 0, "vmax": 30,
+              #    "colors": ["#0000ff", "#ffffff", "#ff0000"],
+              #    "xlabel": "Scored position"}
+              #
+              # `vmin`/`vmax` are the value bounds the bytes are encoded
+              # against; `colors` is a list of stops, evenly spaced or each
+              # given a position (`[[0, "#00f"], [0.5, "#fff"], [1, "#f00"]]`);
+              # `xlabel`/`ylabel` caption the axes. All of them beat the
+              # built-in scale for the key, so `pae` and `contact` can be
+              # restyled without touching panels/heatmap.js, and a key the
+              # panel has never heard of can look like anything.
+              #
+              # A bare matrix takes the defaults for its name (MAP_LIMITS),
+              # which is a probability for anything the table does not know.
+              opts = {}
+              if isinstance(m, dict):
+                  opts = {k: m.get(k) for k in
+                          ("vmin", "vmax", "colors", "xlabel", "ylabel",
+                           "chains")}
+                  m = m.get("data")
+                  if m is None:
+                      continue
+              arr = np.asarray(m, dtype=float)
+              if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+                  print(f"Warning: map '{key}' must be a square 2D matrix, got "
+                        f"shape {arr.shape}. Ignoring it.")
+                  continue
+              # 🔴 `maps={"pae": ...}` IS A FULL MAP ENTRY, NOT A SHORTCUT TO
+              # `pae=`. It used to be diverted into self._pae so the two
+              # spellings could not disagree - which also threw away the
+              # vmin/vmax/colors/labels that came with it, i.e. exactly the
+              # reason someone would write it that way. Both may now be set;
+              # mapsOfFrame in panels/heatmap.js gives `maps.pae` precedence
+              # over `frame.pae`, so which one wins is stated in one place.
+              normalized[key] = (arr, opts)
+          self._maps = normalized or None
+      else:
+          self._maps = None
 
       self._scatter = scatter
       self._position_names = position_names
@@ -1351,6 +1772,17 @@ class view:
                 current_metadata["sse"] = {
                     str(k): v for k, v in obj["sse"].items()
                 }
+            if obj.get("pairs"):
+                current_metadata["pairs"] = {
+                    str(k): v for k, v in obj["pairs"].items()
+                }
+            # ...and the ghosting, which is the same kind of thing by the same
+            # argument: a map keyed by position index, set by set_opacity, and
+            # useless anywhere but against this object.
+            if obj.get("opacity"):
+                current_metadata["opacity"] = {
+                    str(k): v for k, v in obj["opacity"].items()
+                }
             # ...and each FRAME's own colour, which set_color(frame=N) writes.
             # A frame is delivered once and once only - _sent_frame_count sees
             # to that - so a colour set on a frame the viewer already has could
@@ -1363,6 +1795,12 @@ class view:
             }
             if frame_colors:
                 current_metadata["frame_colors"] = frame_colors
+            # ...and what this object does when the timeline runs past its
+            # last frame (set_frame_policy). It decides which FRAME of this
+            # object a timeline position resolves to, so it has to travel with
+            # the rest or the call did nothing in live mode.
+            if obj.get("frame_policy") is not None:
+                current_metadata["frame_policy"] = obj["frame_policy"]
             if obj.get("scatter_config") is not None:
                 current_metadata["scatter_config"] = obj["scatter_config"]
             if obj.get("rotation_matrix") is not None:
@@ -1427,10 +1865,18 @@ class view:
             viewer_block = viewer_block or {}
             viewer_block["sidechains"] = self._sidechains[self._sent_sidechains:]
             self._sent_sidechains = len(self._sidechains)
+        if self._slots != self._sent_slots:
+            viewer_block = viewer_block or {}
+            viewer_block["slots"] = self._slots
+            self._sent_slots = copy.deepcopy(self._slots)
         if self._orient_request is not None:
             viewer_block = viewer_block or {}
             viewer_block["orient"] = self._orient_request
             self._orient_request = None
+        plugin_block = self._plugin_delta()
+        if plugin_block:
+            viewer_block = viewer_block or {}
+            viewer_block["plugins"] = plugin_block
 
         # Skip update if nothing new to send
         if (not new_frames_by_object and not changed_metadata_by_object
@@ -1446,7 +1892,10 @@ class view:
             "viewer": viewer_block
         }
 
-        payload_json = json.dumps(payload, separators=(',', ':'))
+        # Every `<` escaped (valid inside a JSON string, the only place one can
+        # be): a plugin payload is the caller's text and may hold `</script>`,
+        # which would end the element this is inlined into.
+        payload_json = json.dumps(payload, separators=(',', ':')).replace('<', '\\u003c')
 
         update_js = (
             f'(function(){{'
@@ -1549,6 +1998,19 @@ class view:
         self._emit_to_output(html_script, payload_json=payload_json, update_last_add=True)
 
 
+    def _any_frame_has_map(self):
+        """Does anything added so far carry a matrix the panel could draw?
+
+        `maps` is the current spelling and `pae` the old one; a frame can
+        carry either, and `mapsOfFrame` in the panel folds them together.
+        Cheap: it stops at the first one rather than walking a trajectory.
+        """
+        for obj in self.objects:
+            for frame in obj.get("frames", []):
+                if frame.get("maps") or frame.get("pae") is not None:
+                    return True
+        return False
+
     def _display_viewer(self, static_data=None, include_libs=True):
         """
         Internal: Renders the viewer's HTML directly into a div.
@@ -1566,6 +2028,24 @@ class view:
         html_template = _resource_text('viewer.html')
 
         viewer_id = self.config["viewer_id"]
+
+        # 🔴 A MAP IN THE DATA IS THE ANSWER TO "DO YOU WANT THE PANEL".
+        # Asking for `heatmap=True` up front is asking the caller to declare
+        # something the frames already say: they added `maps=` or `paes=`, so
+        # of course they want to see it. Settled HERE, at show(), because by
+        # now every add() has happened and the config has not been written.
+        #
+        # It arrives as a TAB rather than beside the structure, which is what
+        # makes it safe to decide for the caller: a tab shares the box they
+        # already asked for, where a second box would double a width they
+        # chose - and in Colab the output frame is measured before any script
+        # runs, so a viewer that grows after the fact cannot get the room.
+        # An explicit heatmap=True/False or slots= still wins; this only
+        # speaks when the caller said nothing.
+        if not getattr(self, "_heatmap_asked", False) and self._any_frame_has_map():
+            self.config.setdefault("heatmap", {})["enabled"] = True
+            if not getattr(self, "_slots_asked", False) and self._slots is None:
+                self._slots = {"views": [], "count": 1}
 
         # ...AND THE SLAB, WHICH IS THE VIEWER'S. It rides in the config rather
         # than in the object payload because it belongs to the camera and
@@ -1600,6 +2080,11 @@ class view:
         else:
             self.config.pop("sidechains", None)
         self._sent_sidechains = len(self._sidechains)
+        if self._slots is not None:
+            self.config["slots"] = copy.deepcopy(self._slots)
+        else:
+            self.config.pop("slots", None)
+        self._sent_slots = copy.deepcopy(self._slots)
         if self._orient_request is not None:
             # ...AND A STATIC VIEWER ALWAYS JUMPS. It has only just appeared,
             # and a cell that opens mid-flight reads as a bug.
@@ -1622,7 +2107,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             for py_obj in static_data:
                 # Skip objects with no frames AND no metadata
                 if not py_obj.get("frames") and not any(
-                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "sse", "rotation_matrix", "center"]
+                    py_obj.get(key) for key in ["scatter_config", "contacts", "bonds", "color", "sse", "pairs", "opacity", "rotation_matrix", "center"]
                 ):
                     continue
 
@@ -1706,6 +2191,21 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     obj_to_serialize["sse"] = {
                         str(k): v for k, v in py_obj["sse"].items()
                     }
+                if py_obj.get("pairs"):
+                    obj_to_serialize["pairs"] = {
+                        str(k): v for k, v in py_obj["pairs"].items()
+                    }
+                if py_obj.get("opacity"):
+                    obj_to_serialize["opacity"] = {
+                        str(k): v for k, v in py_obj["opacity"].items()
+                    }
+
+                # ...and the frame policy, which is not keyed by position but
+                # still belongs to the object - see set_frame_policy. This
+                # payload is built field by field, so a key it does not name is
+                # a key it throws away: the same fault that dropped `align`.
+                if py_obj.get("frame_policy"):
+                    obj_to_serialize["frame_policy"] = py_obj["frame_policy"]
 
                 # Add scatter_config if it exists
                 if "scatter_config" in py_obj and py_obj["scatter_config"] is not None:
@@ -1732,8 +2232,23 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
           window.py2dmol_proteinData['{viewer_id}'] = {{ "coords": [], "plddts": [], "chains": [], "position_types": [], "pae": null }};
         </script>'''
 
+        # ...AND THE PLUGINS' PAYLOADS, a sibling of py2dmol_configs, read by the
+        # registry in src/parts/plugins.js. Written ONLY when the viewer has
+        # any: a viewer without a plugin emits the same bytes it always did.
+        # Every `<` is escaped (valid in a JSON string, and the only place one
+        # can be), so nothing in a payload can end or open anything in the
+        # script element it sits in.
+        plugin_script = ""
+        if self._plugins:
+            pj = json.dumps(self._plugins, separators=(',', ':')).replace('<', '\\u003c')
+            plugin_script = (
+                "<script>window.py2dmol_plugins = window.py2dmol_plugins || {};\n"
+                "window.py2dmol_plugins['" + viewer_id + "'] = " + pj + ";</script>")
+
         # Build injection scripts for config and data
         injection_scripts = config_script + "\n" + data_script
+        if plugin_script:
+            injection_scripts += "\n" + plugin_script
 
         # Inject config and data into the raw HTML template
         final_html = html_template.replace("<!-- DATA_INJECTION_POINT -->", injection_scripts)
@@ -1823,6 +2338,23 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             }})();
         </script>
         """ # Inject JS: always use inline package scripts (offline mode)
+        # ...AND THE PLUGINS' OWN JAVASCRIPT, one <script> for each plugin this
+        # viewer carries a payload for, in every bundle mode. It is written
+        # BEFORE the library below is prepended, so on the page it comes after
+        # an inline library and before nothing - and the borrowed library of a
+        # later notebook cell arrives after it. Either order works: see
+        # register_plugin for the boilerplate a plugin uses to not care.
+        # register_plugin refused `</script` and `<!--`, so the source is
+        # inlined verbatim.
+        for _pname in self._plugins:
+            if _pname in _PLUGIN_SOURCES:
+                container_html = ('<script data-py2dmol-plugin="' + _pname + '">'
+                                  + _PLUGIN_SOURCES[_pname][0] + '</script>\n'
+                                  + container_html)
+        # the page now holds every payload and every source written above
+        self._sent_plugins = copy.deepcopy(self._plugins)
+        self._sent_plugin_sources = {n: _PLUGIN_SOURCES[n][0] for n in self._plugins
+                                     if n in _PLUGIN_SOURCES}
         # Only include library scripts if requested (grid optimization)
         if include_libs:
             # ONE BUNDLE, NOT FIFTEEN SCRIPTS.
@@ -1850,7 +2382,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # with no WebGL2 has something to fall back on, and the cartoon can
             # export a vector - which needs the 2D painter, because a raster
             # has none to give.
-            bundle = "bundles/py2Dmol.notebook.min.js"
+            bundle = _EXPORT_BUNDLE
             # SHARE IT, IF ASKED, AND IF SOMEONE ELSE ALREADY CARRIES IT.
             #
             # The first viewer of a session writes the library and offers it on
@@ -1934,11 +2466,15 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._maps = None
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
         self._position_elements = None
         self._sidechain_atoms = None
+        self._plugins = {}
+        self._sent_plugins = {}
+        self._sent_plugin_sources = {}
         self._is_live = False
 
         # Reset incremental update tracking
@@ -2076,47 +2612,87 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         
         return contacts
 
+    # WHERE THE COLOUR SITS DEPENDS ON THE FORM, and this is the one table
+    # that says so. A contact is written three ways, and each puts its weight
+    # and its colour in a different slot:
+    #
+    #   [idx1, idx2, weight, color?]                          indices
+    #   [chain1, res1, chain2, res2, weight, color?]          chain + residue
+    #   [{...}, {...}, weight, color?]                        addresses
+    #
+    # src/core/mol.js's _resolveContactToIndices reads exactly these, and it
+    # takes a colour only as an OBJECT - a string there is dropped without a
+    # word. So the string has to be parsed here, at the slot the form names.
+
+    def _contact_form(self, contact):
+        """(the colour's index, the two ends) for a contact, or None.
+
+        The ends come back as whatever was written - numbers, chain/residue
+        pairs, or address dicts - because the only thing asked of them here is
+        whether the two are the SAME, which needs no structure to answer.
+        """
+        if not isinstance(contact, (list, tuple)) or len(contact) < 3:
+            return None
+        if isinstance(contact[0], str) and len(contact) >= 5:
+            return 5, ((contact[0], contact[1]), (contact[2], contact[3]))
+        return 3, (contact[0], contact[1])
+
     def _process_contacts(self, contacts):
         """
         Process contacts input (filepath string or list of lists).
-        
+
         Args:
             contacts: Either a filepath (str) or list of contact arrays
-            
+
         Returns:
             list: List of contact arrays, or None if invalid
         """
         if contacts is None:
             return None
-        
+
         if isinstance(contacts, str):
             # Filepath - parse it
             return self._parse_contacts_file(contacts)
         elif isinstance(contacts, list):
-            # List of contacts - validate and parse colors
             validated = []
             for contact in contacts:
-                if isinstance(contact, list) and len(contact) >= 3:
-                    # Parse color if it's a string (4th element)
-                    if len(contact) >= 4:
-                        color_elem = contact[3]
-                        # If color is a string, parse it to RGB dict
-                        if isinstance(color_elem, str):
-                            parsed_color = self._parse_contact_color(color_elem)
-                            if parsed_color:
-                                # Replace string with parsed RGB dict
-                                validated.append([contact[0], contact[1], contact[2], parsed_color])
-                            else:
-                                # Invalid color string, skip color
-                                validated.append([contact[0], contact[1], contact[2]])
-                        else:
-                            # Color is already a dict or other format, keep as-is
-                            validated.append(contact)
-                    else:
-                        # No color specified
-                        validated.append(contact)
-                else:
+                form = self._contact_form(contact)
+                if form is None:
                     print(f"Warning: Skipping invalid contact: {contact}")
+                    continue
+                slot, (end1, end2) = form
+                # 🔴 A CONTACT FROM A RESIDUE TO ITSELF DRAWS NOTHING, and said
+                # nothing about it. src/core/mol.js refuses `idx1 === idx2`
+                # outright - a contact is a line between two points and there is
+                # no line here - so the record was carried all the way into the
+                # payload and dropped at the far end, invisibly. Reported by
+                # someone who tried every weight from 0.3 to 3.6 looking for the
+                # sphere they had been told it drew. It is refused here instead,
+                # by name, with the call that does what they wanted.
+                if end1 == end2:
+                    print(f"Warning: contact {contact} joins a position to"
+                          " itself, which draws nothing - a contact is a line"
+                          " between two points. To colour one residue, use"
+                          ' add_pdb(..., color={"position": {index: "#hex"}})'
+                          " or set_color(color, position=index).")
+                    continue
+                contact = list(contact)
+                # ...AND A NAMED COLOUR IS PARSED IN EVERY FORM, which it was
+                # not. The .cst file parser turns "A 10 B 50 0.5 yellow" into a
+                # dict; the same contact written as a list kept the string,
+                # because this looked for a colour at index 3 whatever the form
+                # - which is the chain+residue form's SECOND RESIDUE NUMBER.
+                # The renderer takes a colour only as an object, so the list
+                # spelling of a file that worked came out uncoloured.
+                if len(contact) > slot and isinstance(contact[slot], str):
+                    parsed = self._parse_contact_color(contact[slot])
+                    if parsed:
+                        contact[slot] = parsed
+                    else:
+                        print(f"Warning: contact colour {contact[slot]!r} was not"
+                              " understood - drawing it in the default colour.")
+                        contact = contact[:slot]
+                validated.append(contact)
             return validated if validated else None
         else:
             print(f"Error: contacts must be a filepath (str) or list of lists, got {type(contacts)}")
@@ -2291,6 +2867,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._chains = None
         self._position_types = None
         self._pae = None
+        self._maps = None
         self._scatter = None
         self._position_names = None
         self._position_residue_numbers = None
@@ -2318,7 +2895,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
     
     def add(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None):
+            name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None, maps=None):
         """
         Adds a new *frame* of data to the viewer.
 
@@ -2331,6 +2908,37 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             chains (list, optional): N-length list of chain identifiers.
             position_types (list, optional): N-length list of position types ('P', 'D', 'R', 'L').
             pae (np.array, optional): LxL PAE matrix.
+            maps (dict, optional): more LxL matrices over the same residues,
+                by name - `{"contact": p}` - drawn in the same panel, which
+                grows a tab strip when there is more than one. The selection
+                is unchanged: a box dragged on any of them is the same range
+                of residues.
+
+                A bare matrix takes the built-in scale for its name - `pae`
+                is 0-31.875 A blue to red, `contact` is 0-1 white to indigo,
+                and anything else is read as a probability and drawn in grey.
+                A map can say all of it itself instead, and what it says wins:
+
+                    maps={"contact": {"data": m,
+                                      "vmin": 0, "vmax": 1,
+                                      "colors": ["#ffffff", "#253494"],
+                                      "xlabel": "Residue"}}
+
+                `vmin`/`vmax` are the value bounds the bytes are encoded
+                against (matplotlib's names, for matplotlib's reason).
+                `colors` is a list of stops, evenly spaced or each given a
+                position - `[[0, "#00f"], [0.5, "#fff"], [1, "#f00"]]`.
+                The map's NAME on its tab is its key - `pae` and `contact`
+                are shown as "PAE" and "Contact" and anything else as itself,
+                so name the key what you want to read. The tab is always
+                shown, so a lone map is named too.
+                `xlabel`/`ylabel` caption the axes;
+                `pae` defaults to "Scored position" / "Aligned position",
+                which is what its two indices mean, and everything else has
+                no caption unless you give it one.
+
+                `maps={"pae": {...}}` is a full entry and beats `pae=m`,
+                which is the plain door with no styling.
             scatter (list/tuple/dict, optional): Scatter plot data point for this frame.
                    Accepts: [x, y], (x, y), or {"x": x, "y": y}
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
@@ -2400,6 +3008,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     _slice(chains, i),
                     _slice(position_types, i),
                     pae=_slice(pae, i),
+                    # ...and each named map on its own, so `maps={"contact":
+                    # [m0, m1, ...]}` fans out the way `pae=[...]` does while
+                    # `maps={"contact": m}` is shared by every frame.
+                    maps=({k: _slice(v, i) for k, v in maps.items()}
+                          if maps else None),
                     scatter=_slice(scatter, i),
                     name=name,
                     align=align,
@@ -2467,7 +3080,8 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         self._update(coords, plddts, chains, position_types, pae, scatter,
             align=align, position_names=position_names, residue_numbers=residue_numbers, atom_types=atom_types,
             allow_reflection=allow_reflection,
-            position_elements=position_elements, sidechain_atoms=sidechain_atoms)
+            position_elements=position_elements, sidechain_atoms=sidechain_atoms,
+            maps=maps)
         data_dict = self._get_data_dict() # This reads the full, correct data
 
         data_dict["name"] = None  # Don't set frame-level name; use object name instead
@@ -2565,7 +3179,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
     def replace(self, coords, plddts=None, chains=None, position_types=None, pae=None, scatter=None,
-                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None):
+                name=None, align=True, position_names=None, residue_numbers=None, atom_types=None, contacts=None, bonds=None, color=None, scatter_config=None, allow_reflection=False, position_elements=None, sidechain_atoms=None, maps=None):
         """
         Replace frame(s) for an object (streaming mode).
 
@@ -2598,7 +3212,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                      residue_numbers=residue_numbers, atom_types=atom_types,
                      allow_reflection=allow_reflection,
                      position_elements=position_elements,
-                     sidechain_atoms=sidechain_atoms)
+                     sidechain_atoms=sidechain_atoms, maps=maps)
 
         frame_data = self._get_data_dict()
         if color is not None:
@@ -2640,6 +3254,45 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         else:
             # persistence=False: Replace all frames (streaming mode, no history)
             target_obj["frames"] = [frame_data]
+
+    def _positions_on_object(self, verb, name, chain, position, target_obj=None):
+        """(the object, the position indices) for a per-object setter.
+
+        ONE READING OF position= AND chain=, for the verbs that write a map
+        keyed by position index onto an object - set_sse and set_opacity. It
+        was written out inside set_sse, and a second copy in the next verb is
+        a second place for the tuple rule to be half-remembered.
+        """
+        if target_obj is None:
+            if not self.objects:
+                print(f"Error: No objects loaded. Cannot {verb}.")
+                return None, []
+            target_obj = self.objects[-1] if name is None else next(
+                (o for o in self.objects if o.get("name") == name), None)
+            if target_obj is None:
+                print(f'Error: Object "{name}" not found.')
+                return None, []
+        indices = []
+        if position is not None:
+            if isinstance(position, int):
+                indices = [int(position)]
+            elif isinstance(position, tuple) and len(position) == 2:
+                indices = list(range(int(position[0]), int(position[1])))
+            elif isinstance(position, (list, range)):
+                indices = [int(p) for p in position]
+            else:
+                raise ValueError(
+                    "position must be an int, list, range or (start, end) tuple.")
+        if chain is not None:
+            frames = target_obj.get("frames") or []
+            chains = frames[0].get("chains") if frames else None
+            if not chains:
+                print("Error: object has no chain information.")
+                return None, []
+            indices += [i for i, c in enumerate(chains) if c == chain]
+        if not indices:
+            raise ValueError(f"{verb} needs position= and/or chain=.")
+        return target_obj, indices
 
     @staticmethod
     def _selector(name=None, chain=None, position=None):
@@ -2801,6 +3454,101 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         if self._is_live:
             self._send_incremental_update()
 
+    def set_slots(self, *views, count=None, big=None, small=None):
+        """
+        Choose what each slot shows.
+
+            view = py2Dmol.view(pae=True)
+            view.add_pdb("AF-Q5VSL9")
+            view.set_slots("pae")                       # PAE first
+            view.set_slots("structure", "contact")      # slot 1, slot 2
+            view.set_slots(None, "contact")             # slot 1 automatic
+            view.set_slots("pae", count=1)              # ONE box, tabs over it
+            view.set_slots()                            # back to automatic
+
+        A viewer is an ordered list of slots - slot 1 where the structure is,
+        slot 2 where the heatmap is - and each can show the structure, any map
+        the frames carry (by its key: "pae", "contact", ...) or the scatter
+        plot. The same tabs are over every slot, so a reader can swap them by
+        hand; this is the same choice made from code.
+
+        Args:
+            *views (str): one name per slot, in order: "structure", "scatter",
+                or a map's key. `None` in the list hands that slot back to the
+                automatic layout, which is not the same as leaving it out -
+                a slot you do not name keeps whatever it was told last.
+
+                A SHORT LIST NAMES THE SLOTS IT REACHES and says nothing about
+                the rest, so `set_slots("pae")` puts the PAE first and leaves
+                the second box exactly as it was. How many boxes there are is
+                a different question with its own answer, below.
+            count (int, optional): how many slots to use. 1 is one box with
+                every view on its tab strip, which is what a notebook cell
+                that already chose its own width usually wants; it is also
+                `py2Dmol.view(slots=1)`. None leaves the number alone.
+            big, small (str, optional): the names this took before the slots
+                were numbered, still accepted and still meaning slots 1 and 2.
+                `small="none"` (or False) is `count=1`.
+
+        Note:
+            A STANDING CHOICE, not a move. A map named before it exists - a PAE
+            for a prediction still running - takes its slot when it arrives,
+            and until then the slot shows what it would have anyway. With
+            nothing named the layout is automatic: the structure first, a map
+            beside it, and a map first when there is no structure to draw.
+        """
+        for v in views:
+            if v is not None and not isinstance(v, str):
+                raise ValueError(
+                    'a slot takes a view name - "structure", "scatter" or a'
+                    f" map's key - or None to leave it as it is, not {v!r}")
+        if small is not None and small is not False and not isinstance(small, str):
+            raise ValueError(
+                'small must be a view name, "none" for no second slot, or'
+                f' None to leave it as it is - not {small!r}')
+        if count is not None and (not isinstance(count, int)
+                                  or isinstance(count, bool) or count < 1):
+            raise ValueError(f"count is how many slots to use, 1 or more"
+                             f" - not {count!r}")
+        # NAMING ONE SLOT LEAVES THE OTHERS ALONE. With one box the default,
+        # `set_slots("pae")` must not quietly bring the second one back - the
+        # caller said which view they wanted first, not how many boxes they
+        # wanted. `set_slots()` with nothing is how you ask for automatic.
+        if not views and count is None and big is None and small is None:
+            self._slots = None
+            if self._is_live:
+                self._send_incremental_update()
+            return
+        # 🔴 A SLOT NAMED None IS AUTOMATIC; A SLOT NOT NAMED IS UNCHANGED,
+        # and those are different answers - `set_slots(None, "contact")` hands
+        # the first box back to the layout, where `set_slots("contact")` does
+        # not touch the second. So what is merged is the positions the caller
+        # WROTE, not the values they wrote there.
+        named = {i: v for i, v in enumerate(views)}
+        for i, v in ((0, big), (1, small)):
+            if v is None:
+                continue
+            if v is False or v == "none":
+                count = i if count is None else count
+            else:
+                named[i] = v
+        current = _normalize_slots(self._slots) or {"views": [], "count": None}
+        got = list(current["views"])
+        while named and len(got) <= max(named):
+            got.append(None)
+        for i, v in named.items():
+            got[i] = v
+        # NO TRAILING TRIM. An explicit null is "this slot is automatic" and
+        # has to travel: the browser's own `want` persists between calls (a
+        # reader's tab click writes it too), so a list that stops short of a
+        # slot leaves whatever was last asked for standing there.
+        current["views"] = got
+        if count is not None:
+            current["count"] = count
+        self._slots = current
+        if self._is_live:
+            self._send_incremental_update()
+
     def show_objects(self, names=None):
         """
         Draw several objects at once, or go back to one at a time.
@@ -2883,6 +3631,66 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         if self._is_live:
             self._send_incremental_update()
 
+    def set_frame_policy(self, policy, name=None):
+        """
+        What this object does when the timeline runs past its last frame.
+
+        Several objects on screen share ONE timeline, as long as the longest
+        of them - a frame index is a position in that timeline, not a clock
+        each object keeps for itself. This says what a SHORTER object makes of
+        a position it does not have a frame for.
+
+        Args:
+            policy (str): one of
+
+                "hold" (the default) - stop on the last frame. "There is no
+                    more data." A static reference structure beside a
+                    trajectory is one frame held, which is what you want.
+                "loop" - start again from frame 0. Says the object is
+                    PERIODIC, which an MD run or a folding path is not; right
+                    for two independent simulations played side by side.
+                "stretch" - spread this object's whole trajectory over the
+                    whole timeline, so a 20-frame run plays in step with a
+                    100-frame one. Says the two are the SAME process sampled
+                    at different rates, and invents a correspondence between
+                    frames if they are not.
+
+            name (str, optional): Object to apply to. Defaults to the last one
+                added.
+
+        Examples:
+            view.add(ref)                          # 1 frame
+            view.add(traj, name="run")             # 100 frames
+            view.set_frame_policy("loop", "run")
+
+        Note:
+            With equal frame counts all three policies are the identity, so
+            this only ever matters for objects of differing length. "hold" is
+            the default because it is the only one that does not assert
+            something about data that is not there.
+        """
+        allowed = ("hold", "loop", "stretch")
+        p = str(policy).lower() if policy is not None else "hold"
+        if p not in allowed:
+            raise ValueError(
+                f'Invalid frame policy "{policy}" - expected one of '
+                + ", ".join(allowed) + ".")
+
+        if not self.objects:
+            print("Error: No objects loaded. Cannot set frame policy.")
+            return
+        target_obj = self.objects[-1] if name is None else next(
+            (o for o in self.objects if o.get("name") == name), None)
+        if target_obj is None:
+            print(f'Error: Object "{name}" not found.')
+            return
+
+        target_obj["frame_policy"] = p
+        # Same live-update path set_sse uses, so a change lands immediately in
+        # an already-displayed viewer and is picked up by show() otherwise.
+        if self._is_live:
+            self._send_incremental_update()
+
     def set_sse(self, sse, name=None, chain=None, position=None):
         """
         Override the secondary structure of specific residues.
@@ -2925,26 +3733,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             print(f'Error: Object "{name}" not found.')
             return
 
-        indices = []
-        if position is not None:
-            if isinstance(position, int):
-                indices = [int(position)]
-            elif isinstance(position, tuple) and len(position) == 2:
-                indices = list(range(int(position[0]), int(position[1])))
-            elif isinstance(position, (list, range)):
-                indices = [int(p) for p in position]
-            else:
-                raise ValueError(
-                    "position must be an int, list, range or (start, end) tuple.")
-        if chain is not None:
-            frames = target_obj.get("frames") or []
-            chains = frames[0].get("chains") if frames else None
-            if not chains:
-                print("Error: object has no chain information.")
-                return
-            indices += [i for i, c in enumerate(chains) if c == chain]
-        if not indices:
-            raise ValueError("set_sse needs position= and/or chain=.")
+        target_obj, indices = self._positions_on_object(
+            "set_sse", name, chain, position, target_obj)
+        if target_obj is None:
+            return
 
         # Stored on the object so it travels with it, exactly like `color`.
         current = dict(target_obj.get("sse") or {})
@@ -2957,6 +3749,113 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         target_obj["sse"] = current or None
         # Same live-update path set_color uses, so a change lands immediately in
         # an already-displayed viewer and is simply picked up by show() otherwise.
+        if self._is_live:
+            self._send_incremental_update()
+
+    def set_basepairs(self, pairs, name=None):
+        """
+        Override the base pairing of nucleic acid residues (DNA/RNA).
+
+        Controls which nucleotides pair as rungs in the double helix cartoon.
+        By default, base pairing is inferred from 3D coordinates, complementarity,
+        and stacking. This method allows specifying canonical, non-canonical, or
+        experimentally determined base pairs directly.
+
+        Args:
+            pairs (dict, list of tuples, or None):
+                - dict mapping {pos1: pos2, ...}
+                - list of tuples [(pos1, pos2), ...]
+                - None to clear custom base pairs and return to automatic detection.
+            name (str, optional): Object to apply to. Defaults to the last one added.
+
+        Examples:
+            view.set_basepairs([(0, 23), (1, 22), (2, 21)])  # duplex rungs
+            view.set_basepairs({0: 23, 1: 22})
+            view.set_basepairs(None)                         # return to automatic
+        """
+        if not self.objects:
+            print("Error: No objects loaded. Cannot set base pairing.")
+            return
+        target_obj = self.objects[-1] if name is None else next(
+            (o for o in self.objects if o.get("name") == name), None)
+        if target_obj is None:
+            print(f'Error: Object "{name}" not found.')
+            return
+
+        if pairs is None:
+            target_obj["pairs"] = None
+        elif isinstance(pairs, dict):
+            current = {}
+            for k, v in pairs.items():
+                ik, iv = int(k), int(v)
+                current[ik] = iv
+                current[iv] = ik
+            target_obj["pairs"] = current or None
+        elif isinstance(pairs, (list, tuple)):
+            current = {}
+            for item in pairs:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    ik, iv = int(item[0]), int(item[1])
+                    current[ik] = iv
+                    current[iv] = ik
+                else:
+                    raise ValueError(f"Expected (pos1, pos2) pair, got {item}")
+            target_obj["pairs"] = current or None
+        else:
+            raise TypeError("pairs must be a dict, list of tuples, or None")
+
+        if self._is_live:
+            self._send_incremental_update()
+
+    def set_opacity(self, opacity, name=None, chain=None, position=None):
+        """
+        Fade residues so what is behind them shows through.
+
+        The case this exists for is a side chain INSIDE the fold: drawn, in the
+        scene, and hidden by the cartoon in front of it from every angle worth
+        looking from - so moving the camera is not a fix. Fade the backbone
+        over it instead.
+
+        Args:
+            opacity (float): 1 is solid, 0 hides it, anything between ghosts it.
+            name (str, optional): Object name. Defaults to the last added.
+            chain (str, optional): Chain id.
+            position (int, list, tuple, range, optional): Position index/indices.
+                A 2-tuple is a half-open range, matching set_color.
+
+        Examples:
+            view.set_opacity(0.25, position=(40, 90))   # ghost 40-89
+            view.set_opacity(0.3, chain="A")            # ghost a whole chain
+            view.set_opacity(1, chain="A")              # ...and back to solid
+
+        Note:
+            Stored by POSITION INDEX against the object, like set_sse and
+            set_color, so it travels with the object and survives a save.
+
+            🔴 IT IS A GPU EFFECT. The fade is drawn by dropping pixels on an
+            ordered dither, which the WebGL painter does and the 2D fallback
+            does not - a viewer that has fallen back to the canvas painter
+            draws the structure solid. The panel hides its own slider there for
+            the same reason.
+        """
+        try:
+            alpha = float(opacity)
+        except (TypeError, ValueError):
+            raise ValueError(f"opacity must be a number in 0..1 - got {opacity!r}")
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError(f"opacity must be in 0..1 - got {alpha}")
+        target_obj, indices = self._positions_on_object(
+            "set_opacity", name, chain, position)
+        if target_obj is None:
+            return
+        current = dict(target_obj.get("opacity") or {})
+        for i in indices:
+            if alpha >= 1.0:
+                current.pop(i, None)
+                current.pop(str(i), None)
+            else:
+                current[i] = alpha
+        target_obj["opacity"] = current or None
         if self._is_live:
             self._send_incremental_update()
 
@@ -3235,7 +4134,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             self._send_incremental_update()
 
 
-    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=True, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, scatter_config=None):
+    def add_pdb(self, filepath, chains=None, name=None, paes=None, align=True, use_biounit=True, biounit_name="1", load_ligands=True, filter_additives=True, contacts=None, scatter=None, color=None, scatter_config=None, maps=None):
         """
         Loads a structure from a local PDB or CIF file and adds it to the viewer
         as a new frame (or object).
@@ -3249,6 +4148,10 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             chains (list, optional): Specific chains to load. Defaults to all.
             name (str, optional): Name for the object. If a different name is provided than the current object, a new object is created.
             paes (list, optional): List of PAE matrices to associate with each model.
+            maps (dict, optional): more residue x residue matrices by name -
+                see add(). A value that is a list as long as the model count
+                is one matrix per model, the way `paes` is; anything else is
+                shared by every model.
             align (bool, optional): If True, aligns subsequent frames to the first frame.
                                    Best-view rotation is ALWAYS computed for first frame. Defaults to True.
             use_biounit (bool): Build the biological assembly, which is what
@@ -3421,6 +4324,20 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 # Only add PAE matrix to the first model
                 pae_to_add = paes[i] if paes and i < len(paes) else None
 
+                # ...and the other heatmaps, per model the same way `paes`
+                # is: `maps={"contact": [m0, m1]}` gives each model its own
+                # and `maps={"contact": m}` gives them all the same one. A
+                # value that is a dict is a map naming its own domain
+                # (`{"data": m, "per_unit": 10}`) and is NOT a per-model list.
+                maps_to_add = None
+                if maps:
+                    maps_to_add = {}
+                    for key, m in maps.items():
+                        if isinstance(m, (list, tuple)) and len(m) == len(models_to_process):
+                            maps_to_add[key] = m[i]
+                        else:
+                            maps_to_add[key] = m
+
                 # Extract scatter point for this model (if scatter data provided)
                 scatter_to_add = scatter_data[i] if scatter_data and i < len(scatter_data) else None
 
@@ -3429,6 +4346,7 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 model_name = name if i == 0 else None
                 self.add(coords_np, plddts_np, position_chains, position_types,
                     pae=pae_to_add,
+                    maps=maps_to_add,
                     scatter=scatter_to_add,
                     name=model_name,
                     align=align,
@@ -3628,6 +4546,14 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # Take them all off again - this REPLACES rather than appends, so
             # passing nothing is how you say "none"
             viewer.add_contacts([])
+
+        A contact is a LINE BETWEEN TWO POSITIONS. One naming the same position
+        at both ends draws nothing and is refused here by name - to colour a
+        single residue use `add_pdb(..., color={"position": {i: "#hex"}})` or
+        `set_color(color, position=i)`, which are a different path entirely.
+
+        A colour may be a name or a hex string in every form, as in a .cst
+        file, or the `{"r": .., "g": .., "b": ..}` the renderer reads.
         """
         # AN EMPTY LIST CLEARS. add_contacts has always REPLACED rather than
         # appended, so passing nothing is the natural way to say "none" - and
@@ -4116,6 +5042,117 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
         
         return redundant
 
+    def add_plugin(self, name, payload, object=None, frame=None, options=None,
+                   version=None, api_version=None):
+        """Give plugin ``name`` a JSON payload to draw from.
+
+        The plugin defines the payload's schema; py2Dmol only carries it - in
+        the generated page, and through ``save_state`` / ``load_state``, where
+        it is kept even by a process that has never heard of the plugin. It
+        lives on the VIEWER, not on an object, and is sent with ``show()``; on
+        a viewer already on the page it is sent at once, with the plugin's
+        JavaScript if the page does not have it yet. Every style draws it.
+
+        Args:
+            name (str): the plugin. Its JavaScript comes from ``register_plugin``
+                or ships with py2Dmol.
+            payload: anything ``json.dumps`` takes (no NaN, no sets).
+            object (str, optional): the object the payload belongs to, as
+                ``add_contacts`` binds. None: whatever is drawn.
+            frame (int, optional): the frame it belongs to. None: every frame.
+            options (dict, optional): plugin options, merged over earlier ones.
+            version (str, optional): the plugin version this payload was made for.
+            api_version (int, optional): the plugin API version it was made for.
+
+        Returns:
+            view: self, so calls chain.
+        """
+        _check_plugin_name(name)
+        # EVERY ARGUMENT IS CHECKED BEFORE ANYTHING IS STORED, so a refusal leaves
+        # no half-made entry behind. A bool is an int in Python and is not a frame.
+        if object is not None and not isinstance(object, str):
+            raise TypeError("add_plugin: object must be an object NAME (str) or None, not %r" % (object,))
+        if frame is not None and (isinstance(frame, bool) or not isinstance(frame, int)):
+            raise TypeError("add_plugin: frame must be an int or None, not %r" % (frame,))
+        if api_version is not None and (isinstance(api_version, bool) or not isinstance(api_version, int)):
+            raise TypeError("add_plugin: api_version must be an int or None, not %r" % (api_version,))
+        if version is not None and not isinstance(version, str):
+            raise TypeError("add_plugin: version must be a str or None, not %r" % (version,))
+        try:
+            # a COPY, through JSON: the caller may go on editing its own dict,
+            # and what is stored is exactly what will round-trip
+            payload = json.loads(json.dumps(payload, allow_nan=False))
+            options = json.loads(json.dumps(options or {}, allow_nan=False))
+        except ValueError as e:
+            raise ValueError("add_plugin(%r): the payload must be JSON (%s)" % (name, e)) from None
+        except TypeError as e:
+            raise TypeError("add_plugin(%r): the payload must be JSON (%s)" % (name, e)) from None
+        p = self._plugins.setdefault(name, {
+            "version": version, "apiVersion": api_version, "options": {}, "payloads": []})
+        if version is not None:
+            p["version"] = version
+        if api_version is not None:
+            p["apiVersion"] = api_version
+        p["payloads"].append({"object": object, "frame": frame, "payload": payload})
+        p["options"].update(options)
+        if self._is_live:
+            self._send_incremental_update()
+        return self
+
+    def set_plugin_option(self, name, key, value):
+        """Set one option of plugin ``name`` (it must have a payload already).
+        On a viewer already on the page the option is sent at once, without
+        re-sending the payloads."""
+        if name not in self._plugins:
+            raise KeyError("no payload for plugin %r has been added - call"
+                           " add_plugin first" % (name,))
+        try:
+            value = json.loads(json.dumps(value, allow_nan=False))
+        except (TypeError, ValueError) as e:
+            raise type(e)("set_plugin_option(%r, %r): the value must be JSON (%s)"
+                          % (name, key, e)) from None
+        self._plugins[name]["options"][key] = value
+        if self._is_live:
+            self._send_incremental_update()
+        return self
+
+    def _plugin_delta(self):
+        """What the page does not have yet: {name: entry} for every plugin whose
+        payload changed since the last send. An entry whose payloads are what
+        the page holds carries no `payloads` key - the browser keeps its own -
+        so dragging an option does not re-send a mesh; one whose payloads only
+        GREW carries the new ones and `payloads_from`, the count the page
+        already has, so a loop of add_plugin calls costs each call its own
+        payload rather than every payload before it. The JavaScript travels as
+        `source` when the page has not had this source - the first time, or
+        after register_plugin was given new code - because in Colab every
+        output is its own iframe and a <script> beside the update would run in
+        the wrong document."""
+        out = {}
+        for name, cur in self._plugins.items():
+            sent = self._sent_plugins.get(name)
+            if sent == cur:
+                continue
+            entry = {"version": cur.get("version"), "apiVersion": cur.get("apiVersion"),
+                     "options": copy.deepcopy(cur.get("options") or {})}
+            now = cur.get("payloads") or []
+            had = (sent or {}).get("payloads")
+            if had is None or had != now:
+                k = len(had) if had is not None and now[:len(had)] == had else 0
+                entry["payloads"] = copy.deepcopy(now[k:])
+                if k:
+                    entry["payloads_from"] = k
+            src = _PLUGIN_SOURCES.get(name)
+            if src is not None and self._sent_plugin_sources.get(name) != src[0]:
+                entry["source"] = src[0]
+                self._sent_plugin_sources[name] = src[0]
+            out[name] = entry
+            # a payload is never edited once appended, so the record shares
+            # them rather than copying every payload on every call
+            self._sent_plugins[name] = dict(cur, payloads=list(now),
+                                            options=copy.deepcopy(cur.get("options") or {}))
+        return out
+
     def save_state(self, filepath):
         """
         Saves the current viewer state (objects, frames, viewer settings, selection) to a JSON file.
@@ -4185,6 +5222,24 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                 obj_to_serialize["sse"] = {
                     str(k): v for k, v in obj["sse"].items()
                 }
+            if obj.get("pairs"):
+                obj_to_serialize["pairs"] = {
+                    str(k): v for k, v in obj["pairs"].items()
+                }
+            # ...and the ghosting, which src/core/objstate.js declares as
+            # per-object state with `json: 'opacity'` - so a session written by
+            # the PAGE carries it and one written here has to as well, or the
+            # two disagree about what a session is.
+            if obj.get("opacity"):
+                obj_to_serialize["opacity"] = {
+                    str(k): v for k, v in obj["opacity"].items()
+                }
+            # ...and the frame policy, which objstate.js declares with
+            # `json: 'frame_policy'` - so by the same argument as the ghosting
+            # above, a session written here carries what one written by the
+            # page carries.
+            if obj.get("frame_policy"):
+                obj_to_serialize["frame_policy"] = obj["frame_policy"]
             # Add scatter_config and scatter_metadata if present
             if "scatter_config" in obj and obj["scatter_config"] is not None:
                 obj_to_serialize["scatter_config"] = obj["scatter_config"]
@@ -4221,7 +5276,11 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             "current_object": self.objects[-1]["name"] if self.objects else None,
             "viewer_state": viewer_state,
         }
-        
+        # PLUGIN PAYLOADS, viewer level, and ONLY when there are any, so a state
+        # file from a viewer with none is byte-identical to what it was.
+        if self._plugins:
+            state_data["plugins"] = copy.deepcopy(self._plugins)
+
         # Write to file
         with open(filepath, 'w') as f:
             json.dump(state_data, f, indent=2)
@@ -4311,6 +5370,16 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
                     self.objects[-1]["sse"] = {
                         int(k): v for k, v in obj_data["sse"].items()
                     }
+                if obj_data.get("pairs"):
+                    self.objects[-1]["pairs"] = {
+                        int(k): int(v) for k, v in obj_data["pairs"].items()
+                    }
+                if obj_data.get("opacity"):
+                    self.objects[-1]["opacity"] = {
+                        int(k): float(v) for k, v in obj_data["opacity"].items()
+                    }
+                if obj_data.get("frame_policy"):
+                    self.objects[-1]["frame_policy"] = obj_data["frame_policy"]
                 # Restore scatter config (prefer scatter_config, but accept legacy scatter_metadata)
                 scatter_cfg = obj_data.get("scatter_config")
                 if not scatter_cfg and obj_data.get("scatter_metadata"):
@@ -4331,6 +5400,9 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             # exist, which is what a standing instruction should do.
             self._clip = self.config.get("clip")
             self._shown_objects = self.config.get("shown_objects")
+            # ...and a file written before the slots were numbered says
+            # {"big": ..., "small": ...}, which is read and rewritten as a list.
+            self._slots = _normalize_slots(self.config.get("slots"))
             # ...and the side chains, which are written from _sidechains and
             # so would be popped at the next show() exactly like the two above.
             self._sidechains = self.config.get("sidechains") or []
@@ -4365,6 +5437,130 @@ window.py2dmol_configs['{viewer_id}'] = {json.dumps(self.config)};
             if vs.get("colorblind_mode") is not None:
                 color_cfg["colorblind"] = vs["colorblind_mode"]
         
+        # PLUGIN PAYLOADS come back VERBATIM, whether or not this process knows the
+        # plugin: a state file is a document, and loading it in a session that
+        # lacks a plugin must not quietly destroy that plugin's data. One warning
+        # for the unknown ones, naming them.
+        self._plugins = {}
+        plugs = state_data.get("plugins")
+        if isinstance(plugs, dict):
+            for pname, pdata in plugs.items():
+                self._plugins[pname] = copy.deepcopy(pdata)
+            unknown = sorted(n for n in self._plugins if n not in _known_plugin_names())
+            if unknown:
+                import warnings
+                warnings.warn(
+                    "state file carries payloads for plugin%s %s, which %s not"
+                    " registered in this process (py2Dmol.register_plugin); %s kept"
+                    " as-is and written back by save_state(), but nothing will draw"
+                    " them until the plugin is registered" % (
+                        "s" if len(unknown) > 1 else "",
+                        ", ".join(repr(n) for n in unknown),
+                        "are" if len(unknown) > 1 else "is",
+                        "they are" if len(unknown) > 1 else "it is"),
+                    stacklevel=2)
+
         # State loaded - user must call show() to display
         if not self.objects:
             print("Warning: No objects loaded from state file.")
+
+    # --- STANDALONE EXPORT ------------------------------------------------
+    #
+    # 🔴 A FILE IS NOT A PAGE WITH A LENDER, AND ASSUMING IT IS DREW NOTHING.
+    # Library sharing is right for a notebook - the first show() of a session
+    # writes the bundle and every later one writes a two-line request for it,
+    # which is what stops a document carrying twenty copies. It is decided per
+    # KERNEL: `_LENT_BUNDLE` records that this process has already lent, so the
+    # second view() in the same process writes a request whoever reads it.
+    #
+    # Capture those four viewers into four separate .html files and three of
+    # them ask a page that has no lender on it. Nothing errors - the bootstrap
+    # waits for `initializePy2DmolViewer` to appear and it never does - so the
+    # file opens blank, and the only way anyone found out was opening it.
+    # Reported from a conference-talk build: three of four exports blank, and
+    # the caller's repair was to reach past the public API for
+    # `_share_library = False`, which is exactly the flag this should never
+    # have made them find.
+    #
+    # So: an export path that never borrows. to_html() and save_html() set the
+    # flag off for the duration of the call whatever the viewer was doing, and
+    # a live viewer stays live afterwards.
+
+    def to_html(self, title=None, bundle='inline'):
+        """The viewer as a complete HTML document that opens on its own.
+
+        Args:
+            title (str, optional): the document's <title>.
+            bundle (str): where the renderer comes from.
+                'inline'   - written into the file (default). One file, and it
+                             works from a file:// URL with no server.
+                'external' - referenced as <script src="py2Dmol-<hash>.min.js">,
+                             which save_html() writes beside the page. Several
+                             exports on one page then share one download
+                             instead of carrying 1.8 MB of library each.
+                Any other string is used as the src verbatim, for a bundle the
+                caller is hosting themselves.
+
+        Returns:
+            str: the document.
+
+        🔴 THE EXTERNAL NAME CARRIES THE BUNDLE'S HASH, and that is the guard
+        rather than a decoration. A page referencing a library that has since
+        been rebuilt is the failure #2 of the same report describes - today's
+        payload drawn by yesterday's renderer, silently missing whatever the
+        two disagree about. A hashed name cannot be stale: it is either there
+        or it is a 404, and the loader below turns the 404 into a sentence in
+        the box instead of an empty one.
+        """
+        if not self.objects:
+            print("Warning: exporting a viewer with nothing added to it.")
+        was_sharing, was_live = self._share_library, self._is_live
+        self._share_library = False
+        self._is_live = False
+        try:
+            if bundle == 'inline':
+                body = self._display_viewer(static_data=self.objects)
+                head = ''
+            else:
+                body = self._display_viewer(static_data=self.objects,
+                                            include_libs=False)
+                src = self._bundle_filename() if bundle == 'external' else bundle
+                head = '<script src="' + src + '"></script>\n'
+        finally:
+            self._share_library, self._is_live = was_sharing, was_live
+        name = title or (self.objects[0]["name"] if self.objects else 'py2Dmol')
+        return ('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+                '<title>' + _html_escape(str(name)) + '</title>\n' + head
+                + '</head>\n<body style="margin:0">\n' + body
+                + '\n' + _missing_library_js(head) + '</body>\n</html>\n')
+
+    def _bundle_filename(self):
+        """`py2Dmol-<12 hex>.min.js` - the name IS the content hash. See to_html."""
+        return 'py2Dmol-' + _share_key(_EXPORT_BUNDLE).rsplit('@', 1)[1] + '.min.js'
+
+    def save_html(self, filepath, title=None, bundle='inline'):
+        """Write to_html() to a file, and the external bundle beside it if asked.
+
+        Args:
+            filepath (str): where to write the page.
+            title (str, optional): the document's <title>.
+            bundle (str): as to_html(). 'external' also writes
+                `py2Dmol-<hash>.min.js` into the same directory, skipping it if
+                a file of that name is already there - the name is a content
+                hash, so one that exists has the right bytes in it.
+
+        Returns:
+            str: the path written.
+        """
+        directory = os.path.dirname(os.path.abspath(filepath))
+        os.makedirs(directory, exist_ok=True)
+        html = self.to_html(title=title, bundle=bundle)
+        with open(filepath, 'w', encoding='utf-8') as fh:
+            fh.write(html)
+        if bundle == 'external':
+            beside = os.path.join(directory, self._bundle_filename())
+            if not os.path.exists(beside):
+                with open(beside, 'w', encoding='utf-8') as fh:
+                    fh.write(_resource_text(_EXPORT_BUNDLE))
+        return filepath

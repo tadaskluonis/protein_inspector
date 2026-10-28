@@ -36,6 +36,11 @@ const STATIC_FRAME_FIELDS = [
     ['plddts', null],
     ['pae', null],
     ['pae_n', null],
+    // ...and every OTHER residue x residue map, keyed by name. Same panel,
+    // same selection rules; see mapsOfFrame in src/panels/heatmap.js. The PAE
+    // keeps its own two fields because every payload that exists carries
+    // them, so nothing on the wire changed shape.
+    ['maps', null],
     // ...THE RAW SIDE-CHAIN ATOMS, when view(sidechains=True) asked for them.
     // Turned into a table by sidechainsFromAtoms below - the frame carries
     // atoms, the renderer wants coefficients, and the builder that makes one
@@ -97,8 +102,8 @@ function wireViewerUI(containerElement, viewerId, Pseudo3DRenderer) {
 // ============================================================================
 // PAE RENDERER
 // ============================================================================
-// PAERenderer class moved to panels/pae.js
-// Use window.PAERenderer if available (loaded from panels/pae.js)
+// HeatmapRenderer class moved to panels/heatmap.js
+// Use window.HeatmapRenderer if available (loaded from panels/heatmap.js)
 
 // ============================================================================
 // MAIN APP & COLAB COMMUNICATION
@@ -124,6 +129,10 @@ window.viewerConfig = config;
 // 2. The canvas, sized for this display - and 3. the renderer that draws on
 // it. The sizing lives in parts/viewport.js because the embed needs exactly
 // that much and none of the panel below.
+// THE SLOTS FIRST - before the canvas is measured, because they move the box
+// it is measured in and tell setupViewport that CSS sizes it now. See
+// parts/slots.js; a shell with nothing to put in a second slot is untouched.
+const slotLayout = window.py2dmolSlots ? window.py2dmolSlots.prepare(containerElement, config) : null;
 const viewport = setupViewport(containerElement, config);
 if (!viewport) return;
 const { canvas, ctx, dpr: currentDPR, width: displayWidth, height: displayHeight } = viewport;
@@ -131,6 +140,10 @@ const { canvas, ctx, dpr: currentDPR, width: displayWidth, height: displayHeight
 const renderer = new Pseudo3DRenderer(canvas, config);
 renderer.viewerId = viewerId;  // Store viewerId for config access
 viewport.attach(renderer);
+// ...bound now, and asked from the render loop from here on: the heatmap and
+// scatter panels are built further down (one of them possibly after its
+// script arrives), and the slots notice each the frame it exists.
+if (slotLayout) window.py2dmolSlots.bind(renderer, slotLayout);
 
 // THE STYLE PANEL IS BUILT, NOT WRITTEN OUT - and built HERE, before anything
 // below reaches for a control inside it. Both pages used to carry the same two
@@ -153,21 +166,116 @@ if (!containerElement.querySelector('#stylePanel') && window.py2dmolPanel) {
     if (mount) mount.appendChild(window.py2dmolPanel.buildStylePanel());
 }
 
-// 4. Setup PAE Renderer (if enabled)
-// 4. Setup PAE Renderer (if enabled)
-if (config.pae?.enabled) {
-    // Initialize immediately if PAE script is loaded
-    const initPAE = () => {
-        if (window.PAE && window.PAE.initialize) {
-            window.PAE.initialize(renderer, containerElement, config);
+// ...AND THE SELECTION PANEL, the same way and for the same reason. It was two
+// hundred lines of markup in index.html, so the verbs in parts/selectpanel.js -
+// colour, side chains, elements, bases, SSE, contacts, visibility, Find - were
+// in every download and reachable from one page.
+//
+// AFTER the style panel, not before: the colour picker's list of schemes is
+// read off #colorSelect, which the style panel builds, and wireSelectionPanel
+// runs it at wire time. Built first, the picker comes up with no schemes at all
+// and nothing says so.
+//
+// 🔴 AND IT IS ASKED FOR, WHERE THE STYLE PANEL IS NOT. Mounting it always
+// would put it in every existing notebook, where a click picks nothing - so
+// the panel would sit there, never opening, which is the "control the shared
+// panel shows and no shell wires" fault wearing a new coat. `selection.enabled`
+// is the one key: the renderer reads it for the CLICK and this reads it for the
+// PANEL, so the gesture and the thing that shows its result arrive together or
+// not at all.
+if (renderer.selectionEnabled
+    && !containerElement.querySelector('#selectionPanel') && window.py2dmolPanel
+    && window.py2dmolPanel.buildSelectionPanel) {
+    const mount = containerElement.querySelector('#selectionPanelMount');
+    if (mount) {
+        // THE SKIN TRAVELS WITH THE ROWS, and it is scoped to this container.
+        // Forty-six rules lived in src/app/style.css and nowhere else, so a
+        // notebook mounting this panel got working verbs under browser-default
+        // buttons. Scoping by the container's id is what stops them reaching a
+        // host page's own controls - the same reason SHELL_CSS does it - and
+        // two viewers sharing an id share one identical stylesheet, which is
+        // the right answer rather than a collision.
+        // 🔴 AND THE ID IS ESCAPED, BECAUSE A NOTEBOOK'S IS A UUID.
+        // viewer.py wraps each viewer in `<div id="{uuid4}">`, and a uuid4
+        // begins with a digit about six times in ten - `#3f2b1c...` is not a
+        // valid CSS selector at all, so EVERY rule under it is dropped and the
+        // panel comes up in browser defaults. Flaky by construction: the same
+        // code drew a correct panel or a bare one depending on a random id, and
+        // it took three runs of tests/selection_shells.py to see a second face.
+        const id = containerElement.id;
+        window.py2dmolPanel.installSelectionPanelCSS(
+            id ? '#' + (window.CSS && CSS.escape ? CSS.escape(id) : id) : '');
+        mount.appendChild(window.py2dmolPanel.buildSelectionPanel());
+    }
+}
+
+// 🔴 AND NOW THE CANVAS IS MEASURED AGAINST THE FINISHED SHELL.
+//
+// setupViewport sized it above, before either panel existed - and the panels
+// are most of the shell's width, so that measurement was of a DOM that was
+// still being built. Nothing had drawn yet, so nothing was wrong to look at;
+// what it cost was the first draw happening at one size and everything being
+// thrown away and built again when the ResizeObserver noticed the real one.
+// Measured on 1UBQ, two mesh builds a page load, at 100x600 and then 706x706.
+//
+// This is the same measurement the observer makes, called once here where the
+// DOM it measures is complete. It is silent - no render - because the first
+// draw has not happened yet, so there is nothing to correct, only something to
+// avoid. The observer stays for what it is actually for: the window changing
+// afterwards.
+viewport.settle(renderer);
+// The listeners, once the panel is somewhere - whether this built it or the
+// page shipped its own. A shell that mounted neither wires nothing.
+//
+// AND THIS IS WHERE THE HOST LEARNS WHICH VIEWER. py2dmolSelectionHost MERGES,
+// so naming the renderer here leaves a status bar or an afterChange the shell
+// set at load time alone - and being called once per viewer is exactly right:
+// the newest viewer is the one the panel edits. Without it the wiring's own
+// closing updateSelectionToolsState() runs against no renderer at all, which
+// is the throw-halfway-through-the-wiring that reads from outside as a panel
+// that never opens.
+if (typeof wireSelectionPanel === 'function'
+    && containerElement.querySelector('#selectionPanel')) {
+    if (typeof py2dmolSelectionHost === 'function') {
+        // ...AND WHICH PANEL IS THIS VIEWER'S. Two viewers with chrome on one
+        // page are two panels with the same ids, and getElementById answers
+        // with whichever is first in the document - so one viewer's click
+        // opened the other's panel while its own stayed shut. Named per
+        // viewer, and re-named here on every wire, which is what makes the
+        // last viewer to be built the one its own controls drive.
+        py2dmolSelectionHost({ renderer: () => renderer, root: containerElement });
+    }
+    wireSelectionPanel();
+}
+
+// 4. Setup the heatmap panel (if enabled).
+//
+// `config.heatmap.enabled` is the switch, and `config.pae.enabled` is the
+// same object under its old name - normalizeConfig aliases them, so a host
+// page or a saved session written before the rename still turns the panel
+// ...and the confidence trace, which is the same decision one panel along: the
+// module is in every bundle and does nothing at all until a container exists,
+// so what turns it on is the switch AND the markup. `panels/plddt.js` finds
+// its own box (#plddtContainer), scoped to this viewer and falling back to the
+// page, because an embed's host puts it BESIDE the viewer.
+if (config.plddt?.enabled && window.Plddt && window.Plddt.initialize) {
+    window.Plddt.initialize(renderer);
+}
+
+// on. See src/panels/heatmap.js.
+if (config.heatmap?.enabled ?? config.pae?.enabled) {
+    // Initialize immediately if the panel is already loaded
+    const initHeatmap = () => {
+        if (window.Heatmap && window.Heatmap.initialize) {
+            window.Heatmap.initialize(renderer, containerElement, config);
         }
     };
 
-    if (window.PAE) {
-        initPAE();
+    if (window.Heatmap) {
+        initHeatmap();
     } else {
         // Wait for script
-        window.addEventListener('py2dmol_pae_loaded', initPAE, { once: true });
+        window.addEventListener('py2dmol_heatmap_loaded', initHeatmap, { once: true });
     }
 }
 
@@ -630,7 +738,6 @@ renderer._syncStyleControls = () => {
 
 };
 
-
 // ---- Per-chain colour ------------------------------------------------
 // Chain mode draws each chain from a palette by index. This row lets a chain
 // be pinned to a colour instead, which is the only way to say "this one is the
@@ -850,7 +957,12 @@ if (cyclicCheckbox) {
         renderer.config.rendering.cyclic = e.target.checked;
         if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
         renderer.cachedSegmentIndices = null;
-        if (renderer.reloadDrawn) renderer.reloadDrawn();
+        // 🔴 reloadDrawn(true), BECAUSE IT RENDERS ON ITS OWN. It ends in
+        // _composeAndApplyMask, which renders unless told not to - so
+        // "reload, then render" draws the frame twice, once from inside the
+        // reload and once here. The flag exists for exactly this; the render
+        // stays here, where it can say what asked for it.
+        if (renderer.reloadDrawn) renderer.reloadDrawn(true);
         renderer.render('cyclicCheckbox');
     });
 }
@@ -1033,11 +1145,38 @@ const pencilSlider = containerElement.querySelector('#pencilSlider');
 
 // Set defaults for width, rotation, and shadow
 if (lineWidthSlider) lineWidthSlider.value = renderer.lineWidth;
+// 🔴 A STATION TABLE, EARNED BY THE GESTURE RATHER THAN TAXED ON EVERYONE.
+//
+// Thickness and flatness move coordinates and the two per-station scalars
+// and nothing else - 201 ribbon prims, 454 stations and 1019 mesh faces at
+// every value of either - so the station table can update them instead of
+// rebuilding. But the table is only BUILT when stationDraw is on, and that
+// costs 3-5% on every mesh build (15.2 ms against 16.0 at 494 residues,
+// 79.1 against 81.4 at 2,500), which is why it is gated in the first place.
+//
+// So it is switched on by touching one of these sliders. The first change
+// rebuilds and builds the table with it; every one after is a station
+// update. Someone who never touches them never pays, and someone who does
+// pays once.
+//
+// 🔴 THE TABLE IS THE MACHINERY AND A SLIDER MAY ASK FOR IT. It used to be
+// paired with a pin - the promise that the secondary structure holds
+// still across frames - and the two were deliberately kept apart here, because
+// turning the pin on would have frozen the assignment of a structure nobody
+// asked to freeze. The pin is gone; the table is not, and a flatness change
+// still takes the fast path and draws what a rebuild draws.
+const wantStationTable = () => {
+    const G = window.py2dmolCartoonGPU;
+    if (G && G.setStationDraw) G.setStationDraw(true);
+};
+
 if (thicknessSlider) {
     thicknessSlider.value = renderer.cartoonThickness !== undefined
         ? renderer.cartoonThickness : 0;
+
     thicknessSlider.addEventListener('input', (e) => {
         renderer.cartoonThickness = parseFloat(e.target.value);
+        wantStationTable();
         // Same rule as the Width slider: only a real gesture takes the
         // control over. Nothing dispatches a synthetic 'input' at this
         // slider today, but the two latches are siblings and drifted once
@@ -1046,7 +1185,7 @@ if (thicknessSlider) {
         // from the look's own default, which a drag makes true by itself -
         // where the Width slider beside this one has a real per-style memory
         // to keep. See thicknessIsChosen in cartoon/geom.js.
-        renderer.render('thicknessSlider');
+        renderer.renderSoon('thicknessSlider');
     });
 }
 if (pencilSlider) {
@@ -1059,10 +1198,23 @@ if (pencilSlider) {
 if (sheetFlatSlider) {
     sheetFlatSlider.value = renderer.cartoonSheetFlat;
     sheetFlatSlider.addEventListener('input', (e) => {
+        wantStationTable();
         renderer.cartoonSheetFlat = parseFloat(e.target.value);
-        // strand geometry changes, so cached segment geometry is stale
-        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
-        renderer.render('sheetFlatSlider');
+        // 🔴 NO CACHE INVALIDATION HERE, AND THE COMMENT THAT WAS SAID "strand
+        // geometry changes, so cached segment geometry is stale". The first
+        // half is true and the second does not follow: _invalidateSegmentCache
+        // drops which residues form segments, the cyclic chains, the secondary
+        // structure assignment and the nucleic base pairing, and not one of
+        // those depends on how flat a strand is drawn. Its key does not even
+        // mention it - object, frame, count, overlay - so keeping the cache is
+        // correct by construction rather than by luck.
+        //
+        // It cost a third of a drag. On 1AOI, 1103 positions, eight steps, with
+        // the station path taking every one of them and no mesh rebuilt either
+        // way: 173.9 ms against 117.7, medians of six interleaved runs in both
+        // orders. The picture is identical - 0.0000% of pixels, worst channel
+        // 0 - which is what makes this a removal rather than a trade.
+        renderer.renderSoon('sheetFlatSlider');
     });
 }
 const shadeSlider = containerElement.querySelector('#shadeSlider');
@@ -1079,7 +1231,7 @@ if (detailSlider) {
         ? renderer.cartoonDetail : 4;
     detailSlider.addEventListener('input', (e) => {
         renderer.cartoonDetail = parseInt(e.target.value, 10);
-        renderer.render('detailSlider');
+        renderer.renderSoon('detailSlider');
     });
 }
 const smoothCheckbox = containerElement.querySelector('#smoothCheckbox');
@@ -1088,7 +1240,14 @@ if (arrowsCheckbox) {
     arrowsCheckbox.checked = renderer.cartoonArrows !== false;
     arrowsCheckbox.addEventListener('change', (e) => {
         renderer.cartoonArrows = e.target.checked;
-        if (renderer._invalidateSegmentCache) renderer._invalidateSegmentCache();
+        // NO CACHE INVALIDATION, for the reason the sheet-flat slider above
+        // gives: an arrowhead is ribbon geometry and this cache holds which
+        // residues form segments, the cyclic chains, the SS assignment and the
+        // base pairing. Arrows change the mesh - they are topology, 196 pieces
+        // against 186 on 1UBQ, so a rebuild happens either way - but the
+        // rebuild can start from the assignment it already has. 418.6 ms
+        // against 377.8 on 1AOI over eight toggles, same eight rebuilds, and
+        // the same picture to the last channel.
         renderer.render('arrowsCheckbox');
     });
 }
@@ -1299,6 +1458,7 @@ if (drawCheckbox) {
     });
 }
 
+
 // Pass ALL controls to the renderer
 renderer.setUIControls(
     controlsContainer, playButton, overlayButton, recordButton, saveImageButton,
@@ -1358,11 +1518,11 @@ if (!config.display?.box) {
     if (canvas && !paperAsked) canvas.style.background = 'transparent';
 
     // Also update PAE canvas if it exists
-    if (config.pae?.enabled) {
-        const paeCanvas = containerElement.querySelector('#paeCanvas');
-        if (paeCanvas) {
-            paeCanvas.style.border = 'none';
-            paeCanvas.style.background = 'transparent';
+    if (config.heatmap?.enabled ?? config.pae?.enabled) {
+        const heatmapCanvas = containerElement.querySelector('#heatmapCanvas');
+        if (heatmapCanvas) {
+            heatmapCanvas.style.border = 'none';
+            heatmapCanvas.style.background = 'transparent';
         }
     }
 
@@ -1466,6 +1626,27 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                     renderer.objectsData[obj.name].sse = obj.sse;
                     renderer._invalidateSegmentCache();
                 }
+                if (obj.pairs && renderer.objectsData[obj.name]) {
+                    renderer.objectsData[obj.name].pairs = obj.pairs;
+                    renderer._invalidateSegmentCache();
+                }
+                // ...and the ghosting (Python's set_opacity), for the same
+                // reason. It needs no cache invalidation: the fade is a texel
+                // the shader reads, not geometry - see drawnOpacity.
+                if (obj.opacity && renderer.objectsData[obj.name]) {
+                    renderer.objectsData[obj.name].opacity = obj.opacity;
+                    renderer._opacityVersion = (renderer._opacityVersion || 0) + 1;
+                }
+
+                // ...and what this object does when the timeline runs past
+                // its last frame (Python's set_frame_policy). The static path
+                // is what a notebook cell renders from, so a policy set before
+                // show() only survives if it is read back here - the same
+                // field-by-field rebuild that dropped `align` and the per-atom
+                // columns before it.
+                if (obj.frame_policy && renderer.objectsData[obj.name]) {
+                    renderer.objectsData[obj.name].framePolicy = obj.frame_policy;
+                }
 
                 // Store rotation matrix and center for view transform if present
                 if (obj.rotation_matrix && obj.center) {
@@ -1480,15 +1661,36 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
                 }
             }
         }
-        // Set view to the first frame of the first object
+        // Set view to the first frame of the FIRST object, and deliberately.
+        //
+        // 🔴 CHOOSING BY FRAME COUNT WAS TRIED AND DECLINED. A static backdrop
+        // added beside an animated object opens on the backdrop, which has no
+        // play controls - reported as "the player doesn't have the protein
+        // visible" - and the obvious repair is to open on whichever object has
+        // the most frames. It was built, measured and turned down: a viewer
+        // that reorders your objects behind your back is a surprise of its own,
+        // and the order they were added in is the one thing the author of the
+        // page actually chose. The remedy for that report is to add the
+        // animated object first, or to use the Object menu.
+        //
+        // What the attempt cost, kept because it is worth knowing: moving this
+        // line moves what EVERY load-time request resolves against, and one of
+        // those - show_sidechains(name=...) - silently stopped arriving. See
+        // _writeTargets in parts/sidechains.js, which is the real bug it found
+        // and which stays fixed.
         if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && window.py2dmol_staticData[viewerId].length > 0) {
-            renderer.currentObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
-            renderer.objectSelect.value = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
+            const openOn = window.py2dmol_staticData[viewerId][0].name;
+            renderer.currentObjectName = openOn;
+            renderer.objectSelect.value = openOn;
 
-            // Populate entropy data from MSA if available
-            const firstObjectName = (window.py2dmol_staticData && window.py2dmol_staticData[viewerId])[0].name;
-            if (renderer.objectsData[firstObjectName]?.msa?.msasBySequence &&
-                renderer.objectsData[firstObjectName]?.msa?.chainToSequence && window.MSA) {
+            // Populate entropy data from MSA if available - for the object
+            // being SHOWN, which is what the comment below already says this
+            // answers for. It read `[0]` while the viewer opened on `[0]` and
+            // the two were the same line; now that they can differ, an MSA on
+            // the shown object would have been passed over for the absence of
+            // one on whichever object happened to be first.
+            if (renderer.objectsData[openOn]?.msa?.msasBySequence &&
+                renderer.objectsData[openOn]?.msa?.chainToSequence && window.MSA) {
                 // ...through the one path, which answers for everything
                 // drawn - here that is this object, and it stays right the
                 // day a static page shows two.
@@ -1545,8 +1747,8 @@ if ((window.py2dmol_staticData && window.py2dmol_staticData[viewerId]) && (windo
             // Update PAE container visibility after initial load
             // Use requestAnimationFrame to ensure PAE renderer is initialized
             requestAnimationFrame(() => {
-                if (window.PAE) {
-                    window.PAE.syncToDrawn(renderer);
+                if (window.Heatmap) {
+                    window.Heatmap.syncToDrawn(renderer);
                 }
 
                 // Update scatter with newly loaded config
@@ -1632,6 +1834,20 @@ const applyMetadataToObject = (obj, meta) => {
         obj.sse = meta.sse || null;
         needsRerender = true;
     }
+    // Base pairing for DNA/RNA (Python's set_basepairs), keyed by paired
+    // position indices. Replacing it invalidates geometry caches and re-renders.
+    if ('pairs' in meta) {
+        obj.pairs = meta.pairs || null;
+        needsRerender = true;
+    }
+    // ...and the ghosting, which arrives the same way and by the same
+    // argument - a map keyed by position index that means nothing except
+    // against this object.
+    if ('opacity' in meta) {
+        obj.opacity = meta.opacity || null;
+        renderer._opacityVersion = (renderer._opacityVersion || 0) + 1;
+        needsRerender = true;
+    }
 
     // A FRAME'S OWN COLOUR, set after that frame was already delivered.
     // `color` above is the object's; set_color(..., frame=N) writes the
@@ -1649,6 +1865,14 @@ const applyMetadataToObject = (obj, meta) => {
             const col = want[String(i)] || null;
             if (f.color !== col) { f.color = col; needsRerender = true; }
         });
+    }
+
+    // ...and the frame policy, which decides which FRAME of this object the
+    // timeline position resolves to - so changing it changes the coordinate
+    // array and needs the redraw.
+    if ('frame_policy' in meta) {
+        obj.framePolicy = meta.frame_policy || null;
+        needsRerender = true;
     }
 
     // Scatter config doesn't trigger rerender (handled separately)
@@ -1719,8 +1943,8 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
         renderer.updateUIControls();
 
         // Update PAE container visibility once at end
-        if (window.PAE) {
-            window.PAE.syncToDrawn(renderer);
+        if (window.Heatmap) {
+            window.Heatmap.syncToDrawn(renderer);
         }
 
         // Update scatter plot if frames were added (may have scatter data)
@@ -1803,10 +2027,53 @@ const handleIncrementalStateUpdate = (newFramesByObject, changedMetadataByObject
     if (viewerBlock && 'focus' in viewerBlock) {
         applyFocus(viewerBlock.focus);
     }
+    // ...and which view is in which slot (parts/slots.js) - a standing choice,
+    // so order does not matter to it: a map named before it exists takes its
+    // slot when it arrives.
+    // null is "automatic again", which setSlots reads as a reset - the pair
+    // that used to be spelled out here.
+    if (viewerBlock && 'slots' in viewerBlock && renderer._slots) {
+        renderer.setSlots(viewerBlock.slots || null);
+    }
+    // ...and the PLUGINS' payloads (parts/plugins.js): {name: entry}, only the
+    // ones that changed. An entry without `payloads` keeps what the viewer has
+    // - an option changed, and the mesh it applies to was not re-sent. A
+    // `source` is a plugin this page has never had: in Colab every output is
+    // its own iframe, so the update cannot carry it as a <script> of its own,
+    // and it is run here, in the viewer's document, before its payload binds.
+    if (viewerBlock && viewerBlock.plugins) {
+        applyPluginBlock(viewerBlock.plugins);
+    }
     if (viewerBlock && viewerBlock.orient) {
         applyOrientRequest(viewerBlock.orient);
     }
 };
+
+function applyPluginBlock(block) {
+    const P = window.py2dmolPlugins;
+    if (!P || !P.setPayload || !block || typeof block !== 'object') return;
+    for (const name of Object.keys(block)) {
+        const entry = block[name] || {};
+        // Python sends the source only when this page has not had THAT source:
+        // the first time, or after register_plugin was given new code. Run it
+        // either way - register() ignores a copy it already has.
+        if (entry.source) {
+            try {
+                const el = document.createElement('script');
+                el.setAttribute('data-py2dmol-plugin', name);
+                el.textContent = entry.source;
+                document.head.appendChild(el);
+            } catch (err) {
+                console.error('py2Dmol: plugin "' + name + '" could not be loaded:', err);
+            }
+        }
+        const data = { options: entry.options || {}, version: entry.version };
+        if (Array.isArray(entry.payloads)) data.payloads = entry.payloads;
+        // ...only the payloads added since the last send, after the first k
+        if (Number.isInteger(entry.payloads_from)) data.payloadsFrom = entry.payloads_from;
+        P.setPayload(renderer, name, data);
+    }
+}
 
 // 12c. Handle replace-frame updates (overwrite latest frame)
 /**

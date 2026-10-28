@@ -87,7 +87,17 @@ const OBJECT_STATE = [
     // position -> letter, and position -> colour
     { key: 'sse', kind: 'plain', absent: 'none', json: 'sse',
         remap: remapPositionMap },
+    // position -> position (base pairs: duplex rungs)
+    { key: 'pairs', kind: 'plain', absent: 'none', json: 'pairs',
+        remap: remapPositionPairs },
     { key: 'sidechainColor', kind: 'plain', absent: 'none', json: 'sidechain_color',
+        remap: remapPositionMap },
+    // position -> how solidly it is drawn, 0..1. Absent is SOLID, which is
+    // what a structure nobody has ghosted looks like. Saved: it is a choice
+    // the reader made about their own figure - the same argument as the
+    // side-chain colours above it - and a session that came back solid would
+    // have thrown it away.
+    { key: 'opacity', kind: 'plain', absent: 'none', json: 'opacity',
         remap: remapPositionMap },
     // only the `position` map inside the tree is keyed by index
     { key: 'color', kind: 'plain', absent: 'none', json: 'color',
@@ -99,6 +109,26 @@ const OBJECT_STATE = [
     // json:null because it is NOT saved here: bonds travel with the frames,
     // and the object's list is rebuilt from them on load.
     { key: 'bonds', kind: 'plain', absent: 'none', json: null,
+        remap: remapIndexPairs },
+    // [i, j] RESIDUE pairs, from the file's own disulf records (mmCIF
+    // _struct_conn) or SSBOND. Exactly the shape bonds has, and renumbered the
+    // same way - a pair whose partner fell outside the selection is dropped,
+    // which is right: half a disulfide is not one.
+    //
+    // json:null because it is not saved here either. It is read from the file
+    // and hoisted onto the object at load, so a session that reloads the
+    // structure gets it again; a copied selection needs it renumbered now, and
+    // that is what this line is for.
+    { key: 'disulfideResidues', kind: 'plain', absent: 'none', json: null,
+        remap: remapIndexPairs },
+    // [resA, resB, atomA, atomB] - the file's own `covale` records whose ends
+    // could not be resolved as positions because a protein residue is one
+    // position and the record names a side-chain atom of it. An empty atom
+    // name means the position IS the atom, which is what a ligand's is.
+    // Indices first, so this renumbers exactly as `bonds` and `contacts` do;
+    // remapIndexPairs keeps the tail. json:null for the same reason as the
+    // disulfides - it is read from the file and hoisted at load.
+    { key: 'covalentLinks', kind: 'plain', absent: 'none', json: null,
         remap: remapIndexPairs },
     // NOT REMAPPED, deliberately: a copy starts fully visible rather than
     // inheriting what was hidden in the original, and Delete renumbers the
@@ -114,6 +144,14 @@ const OBJECT_STATE = [
     // it the piece you just cut out of an aligned structure would jump back to
     // where its file put it, on its own, with nothing said.
     { key: 'alignTransform', kind: 'plain', absent: 'none', json: 'align_transform',
+        remap: remapWhole },
+    // WHAT THIS OBJECT DOES WHEN THE TIMELINE RUNS PAST ITS LAST FRAME -
+    // 'hold', 'loop' or 'stretch', see _frameForObject. The SECOND field here
+    // that is not keyed by position, so it is carried whole like the transform
+    // above it: a piece cut out of a looping trajectory is still that
+    // trajectory, and a session that came back holding where it had been
+    // looping would be a different animation with nothing said.
+    { key: 'framePolicy', kind: 'plain', absent: 'none', json: 'frame_policy',
         remap: remapWhole },
 ];
 
@@ -140,6 +178,21 @@ function remapPositionMap(src, ctx) {
     for (const k of Object.keys(src)) {
         const to = ctx.map.get(Number(k));
         if (to !== undefined) out[to] = src[k];
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+/**
+ * A position -> position pair mapping (base pairs). Both ends must survive the
+ * selection, or the pair is dropped - half a base pair is not one.
+ */
+function remapPositionPairs(pairs, ctx) {
+    if (!pairs || typeof pairs !== 'object') return undefined;
+    const out = {};
+    for (const k of Object.keys(pairs)) {
+        const a = ctx.map.get(Number(k));
+        const b = ctx.map.get(Number(pairs[k]));
+        if (a !== undefined && b !== undefined) out[a] = b;
     }
     return Object.keys(out).length ? out : null;
 }

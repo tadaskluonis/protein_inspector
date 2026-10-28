@@ -13,7 +13,7 @@
         // WHICH RESIDUES SHOW THEIR SIDE CHAINS
         //
         // This was written out in parts/embed.js and reachable from the embed's
-        // JS API alone: the website turns them on through app/selection.js and
+        // JS API alone: the website turns them on through parts/selectpanel.js and
         // the notebook could not turn them on AT ALL - view(sidechains=True)
         // carried the atoms and nothing could ask for them to be drawn. Same
         // shape as clipTo and orientTo before it, and the same rule: a
@@ -32,20 +32,75 @@
          *
          * @returns {boolean} whether anything actually changed.
          */
-        _setSidechains(sel, on) {
-            if (on && !this.sidechains) {
-                // A C-alpha trace carries none, and neither does a notebook
-                // payload built without view(sidechains=True) - the table is
-                // what would have to exist, and there is nothing to draw.
-                throw new Error('showSidechains: this structure has no'
-                    + ' side-chain atoms - a C-alpha trace carries none, so'
-                    + ' there is nothing to show');
+        /**
+         * WHICH OBJECT A NAMED SELECTOR IS REALLY ABOUT, and in whose
+         * numbering.
+         *
+         * A per-object set - side chains, their colours - is stored against the
+         * object in the object's OWN indices and read back through ownerOf, so
+         * it never needed the drawn arrays. Resolving it through positionsFor
+         * did, and that answers in the DRAWN array's space: a selector naming
+         * an object that is not on screen resolved against the one that IS,
+         * and the write landed there. Measured before this existed:
+         * showSidechains({object: '1UBQ', positions: [10, 11, 12]}) with 6MRR
+         * drawn put 10, 11 and 12 on 6MRR and left 1UBQ empty, silently.
+         *
+         * So a selector that NAMES an object the drawn arrays do not cover is
+         * resolved in that object's own data and written straight to it.
+         * Everything else goes the way it always did.
+         *
+         * 🔴 A METHOD RATHER THAN A HELPER BESIDE THE FILE, because the proto
+         * is LIFTED into node by tests/lift.js and a const in this file's
+         * closure is not there: "writeTargets is not defined", from
+         * tests/interaction.js, which is the only suite that runs these verbs
+         * without a browser. It belongs on the renderer regardless - it is a
+         * question about the renderer's own state.
+         */
+        _writeTargets(sel) {
+            const named = (sel && typeof sel === 'object' && !Array.isArray(sel)
+                && !(sel instanceof Set)) ? sel.object : undefined;
+            if (named && typeof this.addressesObject === 'function'
+                && !this.addressesObject(named)) {
+                const object = this.objectsData ? this.objectsData[named] : null;
+                if (!object) {
+                    throw new Error('py2Dmol: no object named '
+                        + JSON.stringify(named));
+                }
+                return [{ object, name: named,
+                    positions: [...this.objectPositions(named, sel)] }];
             }
             const set = (typeof positionsFor === 'function')
                 ? positionsFor(this, sel) : new Set();
-            const groups = this.writeGroups ? this.writeGroups(set)
+            return this.writeGroups ? this.writeGroups(set)
                 : [{ object: this.objectsData[this.currentObjectName],
-                     positions: [...set] }];
+                     name: this.currentObjectName, positions: [...set] }];
+        },
+
+        _setSidechains(sel, on) {
+            const groups = this._writeTargets(sel);
+            // 🔴 ASK THE OBJECTS THIS REQUEST NAMES, NOT WHICHEVER ONE IS
+            // CURRENT. `this.sidechains` is the DRAWN object's table, and the
+            // guard read it for a request that may name another object
+            // entirely - so `show_sidechains(name='ubq', ...)` was refused,
+            // with a message about ubq, because the object the page happened
+            // to open on was a C-alpha helix carrying no atoms. It threw,
+            // ui.js caught and logged it, and the request was gone.
+            //
+            // It went unseen while the page always opened on the first object,
+            // which in any payload with side chains is one that has them.
+            if (on) {
+                const has = groups.some((g) => g.object
+                    && ((g.object.frames || []).some((f) => f && f.sidechains)
+                        || (g.name === this.currentObjectName && this.sidechains)));
+                if (!has) {
+                    // A C-alpha trace carries none, and neither does a notebook
+                    // payload built without view(sidechains=True) - the table is
+                    // what would have to exist, and there is nothing to draw.
+                    throw new Error('showSidechains: this structure has no'
+                        + ' side-chain atoms - a C-alpha trace carries none, so'
+                        + ' there is nothing to show');
+                }
+            }
             let changed = false;
             for (const g of groups) {
                 if (!g.object) continue;
@@ -59,8 +114,52 @@
             }
             if (!changed) return false;
             this._invalidateSegmentCache();
-            this.reloadDrawn();
+            // reloadDrawn renders on its own unless told not to, and this is
+            // the most-clicked of the five places that got this wrong
+            this.reloadDrawn(true);
             this.render('sidechains');
+            return true;
+        },
+
+        // ====================================================================
+        // A COVALENTLY BOUND LIGAND OPENS ATTACHED
+        //
+        // The file's `covale` records name a side-chain ATOM - CYS SG to a
+        // haem's CAB - and src/io/parse.js keeps them as `covalentLinks` for
+        // _materialiseSidechains to resolve. That resolution needs the atom to
+        // EXIST, which it does only while its side chain is shown, so on a
+        // structure nobody has clicked yet the bond the file declares is a bond
+        // nothing can draw: the ligand opens floating beside a ribbon with no
+        // visible attachment, which is the picture github.com/sokrypton/py2Dmol#29
+        // reported.
+        //
+        // So the residues at the ends of a DECLARED link open with their side
+        // chains out. It is a small set by construction - one residue per chain
+        // on 1A09, two on 1BBH, one on 1BJP - because it is not "residues near
+        // a ligand", which is a binding site and a different picture; it is the
+        // handful the file went out of its way to say are BONDED to one.
+        //
+        // 🔴 ONCE, AT LOAD, NOT A RULE RE-APPLIED PER FRAME. A reader who turns
+        // one of these off has said something, and a default that came back on
+        // the next frame step would be overriding them. The flag is what makes
+        // it a starting state rather than a policy, and it is on the OBJECT so
+        // a second structure loaded beside the first gets its own.
+        _seedCovalentSidechains(object) {
+            if (!object || object._covalentSeeded) return false;
+            object._covalentSeeded = true;
+            const links = object.covalentLinks;
+            if (!links || !links.length) return false;
+            const set = object.sidechains instanceof Set
+                ? new Set(object.sidechains) : new Set();
+            const before = set.size;
+            for (const [ra, rb, na, nb] of links) {
+                // ...an end with no atom name is a ligand atom, which is a
+                // position already and has no side chain to turn on
+                if (na) set.add(ra);
+                if (nb) set.add(rb);
+            }
+            if (set.size === before) return false;
+            object.sidechains = set;
             return true;
         },
 
@@ -76,7 +175,7 @@
         // The storage has been here since the selection panel was written -
         // `obj.sidechainColor`, keyed by RESIDUE because a side-chain atom is
         // a position only while it is drawn and its index is reissued whenever
-        // the set changes - and `src/app/selection.js` was the only thing that
+        // the set changes - and `src/parts/selectpanel.js` was the only thing that
         // could reach it. Same rule as _setSidechains above, one layer along:
         // a capability in the bundle that no interface reaches is not shipped.
         //
@@ -135,15 +234,11 @@
                         + ` named colour, or one of ${modes.join(', ')}`);
                 }
             }
-            const set = (typeof positionsFor === 'function')
-                ? positionsFor(this, sel) : new Set();
             // ...PER OWNING OBJECT AND IN ITS OWN NUMBERING, like the residue
             // colours. positionsFor answers in merged indices and the map is
             // read back through ownerOf, so writing merged indices into it
             // would point at whatever residue held that number in object one.
-            const groups = this.writeGroups ? this.writeGroups(set)
-                : [{ object: this.objectsData[this.currentObjectName],
-                     positions: [...set] }];
+            const groups = this._writeTargets(sel);
             for (const g of groups) {
                 if (!g.object) continue;
                 const map = g.object.sidechainColor

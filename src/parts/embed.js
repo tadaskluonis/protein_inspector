@@ -151,6 +151,9 @@ function show(target, text, options) {
         rendering,
         display: Object.assign({}, opts.display, {
             size: [width, height],
+            // a bare canvas sized from its element keeps following it
+            // (parts/viewport.js); a size that was asked for is kept
+            follow: !wantsChrome && !opts.width && !opts.height,
             // ONE FLAG, TWO JOBS, and it has to be true for either. The
             // renderer reads display.controls to decide whether to show the
             // play strip (core/mol.js) and parts/ui.js reads the same field to
@@ -160,6 +163,26 @@ function show(target, text, options) {
             // for is settled below, by hiding the panel when they did not.
             controls: !!(opts.controls || wantsPlay),
         }),
+        // THE PANEL AND THE CLICK, one key, AND IT HAS TO BE IN THE CONFIG.
+        // `renderer.selectionEnabled = opts.select !== false` below is the same
+        // decision, but it runs AFTER the viewer is built - and parts/ui.js
+        // mounts the selection panel during that build, on this flag. Set only
+        // there, an embed with chrome came up with picking on and no panel to
+        // show what was picked.
+        //
+        // 🔴 `opts.controls`, NOT `wantsChrome`. The two differ for a PLAY-ONLY
+        // embed: `wantsChrome` is also true when `play` was asked for, because
+        // the play strip lives in the same shell - and the line below then
+        // HIDES the whole control column, which is where the panel goes. So a
+        // play-only embed mounted a selection panel into a hidden box, and
+        // being in the document was enough to do damage: the panel is looked up
+        // by id, so the FIRST one on the page is the one every click drove.
+        // Measured on embed.html, where clicking the controls example opened
+        // the play example's invisible panel five sections up.
+        //
+        // A bare canvas still PICKS - the halo paints on it and select() is on
+        // the API - and has nowhere to put a panel, which is the same split.
+        selection: { enabled: !!opts.controls && opts.select !== false },
     });
     delete config.width;
     delete config.height;
@@ -261,6 +284,7 @@ const SHELL = (id) => `
               title="Capture an image or a video">Capture</button>
     </div>
     <div id="stylePanelMount"></div>
+    <div id="selectionPanelMount"></div>
   </div>
 </div>`;
 
@@ -391,7 +415,14 @@ function rangeOf(a, b) {
  * version of embed.html, where four of its buttons changed nothing.
  */
 function attach(renderer) {
-    renderer.load = (text, name, orient) => load(renderer, text, name, orient);
+    // ...AND THE PARSE OPTIONS TRAVEL WITH IT. `load` has taken them since
+    // framesFromText learnt about the biological assembly, and this wrapper
+    // dropped them on the floor - so `show(el, text, {biounit: false})`
+    // honoured the choice and `v.load(text, name, true, {biounit: false})`
+    // silently did not, which is the one door a page swapping structures
+    // through a single viewer has.
+    renderer.load = (text, name, orient, opts) =>
+        load(renderer, text, name, orient, opts);
 
     /**
      * Colour part of the structure, the way Python's set_color does.
@@ -604,7 +635,7 @@ function attach(renderer) {
     // B" drew chain B alone.
     //
     // hide and show say what they do. This is the web app's own model -
-    // app/selection.js setSelectionVisible - which starts from what is visible
+    // parts/selectpanel.js setSelectionVisible - which starts from what is visible
     // now, adds or removes, DERIVES THE CHAIN SET from what survives, and
     // switches to the explicit mode. The chain derivation is not optional: an
     // empty chain set means "all chains" under the default mode and "no chains"
@@ -998,7 +1029,27 @@ function superpose(mobile, reference, options) {
     return align_a_to_b(mobile, fitM, fitR, opts.reflection === true);
 }
 
-window.py2Dmol = { show, fetch: fetchStructure, frameFromText, framesFromText, superpose,
+/**
+ * A PAE matrix out of the JSON AlphaFold (and Boltz, Chai, ColabFold) write
+ * beside a model, as the viewer itself reads it: a flat n x n Uint8Array of
+ * the error in eighths of an angstrom (a value of 8 is 1 A; 31.75 A, the
+ * usual ceiling, is 254), or null when the JSON holds no matrix. Every
+ * format io/parse.js knows is taken: [{predicted_aligned_error}], a bare
+ * {predicted_aligned_error} or {pae}, or the matrix itself.
+ *
+ *     const pae = py2Dmol.paeFromJSON(await (await fetch(url)).json());
+ *     const n = Math.round(Math.sqrt(pae.length));
+ *     const angstroms = pae[i * n + j] / 8;
+ *
+ * HERE RATHER THAN IN A HOST, for the same reason as fetch: the formats are
+ * somebody else's and they multiply, and one reader is better than one per
+ * page. Protein Fighter draws AlphaFold DB's map under its own live one.
+ */
+function paeFromJSON(json) {
+    return extractPaeFromJSON(json);
+}
+
+window.py2Dmol = { show, fetch: fetchStructure, frameFromText, framesFromText, superpose, paeFromJSON,
     version: 1 };
 
 // A GETTER, BECAUSE THIS FILE LOADS BEFORE core/mol.js. HYDROPHOBICITY_BANDS

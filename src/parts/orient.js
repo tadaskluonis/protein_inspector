@@ -159,6 +159,32 @@ function cameraAt(fromHalf, toHalf, fromCentre, toCentre, t, view) {
 }
 if (typeof window !== 'undefined') window.py2dmolCameraAt = cameraAt;
 
+/**
+ * A VIEW SPAN, FLOORED PER AXIS, AND STORED THE WAY IT ALWAYS IS.
+ *
+ * The span is `(extent, aspect)` - `extent * aspect.x` and `extent * aspect.y` are the two
+ * half-spans in Angstrom (halfSpanOf). In the STORED form the aspect is normalised so its
+ * larger part is 1 (orient's own `targetAspect` is normalised by the 3D radius instead, so
+ * this function computes real half-spans from `extent * aspect` and assumes nothing else).
+ * A floor - a plugin's radius - is a floor on EACH half-span, not on the extent: raising the
+ * extent alone raises the long axis by the same factor as the short one, and for an elongated
+ * structure (aspect 0.05 : 1) asking the short axis for a 45 A floor pushed the long one out
+ * to 850 A, nineteen times further than needed. So: take the two half-spans, raise each to
+ * `need`, and write them back as (larger, ratio). Untouched when both already hold `need`.
+ * Pure, and the only arithmetic of the floor, so a node test can hold it to account.
+ */
+function floorViewSpan(extent, aspect, need) {
+    const ax = (aspect && aspect.x > 0) ? aspect.x : 1;
+    const ay = (aspect && aspect.y > 0) ? aspect.y : 1;
+    const hx = extent * ax;
+    const hy = extent * ay;
+    if (!(need > 0) || (hx >= need && hy >= need)) return { extent, aspect };
+    const fx = Math.max(hx, need);
+    const fy = Math.max(hy, need);
+    const e = Math.max(fx, fy);
+    return { extent: e, aspect: { x: fx / e, y: fy / e } };
+}
+
 function animOf(renderer) {
     if (!renderer._orientAnim) {
         renderer._orientAnim = {
@@ -187,8 +213,17 @@ function orientToBestView(renderer, options) {
     const object = renderer.objectsData[objectName];
     if (!object || !object.frames || object.frames.length === 0) return;
 
+    // ...AND THE FRAME IS THIS OBJECT'S, RESOLVED FROM THE TIMELINE POSITION.
+    // `renderer.currentFrame` is a position shared by every drawn object, so
+    // indexing this object's frames with it is undefined past its own end and
+    // Orient returned without doing anything - on a one-frame reference beside
+    // a trajectory, at every position but the first. It was also the wrong
+    // object's index whenever `opts.name` named another one.
     const currentFrame = renderer.currentFrame || 0;
-    const frame = object.frames[currentFrame];
+    const at = renderer._parkedFrameIndex
+        ? renderer._parkedFrameIndex(objectName)
+        : currentFrame;
+    const frame = object.frames[at >= 0 ? at : 0];
     if (!frame || !frame.coords || frame.coords.length === 0) return;
 
     // Ensure frame data is loaded into renderer if not already.
@@ -208,7 +243,7 @@ function orientToBestView(renderer, options) {
     // which is the visibility MODEL - and that field is normalised to hold
     // every position whenever the mode is 'default'. Hide a chain (which sets
     // .chains and leaves the mode alone) or drag a PAE box (which sets
-    // .paeBoxes and never touches .positions at all) and the field still said
+    // .heatmapBoxes and never touches .positions at all) and the field still said
     // "all of them", so the first branch matched and Orient framed the whole
     // structure. renderer.visiblePositions is the composed mask the renderer
     // actually draws from: null means everything is visible, an empty Set
@@ -391,7 +426,7 @@ function orientToBestView(renderer, options) {
     // it once is that the view span belongs to THIS rotation: turn a long
     // structure end-on afterwards and it can overrun the edges, which is what
     // PyMOL's orient does too. Press Orient again to reframe.
-    const targetAspect = (() => {
+    let targetAspect = (() => {
         // 🔴 ABOUT THE CENTRE, NOT THE ORIGIN. The first version took
         // max|x| of the rotated coordinates as written, and a PDB sits
         // wherever its file put it - 1UBQ is centred near (30, 29, 15), so
@@ -468,6 +503,25 @@ function orientToBestView(renderer, options) {
         // Use center and extent calculated from selected positions
         targetCenter = visibleCenter;
         targetExtent = visibleExtent;
+        // ...AND WHEN THE TARGET IS EVERYTHING, EVERYTHING INCLUDES A PLUGIN'S
+        // GEOMETRY. _viewHalfSpan frames a plugin only while no span is set, and
+        // this sets one - the opening orient of every viewer lands here - so the
+        // floor has to go into the span written, or the plugin is cropped from the
+        // first frame. A SELECTION is not everything and gets the tight span it
+        // asked for: a focus on one residue zooms closer than a shell around it.
+        // The radius is about the current view centre, so it is widened by how far
+        // that centre moves (a bound, not an exact fit). See parts/plugins.js.
+        if (!selectedPositionIndices && window.py2dmolPlugins && window.py2dmolPlugins.extent) {
+            const pr = window.py2dmolPlugins.extent(renderer, object);
+            if (pr > 0) {
+                const c0 = renderer._computeViewCentre(object) || { x: 0, y: 0, z: 0 };
+                const moved = Math.hypot(visibleCenter[0] - c0.x, visibleCenter[1] - c0.y,
+                    visibleCenter[2] - c0.z);
+                const floored = floorViewSpan(targetExtent, targetAspect, pr + moved);
+                targetExtent = floored.extent;
+                targetAspect = floored.aspect;
+            }
+        }
 
         // Calculate zoom adjustment based on final orientation and window dimensions
         // The renderer now accounts for window aspect ratio, so we should set zoom to 1.0

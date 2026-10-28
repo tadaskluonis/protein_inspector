@@ -1,7 +1,17 @@
 <style>
 #mainContainer * { box-sizing: border-box; }
+/* WRAPS WHEN THERE IS NO ROOM, which parts/embed.js's shell has done since it
+   was written and this one never did. The canvas is a fixed 600px (and
+   resizable past that), the panel column a fixed 180px, and `nowrap` is the
+   flex default - so in a notebook cell narrower than the two together the
+   panel was pushed off the right-hand side with nothing to say it was there.
+   Wrapping puts it under the canvas instead. min-width:0 on the wrapper is
+   what lets the row actually break: a flex item's default min-width is its
+   content, so a 600px canvas refuses to shrink and the line never overflows
+   enough to wrap. */
 #mainContainer {
     display: flex; flex-direction: row; align-items: flex-start; gap: 15px;
+    flex-wrap: wrap;
     background: transparent; padding: 8px; margin: 0;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
@@ -214,12 +224,12 @@ input[type="range"]:hover::-webkit-slider-thumb { background: #2563eb; }
 input[type="range"]:hover::-moz-range-thumb { background: #2563eb; }
 input[type="range"]:active::-webkit-slider-thumb { background: #1d4ed8; }
 input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
-    #paeContainer {
+    #heatmapContainer {
         display: none; width: 300px; height: 300px;
         border: 1px solid #ddd; border-radius: 12px; background: #ffffff; overflow: hidden;
         position: relative;
     }
-    #paeCanvas { width: 100%; height: 100%; display: block; position: absolute; top: 0; left: 0; touch-action: none; }
+    #heatmapCanvas { width: 100%; height: 100%; display: block; position: absolute; top: 0; left: 0; touch-action: none; }
     /* Scatter container (matches viewer box) */
     .scatter-container {
         box-sizing: border-box;
@@ -267,9 +277,10 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
             <button id="overlayButton" class="controlButton btn btn-secondary" title="Overlay all frames" style="font-weight: 400;">⧉</button>
         </div>
     </div>
-    <div id="paeContainer">
-        <canvas id="paeCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
+    <div id="heatmapContainer">
+        <canvas id="heatmapCanvas" width="300" height="300" style="cursor: crosshair;"></canvas>
     </div>
+    <div id="plddtContainer" style="display: none;"></div>
     <div id="scatterContainer" class="scatter-container" style="display: none; position: relative;">
         <canvas id="scatterCanvas" style="cursor: pointer;"></canvas>
         <div class="resize-handle" aria-label="Resize scatter plot"></div>
@@ -336,6 +347,12 @@ input[type="range"]:active::-moz-range-thumb { background: #1d4ed8; }
                  in the other page, under a note saying to edit both - which had
                  already been missed in both directions. -->
             <div id="stylePanelMount"></div>
+            <!-- ...and the SELECTION panel, built by the same file and mounted
+                 here. It was two hundred lines of markup in index.html alone,
+                 so a notebook had parts/selectpanel.js's verbs - colour, side
+                 chains, elements, bases, SSE, contacts, visibility, Find - in
+                 the download and no control that could reach one. -->
+            <div id="selectionPanelMount"></div>
         </div>
     </div>
 </div>
