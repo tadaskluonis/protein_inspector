@@ -27,9 +27,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Python
+        # PINNED, NOT '3.x'. The wheel is py3-none-any so the build does not
+        # care - but the check below INSTALLS it, and that pulls gemmi, which
+        # ships binary wheels only for the interpreters it has built for. '3.x'
+        # floated to 3.15 and the check spent its time compiling gemmi from
+        # source, then failed on a nanobind version mismatch: a release blocked
+        # by the runner's Python moving, not by anything in this package.
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.12'
 
       - name: Build
         run: |
