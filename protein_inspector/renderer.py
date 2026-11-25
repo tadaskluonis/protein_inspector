@@ -18,13 +18,14 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+import gemmi
 import numpy as np
 from Bio.PDB import MMCIFParser
 
 import py2Dmol
 
 
-INSPECTOR_VERSION = "protein-inspector-1.15.0"
+INSPECTOR_VERSION = "protein-inspector-1.15.1"
 MANIFEST_SCHEMA = "protein-inspector-manifest-1"
 UPSTREAM_REVISION = "3f9e851b61cc5c918c6aa6605a9ad235ab5d2896"
 UPSTREAM_REPOSITORY = "https://github.com/sokrypton/py2Dmol"
@@ -304,7 +305,12 @@ def _color_annotations(viewer: Any, annotations: list[dict[str, Any]], layers: l
             residue = annotation["residue"]
             matched = positions.get((str(residue["chain_id"]), int(residue["author_residue_number"])), [])
             if not matched:
-                raise ValueError(f"resolved annotation {annotation_id} does not match a residue in the mmCIF")
+                raise ValueError(
+                    f"resolved annotation {annotation_id} does not match a residue in "
+                    f"the mmCIF: chain {residue['chain_id']} residue "
+                    f"{residue['author_residue_number']} is not among the positions this "
+                    'bundle draws (absent from the model, or dropped by a morph mapping '
+                    '-- morph_mapping="union" keeps every position any state models)')
             indices.extend(matched)
             for copy in mirror_chains or ():
                 indices.extend(positions.get((str(copy), int(residue["author_residue_number"])), []))
@@ -421,8 +427,69 @@ def _partner_clusters(partner_spec: list[list[str]],
     return clusters
 
 
+def _traceable(residue: Any) -> bool:
+    """Is this residue part of the polymer, whatever het flag the file gave it?
+
+    Both traces used to take `residue.id[0] == " "` -- Biopython's "not a
+    HETATM" -- and that drops every MODIFIED residue: PCA, MSE, SEP, TPO, the
+    D-amino acids. They are real, modelled, often the point of the structure
+    (a selenomethionine model loses every methionine position), and py2Dmol's
+    own parser keeps them: `_parse_model` asks gemmi `is_amino_acid()` and
+    traces the CA. So the drawn structure held the residue while this trace
+    did not, a layer naming it came back in `unmapped_residues`, and the
+    bundle quietly painted 18 of 19 contacts.
+
+    Asked of gemmi's CCD table -- which is where a modified residue's parent
+    type is recorded -- rather than of a list of names maintained here, so a
+    phosphoserine and a selenomethionine need no entry. Waters and ligands are
+    still not polymer and are still left out.
+    """
+    if residue.id[0] == " ":
+        return True
+    info = gemmi.find_tabulated_residue(str(residue.get_resname()).strip())
+    return bool(info and (info.is_amino_acid() or info.is_nucleic_acid()))
+
+
+def _has_bfactor_column(cif_path: Path) -> bool:
+    """Does this mmCIF's atom_site loop carry `_atom_site.B_iso_or_equiv`?"""
+    with cif_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if line.strip() == "_atom_site.B_iso_or_equiv":
+                return True
+            if line.startswith(("ATOM", "HETATM")):
+                return False
+    return False
+
+
+def _parse_structure(cif_path: Path):
+    """Biopython's structure, tolerating an mmCIF with no B-factor column.
+
+    `_atom_site.B_iso_or_equiv` is NOT a required mmCIF column -- biotite
+    writes none unless asked for one, and nor does plenty of design output --
+    but `MMCIFParser._build_structure` indexes it unconditionally and dies
+    with a bare `KeyError: '_atom_site.B_iso_or_equiv'` that names neither the
+    file nor anything the caller can act on. gemmi reads the same file with
+    b_iso defaulted to 0, so the retry is a normalised copy of the file rather
+    than a patched parser; the column is only ever read for pLDDT colouring,
+    which `render_inspection_bundle` refuses up front on a file that has none.
+    """
+    try:
+        return MMCIFParser(QUIET=True).get_structure(cif_path.stem, str(cif_path))
+    except KeyError as exc:
+        if "B_iso_or_equiv" not in str(exc):
+            raise
+    import tempfile
+
+    structure = gemmi.read_structure(str(cif_path))
+    structure.setup_entities()
+    with tempfile.TemporaryDirectory() as folder:
+        patched = Path(folder) / f"{cif_path.stem}.bfactor.cif"
+        structure.make_mmcif_document().write_file(str(patched))
+        return MMCIFParser(QUIET=True).get_structure(cif_path.stem, str(patched))
+
+
 def _trace(cif_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
-    structure = MMCIFParser(QUIET=True).get_structure(cif_path.stem, str(cif_path))
+    structure = _parse_structure(cif_path)
     models = list(structure.get_models())
     if len(models) != 1:
         raise ValueError("inspection requires exactly one prepared coordinate model")
@@ -441,7 +508,7 @@ def _trace(cif_path: Path) -> tuple[np.ndarray, list[str], list[int]]:
             atom = residue.child_dict.get("CA")
             if atom is None:
                 atom = residue.child_dict.get("C4'")
-            if atom is None or residue.id[0] != " ":
+            if atom is None or not _traceable(residue):
                 continue
             coords.append([float(value) for value in atom.coord])
             chains.append(chain.id)
@@ -973,11 +1040,30 @@ function renderer(){var reg=window.py2dmol_viewers;if(!reg)return null;
 // card, the selection and the sequence strip, a click on another protomer
 // reports the annotation rather than an empty card under a painted residue.
 var paintedCopies=(s.partners&&s.partners.painted)||[];
+// ...AND ONLY WHERE THE STATE ON SCREEN HAS THE RESIDUE. A morph is one
+// topology: under morph_mapping="union" every position any state models stays
+// in it, and a state that lacks one is BRIDGED -- drawn across the gap on its
+// own path between the flanks it does model, named UNK there. The address a
+// layer carries resolves to that position in every state, so the colour, the
+// strip and the card used to follow it onto the bridge, which asserts an
+// observation nobody made: toggling the state looked like the annotation had
+// moved. `morph.bridged_positions` is what the render decided, per state, and
+// every layer resolution goes through it -- so a layer paints the residues
+// this conformation actually models and nothing else, and a residue it does
+// not model is simply unpainted here (the report names which ones, per state).
+var bridgedBy=(s.morph&&s.morph.bridged_positions)||null,bridgedSets={};
+function bridgedHere(i){
+  if(!bridgedBy)return false;
+  var st=String(typeof morphAt==='number'?morphAt:0),set=bridgedSets[st];
+  if(set===undefined){set={};var list=bridgedBy[st]||[];
+    for(var k=0;k<list.length;k++)set[list[k]]=1;bridgedSets[st]=set;}
+  return set[i]===1;}
 function indicesFor(res){var r=renderer(),out=[];if(!r||!res)return out;
   var wanted=paintedCopies.length?[res.chain_id].concat(paintedCopies):[res.chain_id];
   for(var i=0;i<(r.residueNumbers||[]).length;i++){
     if(!r.chains||r.residueNumbers[i]!==res.author_residue_number)continue;
-    for(var w=0;w<wanted.length;w++)if(r.chains[i]===wanted[w]){out.push(i);break;}}
+    for(var w=0;w<wanted.length;w++)if(r.chains[i]===wanted[w]){
+      if(!bridgedHere(i))out.push(i);break;}}
   return out;}
 function sameResidue(a,b){return a&&b&&a.component_id===b.component_id&&a.copy_index===b.copy_index&&
   a.canonical_position===b.canonical_position;}
@@ -1176,6 +1262,10 @@ function chainInState(name){
 function inState(i){
   var r=renderer();if(!r)return true;
   if(i>=shippedCount())return false;
+  // A position this state is bridged across has no residue here, so it is not
+  // something a selection can be of: Select all, sel and Select around would
+  // otherwise hand the side-chain button an address with no side chain.
+  if(bridgedHere(i))return false;
   return chainInState(String((r.chains||[])[i]));}
 function keepInState(list){
   var out=[];for(var i=0;i<list.length;i++)if(inState(list[i]))out.push(list[i]);
@@ -2467,9 +2557,15 @@ function goMorph(target){
     morphDetail=null;keepDetail();
     morphAt=target;morphBusy=false;setMorphButtons(target);
     // The letters belong to the state that just landed, so the strip is
-    // rebuilt rather than left spelling the one we came from. Selection and
-    // layer colour are re-applied by seqBuild itself.
+    // rebuilt rather than left spelling the one we came from.
     seqBuilt=false;seqBuild();
+    // ...AND SO DOES THE COLOUR MAP. A layer is resolved against the state on
+    // screen -- a position this one is bridged across has no residue here and
+    // must not wear the layer -- and the map is rebuilt only here, so landing
+    // without this call left the previous state's painting in place. seqBuild
+    // repaints the STRIP from the same visible-layer set, which is why this
+    // looked done.
+    syncVisibleLayers();
     applyPartners();syncPartnerButton();})();}
 // A WATCHDOG, BECAUSE THE FRAME MOVES BEHIND OUR BACK. Applying a visibility
 // patch makes py2Dmol jump the frame -- sometimes inside the call, sometimes
@@ -2902,6 +2998,17 @@ def render_inspection_bundle(
     if unknown_options:
         raise ValueError(f"unsupported display options: {sorted(unknown_options)}")
     capture_sidechains = bool(options.get("sidechains", True))
+    # PLDDT COLOURING NEEDS A COLUMN THE FILE MAY NOT HAVE. `_atom_site.
+    # B_iso_or_equiv` is optional in mmCIF; without it every position would be
+    # painted at the 50.0 py2Dmol fills in for a missing value, which is a
+    # confidence plot of a number nobody measured. Said in one sentence here
+    # rather than drawn.
+    if str(options.get("color", "")).lower() in {"plddt", "deepmind"} \
+            and not _has_bfactor_column(source):
+        raise ValueError(
+            f"{source.name} carries no _atom_site.B_iso_or_equiv column, so there are "
+            'no pLDDT/B-factor values to colour by; render it with the default '
+            'display={"color": "chain"} or add the column to the file')
 
     viewer = py2Dmol.view(
         size=(int(options.get("width", 720)), int(options.get("height", 720))),
@@ -3081,6 +3188,7 @@ def render_inspection_bundle(
                 # all the same length -- so it borrows the first owning state's.
                 # They are never drawn there.
                 offset = len(chain_ids)
+                extra_at = {key: index for index, key in enumerate(extra)}
                 for frame in range(n_states):
                     home = frame if frame in states else states[0]
                     trace = {k: v for k, v in traces[home].items() if k[0] == chain}
@@ -3090,6 +3198,11 @@ def render_inspection_bundle(
                     if frame in states and bridged:
                         bridges.setdefault(tuple(states), {}).setdefault(
                             frame, []).extend([label, int(k[1])] for k in bridged)
+                        # ...and as positions, beside the target's own, so a
+                        # layer mirrored onto a protomer copy is unpainted
+                        # wherever that copy is bridged rather than modelled.
+                        morph_report["bridged_positions"].setdefault(
+                            str(frame), []).extend(offset + extra_at[k] for k in bridged)
                     # ...and so do the side chains, under the same transform
                     # and at the offset this block lands on. Read before
                     # chain_ids grows, because that length IS the offset. A
@@ -3224,6 +3337,32 @@ def render_inspection_bundle(
     if not any(item.get("frames") for item in viewer.objects):
         raise ValueError("py2Dmol could not load a renderable structure")
     layers = _layers(manifest["annotations"])
+    # WHAT EACH LAYER LOSES IN EACH STATE, said rather than left to be noticed.
+    # An annotation is an address in one topology shared by every state, and a
+    # state that does not model the residue is drawn across it -- so the layer
+    # is correctly unpainted there, and a reader comparing the two states sees
+    # a smaller set without being told why. "layer loop loses 12 residues in
+    # state 2" belongs in the report next to `residues_bridged`, not in the eye
+    # of whoever toggles the button.
+    if morph_report and morph_report.get("conformers"):
+        addressed: dict[tuple[str, int], list[str]] = {}
+        for item in manifest["annotations"]:
+            if not item.get("resolved"):
+                continue
+            res = item["residue"]
+            addressed.setdefault(
+                (str(res["chain_id"]), int(res["author_residue_number"])), []
+            ).append(_layer_key(item))
+        for conformer in morph_report["conformers"]:
+            # `morph_to=` (the pre-expanded path) reports its conformers as bare
+            # labels and does no bridging at all, so there is nothing to say.
+            if not isinstance(conformer, dict):
+                continue
+            unmapped = []
+            for chain_id, number in conformer.get("residues_bridged") or ():
+                for layer_id in addressed.get((str(chain_id), int(number)), ()):
+                    unmapped.append([layer_id, str(chain_id), int(number)])
+            conformer["layer_residues_unmapped"] = unmapped
     highlight = manifest.get("highlight", "color")
     # THE OTHER PROTOMERS WEAR THE ANNOTATION TOO. A copy of the target is
     # the target: hiding it is still one button, but while it is on screen it
@@ -3342,7 +3481,8 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
       layers       [{layer_id, label, color, visible, n_annotations}]
       about        [{title, body_html}]
       annotations  the manifest's annotations, verbatim
-      residues     one flat row per modelled residue -- chain_id,
+      residues     one flat row per modelled residue -- chain_id (also as
+                   auth_asym_id, since these are the author's numbers),
                    author_residue_number, canonical_position, residue_name,
                    x, y, z, plddt, color, layers[], labels[] -- which is the
                    table most callers actually want and is CSV-ready as-is.
@@ -3385,9 +3525,15 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
                 continue
             by_residue.setdefault((str(copy), number), slot)
 
-    frames = (state.get("viewer", {}).get("objects") or [{}])[0].get("frames") or [{}]
+    # THE OBJECT THE ANNOTATIONS WERE PAINTED ON, which is the LAST one -- the
+    # same `viewer.objects[-1]` the colour pass and the copy detection address.
+    # And `chains` may sit on the object rather than on frame 0: py2Dmol hoists
+    # the fields a run of frames shares, so reading the frame alone left every
+    # row of this table without the one address the caller came to check.
+    obj = (state.get("viewer", {}).get("objects") or [{}])[-1]
+    frames = obj.get("frames") or [{}]
     frame = frames[0]
-    chains = frame.get("chains") or []
+    chains = frame.get("chains") or obj.get("chains") or []
     numbers = frame.get("residue_numbers") or []
     coords = frame.get("coords") or []
     names = frame.get("position_names") or []
@@ -3400,6 +3546,11 @@ def read_inspection_bundle(html_path: str) -> dict[str, Any]:
         xyz = coords[index] if index < len(coords) else [None, None, None]
         residues.append({
             "chain_id": key[0],
+            # SPELLED OUT, because "chain" in an mmCIF is two different columns
+            # and this engine means the author's one everywhere: the numbers in
+            # a layer are author numbers, so the letter beside them is the
+            # author asym id and a caller should not have to assume it.
+            "auth_asym_id": key[0],
             "author_residue_number": key[1],
             "canonical_position": index + 1,
             "residue_name": names[index] if index < len(names) else None,
@@ -3466,7 +3617,7 @@ def _ca_trace(cif_path: Path) -> dict[tuple[str, int], tuple[str, list[float]]]:
     residues onto one address makes the residue mapping ambiguous, and a morph
     built on an ambiguous mapping silently interpolates the wrong pairs.
     """
-    structure = MMCIFParser(QUIET=True).get_structure(cif_path.stem, str(cif_path))
+    structure = _parse_structure(cif_path)
     models = list(structure.get_models())
     if len(models) != 1:
         raise ValueError(f"{cif_path.name}: a morph conformer needs exactly one model")
@@ -3483,7 +3634,7 @@ def _ca_trace(cif_path: Path) -> dict[tuple[str, int], tuple[str, list[float]]]:
             atom = residue.child_dict.get("CA")
             if atom is None:
                 atom = residue.child_dict.get("C4'")
-            if atom is None or residue.id[0] != " ":
+            if atom is None or not _traceable(residue):
                 continue
             key = (chain.id, int(residue.id[1]))
             if key in out:
@@ -3623,7 +3774,7 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     intersected mapping looks just as smooth while interpolating the wrong
     pairs. `mapping="intersection"` opts in to the common residues -- which is
     what comparing a crystal chain against a full-length prediction needs --
-    and the report then names how many residues each file lost, so a dropped
+    and the report then names WHICH residues each file lost, so a dropped
     epitope cannot pass unnoticed.
     """
     if mapping not in {"exact", "intersection", "union"}:
@@ -3646,10 +3797,8 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     union = set(ref)
     for trace in traces[1:]:
         union |= set(trace)
-    dropped = []
     for label, trace in zip(labels, traces):
         missing = len(set(trace) - common)
-        dropped.append(missing)
         if mapping == "exact" and (missing or len(trace) != len(common)):
             only_here = sorted(set(trace) - common)[:6]
             raise ValueError(
@@ -3670,6 +3819,14 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
     keys = sorted(union if mapping == "union" else common)
     shared = [k for k in keys if all(k in trace for trace in traces)]
     shared_rows = [index for index, key in enumerate(keys) if key in set(shared)]
+    # WHICH RESIDUES, NOT HOW MANY. This was a count, beside `residues_bridged`'s
+    # list, so `len()` worked on one of the two neighbouring fields and raised
+    # TypeError on the other. A caller wants to know WHERE the comparison has a
+    # hole -- whether the annotated site is in it -- and a number cannot say.
+    # Measured against the topology that is actually drawn, so "union" (which
+    # keeps every position and bridges the gaps) drops nothing.
+    key_set = set(keys)
+    dropped = [[[k[0], int(k[1])] for k in sorted(set(trace) - key_set)] for trace in traces]
 
     per_state = [_bridge_trace(keys, trace) for trace in traces]
     # A COPY. The partner loop appends to `names` in place, and if this is the
@@ -3686,10 +3843,21 @@ def _conformer_stacks(reference: Path, conformers: list[dict[str, Any]],
         fit = _kabsch(coords[shared_rows], base[shared_rows])
         stacks.append(fit(coords))
         transforms.append(fit)
+    # WHERE EACH STATE'S BRIDGES ARE, as position indices on the object the page
+    # draws. The colour map is one array over those positions, shared by every
+    # frame, so without this the page cannot tell "this state models the residue"
+    # from "this state is drawn across the gap": a layer colour landed on the
+    # bridge too, which asserts an observation nobody made, and toggling the
+    # state appeared to move the annotation. The page filters every layer
+    # resolution through it -- see `bridgedHere` in the bundle's own script.
+    position_of = {key: index for index, key in enumerate(keys)}
+    bridged_positions = {str(index): [position_of[k] for k in entry[2]]
+                         for index, entry in enumerate(per_state) if entry[2]}
     report = {
         "mapping": mapping,
         "n_residues": len(keys),
         "n_shared_residues": len(shared),
+        "bridged_positions": bridged_positions,
         "residue_range": [int(keys[0][1]), int(keys[-1][1])],
         "conformers": [
             {"label": label, "sha256": digest, "residues_dropped": drop,

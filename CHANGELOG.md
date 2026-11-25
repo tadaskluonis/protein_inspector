@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+## 1.15.1
+
+Six defects found in one afternoon of building an annotation bundle for a
+cis-dimer with a second state from another crystal — the case where two states
+model different residues and both protomers are the target. Nothing here
+changes what a correct 1.15.0 bundle looks like.
+
+### Fixed
+
+**A layer is resolved against the state on screen, so a morph's annotations
+stop moving when you toggle it.** Under `morph_mapping="union"` every position
+any state models stays in one shared topology, and a state that does not model
+a residue is BRIDGED there — drawn across the gap on its own path between the
+flanks it does model. An annotation's address resolved to that position in
+every state, so the colour, the sequence strip and the residue card followed it
+onto the bridge: a layer appeared to shift by the accumulated bridge count
+downstream of an indel, and a bridge wore a colour that asserts an observation
+nobody made. The render now reports `morph["bridged_positions"]` per state and
+the page filters every layer resolution through it, so a layer paints the
+residues the current conformation actually has and nothing else. The residues a
+state does not model are named rather than left to be noticed:
+`report["unmapped_residues_by_state"]` keyed by state label, and
+`morph["conformers"][i]["layer_residues_unmapped"]` beside `residues_bridged`.
+Invisible on morphs whose states model identical residues, which is why it
+survived.
+
+**The per-layer `"chain"` key works, and `chain=` takes a list.** The manifest
+builder resolved every layer against the top-level `chain=` alone, so
+`{"chain": "B"}` — documented since 1.12 — found no address, came back as the
+whole layer in `unmapped_residues`, and rendered a bundle byte-identical to one
+that had never been given the key. Layers are now resolved against every chain
+in the file, and `chain=["A", "B"]` makes each named chain target: drawn always,
+no toggle, wearing the layers that name no chain of their own. That is what a
+homo-oligomer whose assembly is the biological unit needs —
+`partner_chains` remains for chains that are genuinely not the target, since a
+partner is something the reader can switch off. A `"chain"` the file does not
+have is now an error naming it rather than a silent no-op.
+
+**`inspection_table` says which chain each row is on.** The read-back reached
+into `objects[0]["frames"][0]` for the chain array; it now reads the object the
+annotations were painted on (`objects[-1]`, as the colour pass does) and falls
+back to the object-level array py2Dmol hoists shared frame fields into. Each row
+also carries `auth_asym_id` beside `chain_id`, because "chain" in an mmCIF is two
+different columns and this engine means the author's one everywhere.
+
+**An mmCIF with no B-factor column renders.** `_atom_site.B_iso_or_equiv` is not
+a required column — biotite writes none without `extra_fields=["b_factor"]`, and
+nor does much design output — but `MMCIFParser` indexed it unconditionally and
+died with a bare `KeyError: '_atom_site.B_iso_or_equiv'` naming neither the file
+nor anything to do about it. The column now defaults to 0 through a gemmi
+normalisation of the file, and asking for pLDDT/B-factor colouring on a file
+that has none is refused in one sentence rather than drawn as a confidence plot
+of py2Dmol's 50.0 fill value.
+
+**`residues_dropped` is a list, like `residues_bridged` beside it.** It was an
+int, so `len()` worked on one of two neighbouring fields and raised `TypeError`
+on the other, and the docs presented both as lists. It now names which residues
+each state lost from the comparison, measured against the topology actually
+drawn — so `"union"`, which keeps every position, drops nothing.
+
+**Modified residues are traced.** Both traces took Biopython's "not a HETATM"
+flag, which drops PCA, MSE, SEP, TPO and the D-amino acids: real, modelled
+residues, often the point of the structure. py2Dmol's own parser keeps them (it
+asks gemmi `is_amino_acid()`), so the drawn structure held a residue this engine
+did not — a layer naming EpCAM's pyroglutamate 24 came back unmapped and the
+epitope painted 18 of 19 contacts, and a selenomethionine model lost every
+methionine position. Both traces now ask gemmi's CCD table, which is where a
+modified residue's parent type is recorded.
+
+### Changed
+
+- `report["unmapped_residues"]` entries are `(layer_id, chain_id, author_number)`.
+  A layer can name several chains, so "residue 999 is not in the model" has to
+  say which chain it was looked for on.
+
 ## 1.15.0
 
 ### Added

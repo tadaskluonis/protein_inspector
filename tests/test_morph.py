@@ -20,7 +20,7 @@ import pytest
 from Bio.PDB import Atom, Chain, Model, Residue, Structure
 from Bio.PDB.mmcifio import MMCIFIO
 
-from protein_inspector import render_inspection_bundle
+from protein_inspector import inspection_table, render_inspection_bundle
 from protein_inspector.renderer import (_ca_trace, _conformer_stacks, _morph_frames,
                                         _superpose)
 
@@ -324,6 +324,99 @@ def test_union_is_the_only_new_mode_and_a_bad_one_is_refused(tmp_path):
     with pytest.raises(ValueError, match="union"):
         _conformer_stacks(full, [{"path": str(short), "label": "s"}],
                           "nearest", "full")
+
+
+def test_a_layer_lands_on_the_same_residues_in_every_state(tmp_path):
+    """THE BLOCKER. Two states whose modelled residue sets differ, one layer,
+    and the painted residues must be the same residues in both -- a reader who
+    toggles a state and sees the colours move stops trusting the figure.
+
+    The layer is resolved per state through `bridged_positions`: a position a
+    state is drawn ACROSS carries no layer there, and nothing downstream of
+    the gap is displaced onto a neighbour.
+    """
+    from protein_inspector import inspect_structure
+
+    keep = [index for index, number in enumerate(range(1, 41))
+            if not 18 <= number <= 22]
+    full = _write(tmp_path / "full.cif", _helix(40), numbers=range(1, 41))
+    short = _write(tmp_path / "short.cif", _helix(40, phase=0.25)[keep],
+                   numbers=[n for n in range(1, 41) if not 18 <= n <= 22])
+
+    report = inspect_structure(
+        str(full),
+        layers=[{"id": "loop", "label": "Loop", "color": "#dc2626",
+                 "residues": range(25, 31)}],
+        conformers=[{"path": str(short), "label": "short"}],
+        morph_mapping="union", reference_label="full",
+        out=str(tmp_path / "union.html"))
+
+    assert report["unmapped_residues"] == []
+    table = inspection_table(report["path"])
+    painted = [row["author_residue_number"] for row in table if row["layers"]]
+    assert painted == [25, 26, 27, 28, 29, 30]
+
+    state = json.loads(pathlib.Path(report["path"]).read_text(encoding="utf-8").split(
+        '<script id="pinsp-inspection-state" type="application/json">')[1]
+        .split("</script>")[0].replace("<\\/", "</"))
+    numbers = state["viewer"]["objects"][0]["frames"][0]["residue_numbers"]
+    annotated = {row["author_residue_number"] for row in table if row["layers"]}
+    # The gap is five positions the second state does not model, and they are
+    # reported as such rather than painted or shifted onto their neighbours.
+    gap = {numbers[i] for i in state["morph"]["bridged_positions"]["1"]}
+    assert gap == {18, 19, 20, 21, 22}
+    assert not (gap & annotated)
+    assert state["morph"]["bridged_positions"].get("0") is None
+
+
+def test_a_state_reports_the_layer_residues_it_does_not_model(tmp_path):
+    """"layer loop loses 12 residues in state 2" is a thing to be told, not a
+    thing to discover by eye."""
+    from protein_inspector import inspect_structure
+
+    keep = [index for index, number in enumerate(range(1, 13)) if number != 7]
+    full = _write(tmp_path / "full.cif", _helix(12), numbers=range(1, 13))
+    short = _write(tmp_path / "short.cif", _helix(12, phase=0.2)[keep],
+                   numbers=[n for n in range(1, 13) if n != 7])
+
+    report = inspect_structure(
+        str(full),
+        layers=[{"id": "epi", "label": "Epitope", "residues": [6, 7, 8]}],
+        conformers=[{"path": str(short), "label": "state 2"}],
+        morph_mapping="union", reference_label="state 1",
+        out=str(tmp_path / "union.html"))
+
+    assert report["unmapped_residues_by_state"] == {
+        "state 1": [], "state 2": [("epi", "A", 7)]}
+    assert report["morph"]["conformers"][1]["layer_residues_unmapped"] == [
+        ["epi", "A", 7]]
+
+
+def test_dropped_and_bridged_are_both_lists_of_residues(tmp_path):
+    """They sat side by side in one dict, one an int and one a list, so
+    `len(cf["residues_dropped"])` raised on the field whose neighbour it
+    copied. A caller wants to know WHICH region is a hole, not how many."""
+    full = _write(tmp_path / "full.cif", _helix(6), numbers=[1, 2, 3, 4, 5, 6])
+    short = _write(tmp_path / "short.cif", _helix(5, phase=0.3),
+                   numbers=[1, 2, 3, 5, 6])
+
+    for mapping in ("union", "intersection"):
+        report = _conformer_stacks(full, [{"path": str(short), "label": "short"}],
+                                   mapping, "full")[4]
+        for conformer in report["conformers"]:
+            assert isinstance(conformer["residues_dropped"], list)
+            assert isinstance(conformer["residues_bridged"], list)
+            assert len(conformer["residues_dropped"]) >= 0      # used to raise
+
+    # "union" keeps every position, so nothing is dropped from the comparison;
+    # "intersection" drops the one residue only the reference models, and says
+    # which it is.
+    union = _conformer_stacks(full, [{"path": str(short), "label": "short"}],
+                              "union", "full")[4]
+    assert [c["residues_dropped"] for c in union["conformers"]] == [[], []]
+    inter = _conformer_stacks(full, [{"path": str(short), "label": "short"}],
+                              "intersection", "full")[4]
+    assert [c["residues_dropped"] for c in inter["conformers"]] == [[["A", 4]], []]
 
 
 def test_an_altloc_on_a_backbone_atom_does_not_kill_the_trace(tmp_path):

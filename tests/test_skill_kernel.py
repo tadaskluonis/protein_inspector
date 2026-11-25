@@ -77,7 +77,10 @@ def test_residues_absent_from_the_model_are_reported_not_dropped(tmp_path):
     manifest, missing = kernel.build_manifest(
         str(cif), [{"id": "hot", "label": "Hot", "residues": [41, 999]}])
     assert len(manifest["annotations"]) == 1
-    assert missing == [("hot", 999)]
+    # (layer, chain, author number): a layer can name several chains now, so
+    # "residue 999 is not in the model" has to say which chain it was looked
+    # for on.
+    assert missing == [("hot", "A", 999)]
 
 
 def test_notes_and_ranges_both_work_as_residue_input(tmp_path):

@@ -37,16 +37,17 @@ thing they see is the thing you brought them for.
 ## Setup
 
 ```bash
-pip install -U "protein-inspector>=1.15.0"
+pip install -U "protein-inspector>=1.15.1"
 ```
 
-This page describes **1.15.0**, the current release.
+This page describes **1.15.1**, the current release.
 
 **Always with `-U` and the version floor.** A bare `pip install protein-inspector`
 does nothing when any older release is already in the environment - pip reports
 the requirement satisfied and keeps it - and the old engine then lacks features
 this page describes (the layer `description`, partners that morph with the
-target). The kernel refuses an engine older than 1.15.0 and says so, rather than
+target, several chains as one target, a layer resolved against the state on
+screen). The kernel refuses an engine older than 1.15.1 and says so, rather than
 rendering with it; after upgrading, restart the kernel, because a package that
 was already imported stays the old one until then.
 
@@ -80,6 +81,14 @@ annotate a hetero-oligomer whose chains are numbered continuously, give each
 layer its `"chain"` rather than renumbering the file. Later layers paint over
 earlier ones — order background first.
 
+**Several chains can all be the target.** `chain=["A", "B"]` makes each of them
+target — drawn always, no toggle — and a layer that names no chain of its own
+is painted on every one. That is the cis-dimer, the homotrimer, the assembly
+that IS the thing: `partner_chains` would file the other protomers under a
+button, and a protomer the reader can switch off is not a protomer. Either key
+takes one chain id or a list, and naming a chain the file does not have is an
+error rather than a silent no-op.
+
 **Give every layer a `description`.** A layer name is a label, not an
 explanation: a reader who meets `AS1`, `connector`, `AS2` has three names and
 no idea what they are, and an answer that lives in a tab is an answer they
@@ -100,10 +109,14 @@ self-explanatory (`"Catalytic residues"`) does not need one, and the glyph
 then correctly does not appear on that row.
 
 Always read `report["unmapped_residues"]`: residues absent from the model are
-skipped, and silently if you don't look. On a morph read
+skipped, and silently if you don't look. Each entry is
+`(layer_id, chain_id, author_number)`. On a morph read
 `report["morph"]["conformers"]` as well — it lists every state the page will
 draw, in order, each with its `rmsd_to_reference_A`; a state you did not ask for
-means the reference went in twice.
+means the reference went in twice — and
+`report["unmapped_residues_by_state"]`, which is the same question asked of
+each state: the states of a morph need not model the same residues, and a
+layer is painted only on the residues the conformation on screen actually has.
 
 ## What else it can do
 
@@ -193,15 +206,21 @@ Two things for you to know, not to write a tab about:
   a state that lacks it is bridged across (a point on its own path between the
   flanking residues it does model) and named `UNK` there, so the strip and the
   residue card say "no residue in this state" instead of naming one it does not
-  have. Bridges are excluded from the superposition and from the reported RMSD.
+  have. Bridges are excluded from the superposition and from the reported RMSD,
+  and from the layers: a bridge is an interpolation artifact, so a layer that
+  covers the gap paints the residues each state models and stops at its edge
+  rather than colouring across it. What each state loses that way is named in
+  `report["unmapped_residues_by_state"]`, so "the loop loses 12 residues in
+  state 2" is a thing you are told rather than a thing a reader notices.
 - **The fit is computed on the positions every state shares, and
   `partner_chains` are excluded from that mapping.** So declaring the rest of an
   assembly as partners superposes the morph on the target chain alone, and the
   other chains swing around it. For a whole-assembly fit, pass those chains as
   target and annotate per layer with `"chain"` instead.
   Read `report["morph"]["conformers"][i]["residues_dropped"]` and
-  `["residues_bridged"]`: a dropped region is a hole in the comparison, a
-  bridged one is a depiction, and either belongs in your context paragraph.
+  `["residues_bridged"]` — both lists of `[chain, author_number]`: a dropped
+  region is a hole in the comparison, a bridged one is a depiction, and either
+  belongs in your context paragraph.
   Name the indel on the structure too — a layer on the residue itself, worded
   from the sequence you are annotating ("mouse deletion" on the human residue),
   turns the one visual oddity in the picture into the thing it is evidence of.

@@ -103,8 +103,11 @@ Two things to know yourself rather than write a tab about:
   fit and the RMSD). `"union"` is the right default for orthologs, isoforms and
   any pair differing by an indel. Check
   `report["morph"]["conformers"][i]["residues_dropped"]` and `["residues_bridged"]`
-  — a silently dropped region is a hole in the comparison, and if something went
-  it belongs in that same paragraph.
+  (both lists of `[chain, author_number]`) — a silently dropped region is a hole
+  in the comparison, and if something went it belongs in that same paragraph.
+  A layer is resolved against the state on screen, so a position a state is
+  bridged across carries no layer colour there; which annotated residues each
+  state loses that way is `report["unmapped_residues_by_state"]`.
 - **The mapping is by address, not by sequence.** Residues are matched on
   (chain, author number) and their NAMES are never compared, so a point
   substitution between two entries passes `"exact"` in silence. Morphing a
@@ -128,6 +131,12 @@ Two things to know yourself rather than write a tab about:
 Anything in the same file that is not the target — `partner_chains=["B", "C"]`
 — gets one toggle button: a bound antibody, a ligand-bearing chain, the other
 half of a dimer, a docked design.
+
+When the assembly IS the target — a cis-dimer, a homotrimer — say so with
+`chain=["A", "B"]` instead: every chain named is drawn always, with no toggle,
+and carries the layers that name no chain of their own (a layer's own `"chain"`
+key takes one id or a list and overrides it). `partner_chains` would file those
+protomers under a button, and a protomer the reader can switch off is scenery.
 
 Each conformer may bring its own `partner_chains`, and a partner is shown only
 while one of ITS states is on screen. This is enforced, not merely documented:
@@ -183,7 +192,9 @@ Your tabs are yours and open empty; nothing is added to them.
 ## Check it before you hand it over
 
 **Always read `report["unmapped_residues"]`.** Residues absent from the model
-are skipped, and silently if you do not look.
+are skipped, and silently if you do not look. Entries are
+`(layer_id, chain_id, author_number)`; on a morph, read
+`report["unmapped_residues_by_state"]` too.
 
 `inspection_table(path)` reads the rendered file back and returns one row per
 modelled residue — chain, author number, canonical position, residue name,

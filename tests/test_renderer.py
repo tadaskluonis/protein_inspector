@@ -518,6 +518,13 @@ def test_reader_rejects_a_page_that_is_not_a_bundle(tmp_path):
 
 def test_bundle_chain_palette_survives_the_viewers_own_config_normalizer(tmp_path):
     quickjs = pytest.importorskip("quickjs", reason="QuickJS runs the real mol.js")
+    # tests/test_chain_colors.py was never committed, so this import is a
+    # collection error on every checkout that has quickjs installed -- which
+    # reads as a failure of the thing under test rather than of the harness.
+    # Skip on the missing harness and keep the assertion for the machine that
+    # has it.
+    pytest.importorskip("tests.test_chain_colors",
+                        reason="tests/test_chain_colors.py is not in this checkout")
     from tests.test_chain_colors import BROWSER_STUB, MOL_JS
 
     cif = tmp_path / "f.cif"
@@ -619,8 +626,12 @@ def test_intersection_mapping_reports_what_each_file_lost(tmp_path):
     morph = result["morph"]
     assert morph["mapping"] == "intersection"
     assert morph["n_residues"] == 6
+    # WHICH residues each file lost, not how many: a caller asking whether the
+    # annotated site is inside the hole cannot answer it from a count, and the
+    # field's neighbour `residues_bridged` was a list all along.
     dropped = {c["label"]: c["residues_dropped"] for c in morph["conformers"]}
-    assert dropped == {"Start": 2, "State 1": 1, "State 2": 0}
+    assert dropped == {"Start": [["A", 7], ["A", 8]], "State 1": [["A", 7]],
+                       "State 2": []}
 
 
 def test_conformers_and_morph_to_are_mutually_exclusive(tmp_path):
@@ -2117,6 +2128,263 @@ def test_drawn_atoms_are_not_sequence(tmp_path):
     assert report["seq"]["chainLabels"] == ["A"]
     assert "*" not in report["seq"]["letters"]
     assert report["selectAll"]["selection"] == list(range(12))
+
+
+# --- a layer under a union morph, in the page itself -------------------------
+
+
+def _indel_bundle(tmp_path):
+    """Reference and a state missing residues 4-5, with a layer across them."""
+    cif = tmp_path / "full.cif"
+    _fixture(cif, n=8)
+    short = tmp_path / "short.cif"
+    structure = Structure.Structure("short")
+    model = Model.Model(0)
+    chain = Chain.Chain("A")
+    for index in [1, 2, 3, 6, 7, 8]:
+        residue = Residue.Residue((" ", index, " "), "ALA", " ")
+        residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2) + 1.0, 0.0),
+                              0.0, 1.0, " ", "CA", index, element="C"))
+        chain.add(residue)
+    model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    io.save(str(short))
+    manifest = {
+        "schema_version": "protein-inspector-manifest-1",
+        "annotations": [
+            {"annotation_id": f"loop-A{number}", "kind": "custom",
+             "label": f"Loop {number}", "layer_id": "loop", "layer_label": "Loop",
+             "color": "#dc2626", "resolved": True, "evidence_ids": [], "method": "rule",
+             "residue": {"component_id": "ALA", "canonical_position": number,
+                         "chain_id": "A", "author_residue_number": number}}
+            for number in (3, 4, 5, 6)
+        ],
+    }
+    result = render_inspection_bundle(
+        mmcif_path=str(cif), mmcif_sha256=hashlib.sha256(cif.read_bytes()).hexdigest(),
+        inspection_manifest=manifest, output_dir=str(tmp_path / "out"),
+        conformers=[{"path": str(short), "label": "indel"}],
+        morph_mapping="union", morph_reference_label="full", morph_steps=6)
+    html = next(item["path"] for item in result["artifacts"] if item["kind"] == "html")
+    return result, Path(html)
+
+
+def test_a_layer_is_resolved_against_the_state_on_screen(tmp_path):
+    """THE BLOCKER, in the page. A bridge is a point on the lacking state's own
+    path between the flanks it models -- an interpolation artifact. Wearing a
+    layer colour there asserts an observation that does not exist, and a reader
+    toggling the state saw the annotation apparently move.
+    """
+    result, html = _indel_bundle(tmp_path)
+    assert result["morph"]["bridged_positions"] == {"1": [3, 4]}
+    report = _run_dom_harness(html, {"chains": ["A"] * 8,
+                                     "residueNumbers": [1, 2, 3, 4, 5, 6, 7, 8]})
+    lit = "#dc2626"
+    # The reference models all four residues of the layer.
+    assert report["initial"] == {"2": lit, "3": lit, "4": lit, "5": lit}
+    # The second state models 3 and 6 and is drawn across 4 and 5, so those two
+    # keep the base colour -- and 3 and 6 are still the residues they were.
+    assert report["morph"]["paintAfter"] == {"2": lit, "5": lit}
+
+
+# --- chains, read-back, odd files and modified residues ----------------------
+
+
+def _dimer_cif(path: Path, n: int = 8, names=("ALA",)) -> Path:
+    """Two chains carrying the same residue numbers, 25 A apart."""
+    structure = Structure.Structure("dimer")
+    model = Model.Model(0)
+    for chain_id, shift in (("A", 0.0), ("B", 25.0)):
+        chain = Chain.Chain(chain_id)
+        for index in range(1, n + 1):
+            residue = Residue.Residue((" ", index, " "),
+                                      names[(index - 1) % len(names)], " ")
+            residue.add(Atom.Atom("CA", (float(index * 3) + shift, float(index % 2), 0.0),
+                                  0.0, 1.0, " ", "CA", index, element="C"))
+            chain.add(residue)
+        model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    io.save(str(path))
+    return path
+
+
+def test_a_layer_paints_the_chain_its_own_key_names(tmp_path):
+    """REGRESSION. `{"chain": "B"}` is documented, and the manifest builder
+    resolved every layer against the top-level `chain=` alone -- so the key
+    returned the whole layer in `unmapped_residues` and rendered a bundle
+    byte-identical to one that had never been given it. A homo-oligomer could
+    not be annotated symmetrically without merging its protomers by hand.
+    """
+    from protein_inspector import inspect_structure
+
+    cif = _dimer_cif(tmp_path / "dimer.cif")
+    report = inspect_structure(
+        str(cif), chain="A",
+        layers=[{"id": "epi_A", "label": "Epitope A", "color": "#dc2626",
+                 "chain": "A", "residues": [5, 6]},
+                {"id": "epi_B", "label": "Epitope B", "color": "#2563eb",
+                 "chain": "B", "residues": [5, 6]}],
+        out=str(tmp_path / "dimer.html"))
+
+    assert report["unmapped_residues"] == []
+    assert report["annotation_count"] == 4
+    painted = {(row["chain_id"], row["author_residue_number"]): row["layers"]
+               for row in read_inspection_bundle(report["path"])["residues"]
+               if row["layers"]}
+    assert painted == {("A", 5): ["epi_A"], ("A", 6): ["epi_A"],
+                       ("B", 5): ["epi_B"], ("B", 6): ["epi_B"]}
+
+
+def test_every_chain_named_as_target_wears_the_unqualified_layers(tmp_path):
+    """A homo-oligomer IS the target. `chain=["A", "B"]` says so, and a layer
+    that names no chain of its own is then the same fact about each of them --
+    with no toggle, because a protomer a reader can switch off is scenery.
+    """
+    from protein_inspector import inspect_structure
+
+    cif = _dimer_cif(tmp_path / "dimer.cif")
+    report = inspect_structure(
+        str(cif), chain=["A", "B"],
+        layers=[{"id": "site", "label": "Site", "residues": [3]}],
+        out=str(tmp_path / "both.html"))
+
+    assert report["unmapped_residues"] == []
+    assert report["partners"] is None            # neither chain is hideable
+    painted = {(row["chain_id"], row["author_residue_number"])
+               for row in read_inspection_bundle(report["path"])["residues"]
+               if row["layers"]}
+    assert painted == {("A", 3), ("B", 3)}
+
+
+def test_a_chain_key_the_file_does_not_have_is_refused(tmp_path):
+    """A silent no-op cost an hour. A stale or typo'd chain reads exactly like
+    "the model does not have those residues" when it comes back as unmapped."""
+    import pytest
+
+    from protein_inspector import inspect_structure
+
+    cif = _dimer_cif(tmp_path / "dimer.cif")
+    with pytest.raises(ValueError, match="chain Z"):
+        inspect_structure(str(cif),
+                          layers=[{"id": "x", "label": "X", "chain": "Z",
+                                   "residues": [5]}],
+                          out=str(tmp_path / "bad.html"))
+
+
+def test_the_read_back_table_names_the_chain_each_row_is_on(tmp_path):
+    """`inspection_table` is the honest check that an annotation landed on the
+    residue you named, which it cannot be if it will not say on which chain."""
+    from protein_inspector import inspect_structure, inspection_table
+
+    cif = _dimer_cif(tmp_path / "dimer.cif")
+    report = inspect_structure(
+        str(cif), chain=["A", "B"],
+        layers=[{"id": "site", "label": "Site", "residues": [3]}],
+        out=str(tmp_path / "table.html"))
+
+    rows = inspection_table(report["path"])
+    assert {row["chain_id"] for row in rows} == {"A", "B"}
+    assert all(row["chain_id"] == row["auth_asym_id"] for row in rows)
+    assert all(row["chain_id"] is not None for row in rows)
+
+
+def _strip_bfactor_column(src: Path, dst: Path) -> Path:
+    """The same file with `_atom_site.B_iso_or_equiv` removed -- which mmCIF
+    permits and biotite writes by default."""
+    lines = src.read_text().splitlines()
+    header = next(i for i, line in enumerate(lines)
+                  if line.strip() == "_atom_site.B_iso_or_equiv")
+    column = sum(1 for line in lines[:header] if line.strip().startswith("_atom_site."))
+    out, in_loop = [], False
+    for index, line in enumerate(lines):
+        if index == header:
+            continue
+        if line.strip().startswith("_atom_site."):
+            in_loop = True
+        elif in_loop and line.startswith(("ATOM", "HETATM")):
+            parts = line.split()
+            del parts[column]
+            line = " ".join(parts)
+        out.append(line)
+    dst.write_text("\n".join(out) + "\n")
+    return dst
+
+
+def test_an_mmcif_with_no_b_factor_column_still_renders(tmp_path):
+    """`_atom_site.B_iso_or_equiv` is optional in mmCIF and MMCIFParser indexed
+    it unconditionally: a bare KeyError naming neither the file nor the column,
+    on anything biotite wrote without extra_fields=["b_factor"]."""
+    from protein_inspector import inspect_structure
+
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif, n=6)
+    plain = _strip_bfactor_column(cif, tmp_path / "nob.cif")
+    report = inspect_structure(str(plain),
+                               layers=[{"id": "x", "label": "X", "residues": [3, 4]}],
+                               out=str(tmp_path / "nob.html"))
+    assert report["annotation_count"] == 2
+    assert report["unmapped_residues"] == []
+
+
+def test_plddt_colouring_without_the_column_says_so_in_a_sentence(tmp_path):
+    """Painting confidence from a column the file does not have is a plot of
+    py2Dmol's 50.0 fill value -- a number nobody measured."""
+    import pytest
+
+    from protein_inspector import inspect_structure
+
+    cif = tmp_path / "fixture.cif"
+    _fixture(cif, n=6)
+    plain = _strip_bfactor_column(cif, tmp_path / "nob.cif")
+    with pytest.raises(ValueError, match="B_iso_or_equiv"):
+        inspect_structure(str(plain), layers=[], display={"color": "plddt"},
+                          out=str(tmp_path / "nob.html"))
+
+
+def _modified_residue_cif(path: Path) -> Path:
+    """A chain whose first residue is pyroglutamate and whose fifth is MSE --
+    both filed as HETATM, both real modelled residues of the polymer."""
+    structure = Structure.Structure("mod")
+    model = Model.Model(0)
+    chain = Chain.Chain("A")
+    for index in range(1, 9):
+        name = "PCA" if index == 1 else ("MSE" if index == 5 else "ALA")
+        het = f"H_{name}" if name != "ALA" else " "
+        residue = Residue.Residue((het, index, " "), name, " ")
+        residue.add(Atom.Atom("CA", (float(index * 3), float(index % 2), 0.0),
+                              0.0, 1.0, " ", "CA", index, element="C"))
+        chain.add(residue)
+    model.add(chain)
+    structure.add(model)
+    io = MMCIFIO()
+    io.set_structure(structure)
+    io.save(str(path))
+    return path
+
+
+def test_a_modified_residue_is_traced_like_the_parent_it_is(tmp_path):
+    """Residue 24 of EpCAM is pyroglutamate in both crystals and a genuine
+    antibody contact. It was absent from the trace -- so the layer naming it
+    came back unmapped and the epitope painted 18 of 19 contacts -- while
+    py2Dmol drew it, because its parser asks gemmi `is_amino_acid()`. A
+    selenomethionine structure lost every methionine position the same way.
+    """
+    from protein_inspector import inspect_structure, inspection_table
+    from protein_inspector.inspect import residue_order
+
+    cif = _modified_residue_cif(tmp_path / "mod.cif")
+    assert [number for _chain, number in residue_order(cif)] == list(range(1, 9))
+
+    report = inspect_structure(
+        str(cif), layers=[{"id": "epi", "label": "Epitope", "residues": [1, 5, 6]}],
+        out=str(tmp_path / "mod.html"))
+    assert report["unmapped_residues"] == []
+    rows = inspection_table(report["path"])
+    assert [row["residue_name"] for row in rows if row["layers"]] == ["PCA", "MSE", "ALA"]
 
 
 # --- the tube's element colours ---------------------------------------------

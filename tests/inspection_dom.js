@@ -577,6 +577,11 @@ if (state.morph && state.morph.mode === 'browser' && morphButtons.length) {
     report.morph.bufferEndY = trail[trail.length - 1].y;
     report.morph.pressedAfter = morphButtons.map((b) => b.getAttribute('aria-pressed'));
     report.morph.note = buttons['pinsp-morph-note'].textContent;
+    // THE COLOUR MAP OF THE STATE THAT LANDED. One array of positions is shared
+    // by every frame, so this is the only place a per-state layer resolution
+    // shows up: a position the landed state is bridged across must have lost
+    // the layer colour it wears in the state that models the residue.
+    report.morph.paintAfter = paint();
 }
 
 // --- partners --------------------------------------------------------------
